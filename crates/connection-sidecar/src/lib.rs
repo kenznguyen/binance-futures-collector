@@ -492,7 +492,10 @@ impl SidecarWriter {
             return Err(invalid("sidecar must end with a complete JSONL record"));
         }
         let mut validated_events = 0_u64;
-        for line in sidecar_content.split(|byte| *byte == b'\n').filter(|line| !line.is_empty()) {
+        for line in sidecar_content
+            .split(|byte| *byte == b'\n')
+            .filter(|line| !line.is_empty())
+        {
             let value: serde_json::Value = serde_json::from_slice(line)
                 .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
             if !value.is_object() {
