@@ -656,22 +656,31 @@ impl SidecarWriter {
         }
 
         // Finalization was made terminal before the first filesystem operation.
+        let mut temp_manifest_created = false;
         let publish_result = (|| -> io::Result<()> {
             let mut temp_file = OpenOptions::new()
                 .write(true)
                 .create_new(true)
                 .open(&temp_path)?;
+            temp_manifest_created = true;
             temp_file.write_all(&manifest_bytes)?;
             temp_file.flush()?;
             temp_file.sync_all()?;
             fs::hard_link(&temp_path, &manifest_path)?;
             fs::remove_file(&temp_path)?;
+            temp_manifest_created = false;
             sync_parent_directory(&manifest_path)?;
             Ok(())
         })();
-        if publish_result.is_err() {
-            let _ = fs::remove_file(&temp_path);
-            return publish_result.map(|_| manifest);
+        if let Err(publish_error) = publish_result {
+            if temp_manifest_created {
+                return Err(cleanup_temp_manifest_with(
+                    &temp_path,
+                    publish_error,
+                    |path| fs::remove_file(path),
+                ));
+            }
+            return Err(publish_error);
         }
 
         Ok(manifest)
@@ -809,6 +818,25 @@ impl SidecarWriter {
         self.next_event_sequence += 1;
         self.last_event_at_ms = Some(event_at_ms);
         Ok(())
+    }
+}
+
+/// Preserve the publication error while reporting a failed temporary-manifest cleanup.
+/// A missing temp file means publication already removed it, so it is not a cleanup failure.
+fn cleanup_temp_manifest_with(
+    path: &Path,
+    publication_error: io::Error,
+    remove_file: impl FnOnce(&Path) -> io::Result<()>,
+) -> io::Error {
+    match remove_file(path) {
+        Ok(()) => publication_error,
+        Err(cleanup_error) if cleanup_error.kind() == io::ErrorKind::NotFound => publication_error,
+        Err(cleanup_error) => io::Error::new(
+            publication_error.kind(),
+            format!(
+                "manifest publication failed: {publication_error}; removing temporary manifest failed: {cleanup_error}"
+            ),
+        ),
     }
 }
 
