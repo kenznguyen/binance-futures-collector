@@ -730,3 +730,48 @@ fn requires_heartbeat_timeout_reason_after_timeout_was_observed() {
     drop(writer);
     fs::remove_file(path).unwrap();
 }
+
+#[test]
+fn resolves_other_pending_ping_after_one_heartbeat_times_out() {
+    let path = temp_path("heartbeat-timeout-multiple-pings");
+    let connection = identity(Route::Public);
+    let mut writer = SidecarWriter::create(&path, SOURCE, SESSION).unwrap();
+    writer.connect_attempted(&connection, START).unwrap();
+    writer.connected(&connection, START + 1).unwrap();
+    writer.ping_sent(&connection, "hb-expired", START + 2).unwrap();
+    writer.ping_sent(&connection, "hb-live", START + 3).unwrap();
+
+    let timeout_at = START + 2 + 60_001;
+    writer
+        .heartbeat_timed_out(&connection, "hb-expired", timeout_at)
+        .unwrap();
+
+    writer
+        .pong_received(&connection, "hb-live", timeout_at)
+        .expect("a different Ping answered within its own 60-second bound");
+
+    let before_rejected_pong = fs::read(&path).unwrap();
+    assert!(writer
+        .pong_received(&connection, "hb-expired", timeout_at)
+        .is_err());
+    assert_eq!(fs::read(&path).unwrap(), before_rejected_pong);
+
+    writer
+        .disconnected(
+            &connection,
+            DisconnectReason::HeartbeatTimeout,
+            timeout_at,
+        )
+        .unwrap();
+    writer.finalize(timeout_at, timeout_at + 1).unwrap();
+
+    let contents = fs::read_to_string(&path).unwrap();
+    assert!(contents.contains("\"eventType\":\"PING_TIMEOUT\""));
+    assert!(contents.contains("\"eventType\":\"PONG_RECEIVED\""));
+    assert!(contents.contains("\"reason\":\"HEARTBEAT_TIMEOUT\""));
+
+    drop(writer);
+    let manifest_path = SidecarWriter::manifest_path(&path);
+    fs::remove_file(path).unwrap();
+    fs::remove_file(manifest_path).unwrap();
+}
