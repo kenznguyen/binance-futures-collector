@@ -180,6 +180,7 @@ impl SidecarWriter {
 
         let path = path.as_ref().to_path_buf();
         let file = OpenOptions::new()
+            .read(true)
             .append(true)
             .create_new(true)
             .open(&path)?;
