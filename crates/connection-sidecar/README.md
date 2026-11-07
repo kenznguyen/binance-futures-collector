@@ -17,7 +17,7 @@ Supported event types:
 - `CONNECT_ATTEMPTED` (durably written before DNS/TCP/WebSocket handshake begins)
 - `CONNECT_FAILED` (DNS, transport, timeout, or handshake rejection before CONNECTED)
 - `CONNECTED` (only after a successful handshake)
-- `PING_SENT` and `PONG_RECEIVED`, paired by a unique `heartbeatId`
+- `PING_SENT` and `PONG_RECEIVED`, paired by a unique `heartbeatId`; `PING_TIMEOUT` records an outstanding PING that exceeded the strict 60,000 ms response threshold
 - `DISCONNECTED`, with `REMOTE_CLOSE`, `TRANSPORT_ERROR`, `HEARTBEAT_TIMEOUT`, `SHUTDOWN`, or `UNKNOWN`
 - `RECONNECT_SCHEDULED`, with bounded `attempt` and `delayMs`
 
@@ -62,7 +62,7 @@ If the handshake fails, call `connect_failed` with a classified reason and then 
 - Initial file creation and manifest publication sync the parent directory on Unix.
 - Event timestamps must be globally non-decreasing.
 - Ping/Pong must pair exactly; duplicate heartbeat IDs, unmatched Pong, invalid lifecycle transitions, invalid reconnect bounds, and identity reuse are rejected.
-- Limits: 16 KiB per event line, 64 MiB per sidecar, 100,000 events, 10,000 subscriptions per socket, 2 MiB total subscription-name bytes per socket.
+- Limits: 16 KiB per event line, 64 MiB per sidecar, 100,000 events, at most 1,024 socket connections per session, 10,000 subscriptions per socket, 256 bytes per subscription name, 1 MiB aggregate subscription-name bytes per session, and 1 MiB serialized manifest. The session-wide aggregate bound is stricter than the per-socket subscription-count maximum; there is no separate 2 MiB-per-socket byte allowance.
 - Finalization requires at least one event, all sockets disconnected, a completeness watermark at or beyond the final event, and a finalization timestamp at or beyond the watermark.
 - The manifest is written to a temporary file, synced, linked into place without replacing an existing manifest, and followed by a parent-directory sync on Unix. It records sidecar byte size, SHA-256, event count, session/source identity, watermark, and exact subscription sets.
 
@@ -77,9 +77,9 @@ For heartbeat correlation, the collector must put the unique `heartbeatId` in th
 ## Offline checks
 
 ```bash
-cargo fmt --manifest-path futures_intelligence/collector_sidecar_writer/Cargo.toml --all -- --check
-cargo clippy --manifest-path futures_intelligence/collector_sidecar_writer/Cargo.toml --all-targets -- -D warnings
-cargo test --manifest-path futures_intelligence/collector_sidecar_writer/Cargo.toml --all-targets
+cargo fmt --manifest-path crates/connection-sidecar/Cargo.toml --all -- --check
+cargo clippy --manifest-path crates/connection-sidecar/Cargo.toml --all-targets -- -D warnings
+cargo test --manifest-path crates/connection-sidecar/Cargo.toml --all-targets
 ```
 
 Tests use temporary local files only. They do not start a collector, open a database, or contact an exchange.
