@@ -620,6 +620,10 @@ fn records_heartbeat_timeout_and_allows_terminal_disconnect_and_finalize() {
         .unwrap();
 
     writer
+        .heartbeat_timed_out(&connection, "hb-timeout", START + 2 + 60_001)
+        .expect("expired heartbeat must be durably resolved");
+
+    writer
         .disconnected(
             &connection,
             DisconnectReason::HeartbeatTimeout,
@@ -655,6 +659,9 @@ fn refuses_heartbeat_timeout_disconnect_before_timeout_threshold() {
         .unwrap();
 
     let before = fs::read(&path).unwrap();
+    assert!(writer
+        .heartbeat_timed_out(&connection, "hb-not-yet-timeout", START + 2 + 60_000)
+        .is_err());
     assert!(writer
         .disconnected(
             &connection,
