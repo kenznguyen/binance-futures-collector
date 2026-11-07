@@ -109,15 +109,52 @@ jobs:
         shell: bash
         run: |
           set -u
+
+          # A successful cargo-tree exit is not sufficient: Cargo may print
+          # "warning: nothing to print" with exit code 0 for an inactive package.
+          classify_tree_output() {
+            local output="$1"
+            local package_nodes
+            if grep -qE 'warning: nothing to print' <<<"$output"; then
+              echo "NO_PATH_EMITTED"
+              return
+            fi
+            package_nodes="$(grep -Ec '(^|[[:space:]├└│`-])[[:alnum:]_.+-]+ v[0-9]+\.' <<<"$output" || true)"
+            if [[ "$package_nodes" =~ ^[0-9]+$ ]] && (( package_nodes >= 2 )); then
+              echo "PATH_FOUND"
+            else
+              echo "NO_PATH_EMITTED"
+            fi
+          }
+
+          # Exercise the classifier against a real reverse tree, Cargo's
+          # successful-but-empty diagnostic, and empty output before using it.
+          tree_fixture=$'quinn-proto v0.11.16\n└── quinn v0.11.11\n    └── reqwest v0.13.1'
+          empty_fixture='warning: nothing to print'
+          if [[ "$(classify_tree_output "$tree_fixture")" != "PATH_FOUND" ]]; then
+            echo "classifier fixture failed: populated reverse tree"
+            exit 1
+          fi
+          if [[ "$(classify_tree_output "$empty_fixture")" != "NO_PATH_EMITTED" ]]; then
+            echo "classifier fixture failed: Cargo nothing-to-print output"
+            exit 1
+          fi
+          if [[ "$(classify_tree_output "")" != "NO_PATH_EMITTED" ]]; then
+            echo "classifier fixture failed: empty output"
+            exit 1
+          fi
+          echo "DIAGNOSTIC_CLASSIFIER_FIXTURES=3/3_PASS"
+
           for crate in quinn-proto rustls rustls-webpki webpki-root-certs webpki-roots tokio chacha20; do
-            echo "::group::cargo tree feature paths: $crate"
+            echo "::group::cargo tree default-feature reverse path: $crate"
             if output="$(cargo tree --locked -e features -i "$crate" 2>&1)"; then
               printf '%s\n' "$output"
-              echo "REACHABILITY[$crate]=PRESENT_IN_DEFAULT_GRAPH"
+              classification="$(classify_tree_output "$output")"
+              echo "DEFAULT_FEATURE_REACHABILITY[$crate]=$classification"
             else
               status=$?
               printf '%s\n' "$output"
-              echo "REACHABILITY[$crate]=NOT_IN_DEFAULT_GRAPH (exit $status)"
+              echo "DEFAULT_FEATURE_REACHABILITY[$crate]=COMMAND_ERROR (exit $status)"
             fi
             echo "::endgroup::"
           done
@@ -126,6 +163,22 @@ jobs:
         shell: bash
         run: |
           set -u
+
+          classify_tree_output() {
+            local output="$1"
+            local package_nodes
+            if grep -qE 'warning: nothing to print' <<<"$output"; then
+              echo "NO_PATH_EMITTED"
+              return
+            fi
+            package_nodes="$(grep -Ec '(^|[[:space:]├└│`-])[[:alnum:]_.+-]+ v[0-9]+\.' <<<"$output" || true)"
+            if [[ "$package_nodes" =~ ^[0-9]+$ ]] && (( package_nodes >= 2 )); then
+              echo "PATH_FOUND"
+            else
+              echo "NO_PATH_EMITTED"
+            fi
+          }
+
           packages=(
             quinn-proto@0.11.16
             rustls@0.23.43
@@ -139,11 +192,12 @@ jobs:
             echo "::group::cargo tree all-target reverse path: $package"
             if output="$(cargo tree --locked --target all -i "$package" 2>&1)"; then
               printf '%s\n' "$output"
-              echo "ALL_TARGET_PACKAGE_REACHABILITY[$package]=PRESENT"
+              classification="$(classify_tree_output "$output")"
+              echo "ALL_TARGET_PACKAGE_REACHABILITY[$package]=$classification"
             else
               status=$?
               printf '%s\n' "$output"
-              echo "ALL_TARGET_PACKAGE_REACHABILITY[$package]=NOT_REACHABLE_OR_NOT_RESOLVED (exit $status)"
+              echo "ALL_TARGET_PACKAGE_REACHABILITY[$package]=COMMAND_ERROR (exit $status)"
             fi
             echo "::endgroup::"
           done
