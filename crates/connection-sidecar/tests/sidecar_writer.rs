@@ -353,7 +353,6 @@ fn poisons_writer_when_sidecar_readback_fails_during_finalization() {
     drop(writer);
 }
 
-
 #[test]
 fn refuses_to_finalize_when_sidecar_bytes_were_appended_outside_the_writer() {
     let path = temp_path("external-append");
