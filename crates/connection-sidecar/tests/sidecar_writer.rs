@@ -1,4 +1,6 @@
-use collector_connection_sidecar::{ConnectionIdentity, ConnectFailureReason, DisconnectReason, Route, SidecarWriter};
+use collector_connection_sidecar::{
+    ConnectionIdentity, ConnectFailureReason, DisconnectReason, Route, SidecarWriter,
+};
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::PathBuf;
@@ -38,7 +40,8 @@ fn writes_python_contract_jsonl_and_fsyncs_each_event_before_returning() {
     assert_eq!(first.lines().count(), 2);
     let attempted: serde_json::Value = serde_json::from_str(first.lines().next().unwrap()).unwrap();
     assert_eq!(attempted["eventType"], "CONNECT_ATTEMPTED");
-    let connected: serde_json::Value = serde_json::from_str(first.lines().nth(1).unwrap()).unwrap();
+    let connected: serde_json::Value =
+        serde_json::from_str(first.lines().nth(1).unwrap()).unwrap();
     assert_eq!(connected["schemaVersion"], 1);
     assert_eq!(connected["sourceCommit"], SOURCE);
     assert_eq!(connected["sessionId"], SESSION);
@@ -261,11 +264,18 @@ fn records_pre_handshake_failures_and_allows_bounded_reconnect() {
     let mut writer = SidecarWriter::create(&path, SOURCE, SESSION).unwrap();
 
     writer.connect_attempted(&connection, START).unwrap();
-    writer.connect_failed(&connection, ConnectFailureReason::Timeout, START + 30_000).unwrap();
+    writer
+        .connect_failed(
+            &connection,
+            ConnectFailureReason::Timeout,
+            START + 30_000,
+        )
+        .unwrap();
     writer.reconnect_scheduled(&connection, 1, 2_000, START + 30_001).unwrap();
 
     let lines = fs::read_to_string(&path).unwrap();
-    let events: Vec<serde_json::Value> = lines.lines()
+    let events: Vec<serde_json::Value> = lines
+        .lines()
         .map(|line| serde_json::from_str(line).unwrap())
         .collect();
     assert_eq!(events.len(), 3);
