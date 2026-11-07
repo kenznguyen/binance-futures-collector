@@ -381,14 +381,13 @@ fn refuses_to_finalize_when_sidecar_bytes_were_appended_outside_the_writer() {
     fs::remove_file(path).unwrap();
 }
 
-
 fn create_disconnected_sidecar(label: &str) -> PathBuf {
     let path = temp_path(label);
     let connection = identity(Route::Public);
     let mut writer = SidecarWriter::create(&path, SOURCE, SESSION).unwrap();
     writer.connect_attempted(&connection, START).unwrap();
     writer.connected(&connection, START + 1).unwrap();
-    writer.disconnected(&connection, DisconnectReason::Shutdown, START + 2).unwrap();
+    writer\n        .disconnected(&connection, DisconnectReason::Shutdown, START + 2)\n        .unwrap();
     drop(writer);
     path
 }
@@ -457,7 +456,7 @@ fn validator_classifies_manifest_byte_hash_or_event_count_mismatch() {
     let mut seal_writer = SidecarWriter::create(&seal_path, SOURCE, SESSION).unwrap();
     seal_writer.connect_attempted(&connection, START).unwrap();
     seal_writer.connected(&connection, START + 1).unwrap();
-    seal_writer.disconnected(&connection, DisconnectReason::Shutdown, START + 2).unwrap();
+    seal_writer\n        .disconnected(&connection, DisconnectReason::Shutdown, START + 2)\n        .unwrap();
     seal_writer.finalize(START + 2, START + 3).unwrap();
     drop(seal_writer);
 
