@@ -841,13 +841,13 @@ pub fn validate_capture(path: impl AsRef<Path>) -> io::Result<CaptureValidation>
         ));
     }
 
-    if !bytes.is_empty() && bytes.last() != Some(&b'\\n') {
-        let line_number = bytes.iter().filter(|byte| **byte == b'\\n').count() + 1;
+    if !bytes.is_empty() && bytes.last() != Some(&b'\n') {
+        let line_number = bytes.iter().filter(|byte| **byte == b'\n').count() + 1;
         return Ok(CaptureValidation::TruncatedFinalLine { line_number });
     }
 
     let mut event_count = 0_u64;
-    for (index, line) in bytes.split_terminator(|byte| *byte == b'\\n').enumerate() {
+    for (index, line) in bytes.split_terminator(|byte| *byte == b'\n').enumerate() {
         let value: serde_json::Value = match serde_json::from_slice(line) {
             Ok(value) => value,
             Err(_) => {
