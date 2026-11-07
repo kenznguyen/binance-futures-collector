@@ -1154,14 +1154,22 @@ mod create_cleanup_tests {
         let result = create_sidecar_file_with_cleanup(
             &path,
             |_| Err(io::Error::other("injected initial sync failure")),
-            |_| Err(io::Error::new(io::ErrorKind::PermissionDenied, "injected remove failure")),
+            |_| {
+                Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "injected remove failure",
+                ))
+            },
         );
 
         let error = result.expect_err("cleanup failure must be returned");
         let message = error.to_string();
         assert!(message.contains("injected initial sync failure"));
         assert!(message.contains("injected remove failure"));
-        assert!(path.exists(), "failed removal should leave the path for diagnosis");
+        assert!(
+            path.exists(),
+            "failed removal should leave the path for diagnosis"
+        );
         fs::remove_file(&path).expect("test must remove its intentionally orphaned file");
     }
 
