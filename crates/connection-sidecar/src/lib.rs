@@ -1066,7 +1066,10 @@ pub fn validate_capture(path: impl AsRef<Path>) -> io::Result<CaptureValidation>
     }
 
     if bytes.is_empty() {
-        return Err(invalid("sidecar must contain at least one event"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "sidecar must contain at least one event",
+        ));
     }
 
     if !bytes.is_empty() && bytes.last() != Some(&b'\n') {
