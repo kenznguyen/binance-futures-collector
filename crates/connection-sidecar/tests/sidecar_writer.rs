@@ -437,7 +437,7 @@ fn validator_classifies_malformed_middle_jsonl_record() {
     let original = fs::read_to_string(&path).unwrap();
     let mut lines: Vec<&str> = original.lines().collect();
     lines[1] = "{malformed";
-    fs::write(&path, format!("{}\\n", lines.join("\\n"))).unwrap();
+    fs::write(&path, format!("{}\n", lines.join("\n"))).unwrap();
     let before = fs::read(&path).unwrap();
 
     let result = validate_capture(&path).unwrap();
@@ -452,13 +452,8 @@ fn validator_classifies_malformed_middle_jsonl_record() {
 
 #[test]
 fn validator_classifies_manifest_byte_hash_or_event_count_mismatch() {
-    let path = create_disconnected_sidecar("validator-manifest-mismatch");
-    let connection = identity(Route::Public);
-    let mut writer = SidecarWriter::create(&temp_path("unused-validator"), SOURCE, SESSION);
-    // A separate writer fixture is not needed: seal the existing path through
-    // a fresh valid capture and then alter only the manifest metadata.
-    drop(writer.take());
     let seal_path = temp_path("validator-sealed-mismatch");
+    let connection = identity(Route::Public);
     let mut seal_writer = SidecarWriter::create(&seal_path, SOURCE, SESSION).unwrap();
     seal_writer.connect_attempted(&connection, START).unwrap();
     seal_writer.connected(&connection, START + 1).unwrap();
@@ -481,7 +476,6 @@ fn validator_classifies_manifest_byte_hash_or_event_count_mismatch() {
     assert_eq!(fs::read(&manifest_path).unwrap(), before_manifest);
     fs::remove_file(seal_path).unwrap();
     fs::remove_file(manifest_path).unwrap();
-    fs::remove_file(path).unwrap();
 }
 
 #[test]
