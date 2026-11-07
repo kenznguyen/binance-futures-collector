@@ -798,15 +798,26 @@ fn sync_parent_directory(_path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-
 /// Read-only classification of a captured connection-sidecar file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CaptureValidation {
-    UnsealedValid { sidecar_bytes: u64, event_count: u64 },
-    TruncatedFinalLine { line_number: usize },
-    MalformedJsonl { line_number: usize },
-    ManifestMismatch { reason: String },
-    SealedConsistent { event_count: u64, sidecar_bytes: u64 },
+    UnsealedValid {
+        sidecar_bytes: u64,
+        event_count: u64,
+    },
+    TruncatedFinalLine {
+        line_number: usize,
+    },
+    MalformedJsonl {
+        line_number: usize,
+    },
+    ManifestMismatch {
+        reason: String,
+    },
+    SealedConsistent {
+        event_count: u64,
+        sidecar_bytes: u64,
+    },
 }
 
 #[derive(Deserialize)]
