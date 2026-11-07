@@ -717,7 +717,7 @@ fn requires_heartbeat_timeout_reason_after_timeout_was_observed() {
     assert!(writer
         .disconnected(
             &connection,
-            DisconnectReason::TransportClosed,
+            DisconnectReason::TransportError,
             START + 2 + 60_002,
         )
         .is_err());
