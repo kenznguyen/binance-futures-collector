@@ -31,7 +31,7 @@ jobs:
           cargo update -p rustls --precise 0.23.46
           cargo update -p rustls-webpki --precise 0.103.16
           cargo update -p webpki-root-certs --precise 1.0.10
-          cargo update -p webpki-roots --precise 1.0.10
+          cargo update -p webpki-roots@1.0.9 --precise 1.0.10
           cargo update -p tokio --precise 1.53.3
           cargo update -p chacha20 --precise 0.10.2
 
