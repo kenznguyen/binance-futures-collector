@@ -608,7 +608,6 @@ fn refuses_to_finalize_when_sidecar_path_is_replaced_with_same_size_valid_jsonl(
     fs::remove_file(backup).unwrap();
 }
 
-
 #[test]
 fn records_heartbeat_timeout_and_allows_terminal_disconnect_and_finalize() {
     let path = temp_path("heartbeat-timeout");
