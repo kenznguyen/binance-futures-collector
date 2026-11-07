@@ -1332,11 +1332,9 @@ mod create_cleanup_tests {
         )
         .expect_err("directory sync failure must be returned");
 
-        assert!(
-            error
-                .to_string()
-                .contains("injected manifest directory sync failure")
-        );
+        assert!(error
+            .to_string()
+            .contains("injected manifest directory sync failure"));
         assert!(manifest_path.exists(), "final manifest must remain visible");
         assert!(
             !temp_path.exists(),
