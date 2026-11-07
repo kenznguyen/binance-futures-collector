@@ -33,6 +33,15 @@ jobs:
       - name: Test
         run: cargo test --all
 
+      - name: Sidecar writer format
+        run: cargo fmt --manifest-path crates/connection-sidecar/Cargo.toml --all -- --check
+
+      - name: Sidecar writer Clippy
+        run: cargo clippy --manifest-path crates/connection-sidecar/Cargo.toml --all-targets -- -D warnings
+
+      - name: Sidecar writer offline tests
+        run: cargo test --manifest-path crates/connection-sidecar/Cargo.toml --all-targets --locked
+
   dashboard-backend:
     name: dashboard backend · pytest
     runs-on: ubuntu-latest
