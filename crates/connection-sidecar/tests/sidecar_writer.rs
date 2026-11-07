@@ -586,10 +586,10 @@ fn refuses_to_finalize_when_sidecar_path_is_replaced_with_same_size_valid_jsonl(
         b'a'
     };
     assert_eq!(replacement.len(), original.len());
-    assert!(serde_json::from_slice::<serde_json::Value>(
-        &replacement[..replacement.len() - 1]
-    )
-    .is_err() || replacement.iter().filter(|byte| **byte == b'\\n').count() == 3);
+    assert_eq!(replacement.iter().filter(|byte| **byte == b'\n').count(), 3);
+    for line in replacement.split(|byte| *byte == b'\n').filter(|line| !line.is_empty()) {
+        assert!(serde_json::from_slice::<serde_json::Value>(line).unwrap().is_object());
+    }
 
     fs::rename(&path, &backup).unwrap();
     fs::write(&path, &replacement).unwrap();
