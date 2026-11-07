@@ -1229,5 +1229,4 @@ mod create_cleanup_tests {
 
         assert_eq!(error.to_string(), "injected directory sync failure");
     }
-
 }
