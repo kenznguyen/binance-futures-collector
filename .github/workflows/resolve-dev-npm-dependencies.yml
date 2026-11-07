@@ -1,0 +1,54 @@
+name: Resolve dev dependency security updates
+
+on:
+  push:
+    branches: [feature/t1-connection-sidecar-integration-20261107]
+    paths:
+      - .github/workflows/resolve-dev-npm-dependencies.yml
+
+permissions:
+  contents: write
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dashboard/frontend
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/t1-connection-sidecar-integration-20261107
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: dashboard/frontend/package-lock.json
+      - name: Update only lockfile-resolvable dev dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          before_manifest="$(sha256sum package.json | cut -d' ' -f1)"
+          npm update vitest browserslist baseline-browser-mapping --package-lock-only --ignore-scripts
+          after_manifest="$(sha256sum package.json | cut -d' ' -f1)"
+          test "$before_manifest" = "$after_manifest"
+          node -e 'const p=require("./package-lock.json"); for (const n of ["vitest","browserslist","baseline-browser-mapping","esbuild"]) { for (const [k,v] of Object.entries(p.packages)) if (k === "node_modules/"+n || k.endsWith("/node_modules/"+n)) console.log(n+"@"+v.version+" "+k); }'
+          npm ci
+          npm audit --omit=dev --audit-level=high
+          npm run build
+          npm test
+          set +e
+          npm audit --audit-level=high
+          audit_status=$?
+          set -e
+          echo "FULL_NPM_AUDIT_EXIT=$audit_status"
+          cd ../..
+          changed="$(git diff --name-only)"
+          test "$changed" = "dashboard/frontend/package-lock.json"
+          git diff --check
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add dashboard/frontend/package-lock.json
+          git commit -m "security: update frontend dev dependency lockfile"
+          git push origin HEAD:feature/t1-connection-sidecar-integration-20261107
