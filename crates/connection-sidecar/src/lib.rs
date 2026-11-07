@@ -477,8 +477,7 @@ impl SidecarWriter {
         // out-of-band append, truncation, malformed line, or partial final line.
         let mut digest_file = File::open(&self.path)?;
         let mut sidecar_content = Vec::new();
-        digest_file
-            .by_ref()
+        std::io::Read::by_ref(&mut digest_file)
             .take(MAX_FILE_BYTES + 1)
             .read_to_end(&mut sidecar_content)?;
         let opened_file_bytes = digest_file.metadata()?.len();
