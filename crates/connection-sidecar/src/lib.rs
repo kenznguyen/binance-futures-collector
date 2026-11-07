@@ -563,7 +563,6 @@ impl SidecarWriter {
             return publish_result.map(|_| manifest);
         }
 
-        self.poisoned = true;
         Ok(manifest)
     }
 
