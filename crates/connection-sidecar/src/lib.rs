@@ -1313,7 +1313,9 @@ mod create_cleanup_tests {
         let error = validate_capture(&sidecar_path)
             .expect_err("an empty sidecar cannot be a valid capture");
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
-        assert!(error.to_string().contains("sidecar must contain at least one event"));
+        assert!(error
+            .to_string()
+            .contains("sidecar must contain at least one event"));
 
         fs::remove_file(&sidecar_path).expect("test fixture must be removed");
     }
