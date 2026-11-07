@@ -380,3 +380,132 @@ fn refuses_to_finalize_when_sidecar_bytes_were_appended_outside_the_writer() {
     drop(writer);
     fs::remove_file(path).unwrap();
 }
+
+
+fn create_disconnected_sidecar(label: &str) -> PathBuf {
+    let path = temp_path(label);
+    let connection = identity(Route::Public);
+    let mut writer = SidecarWriter::create(&path, SOURCE, SESSION).unwrap();
+    writer.connect_attempted(&connection, START).unwrap();
+    writer.connected(&connection, START + 1).unwrap();
+    writer.disconnected(&connection, DisconnectReason::Shutdown, START + 2).unwrap();
+    drop(writer);
+    path
+}
+
+#[test]
+fn validator_classifies_valid_jsonl_without_manifest_as_unsealed() {
+    let path = create_disconnected_sidecar("validator-unsealed");
+    let before = fs::read(&path).unwrap();
+
+    let result = validate_capture(&path).unwrap();
+
+    assert!(matches!(
+        result,
+        CaptureValidation::UnsealedValid {
+            sidecar_bytes: _,
+            event_count: 3
+        }
+    ));
+    assert_eq!(fs::read(&path).unwrap(), before);
+    assert!(!SidecarWriter::manifest_path(&path).exists());
+    fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn validator_classifies_missing_newline_or_torn_final_record_as_truncated_tail() {
+    let path = create_disconnected_sidecar("validator-torn-tail");
+    let mut bytes = fs::read(&path).unwrap();
+    bytes.pop();
+    fs::write(&path, &bytes).unwrap();
+    let before = fs::read(&path).unwrap();
+
+    let result = validate_capture(&path).unwrap();
+
+    assert!(matches!(
+        result,
+        CaptureValidation::TruncatedFinalLine { line_number: 3 }
+    ));
+    assert_eq!(fs::read(&path).unwrap(), before);
+    assert!(!SidecarWriter::manifest_path(&path).exists());
+    fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn validator_classifies_malformed_middle_jsonl_record() {
+    let path = create_disconnected_sidecar("validator-malformed");
+    let original = fs::read_to_string(&path).unwrap();
+    let mut lines: Vec<&str> = original.lines().collect();
+    lines[1] = "{malformed";
+    fs::write(&path, format!("{}\\n", lines.join("\\n"))).unwrap();
+    let before = fs::read(&path).unwrap();
+
+    let result = validate_capture(&path).unwrap();
+
+    assert!(matches!(
+        result,
+        CaptureValidation::MalformedJsonl { line_number: 2 }
+    ));
+    assert_eq!(fs::read(&path).unwrap(), before);
+    fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn validator_classifies_manifest_byte_hash_or_event_count_mismatch() {
+    let path = create_disconnected_sidecar("validator-manifest-mismatch");
+    let connection = identity(Route::Public);
+    let mut writer = SidecarWriter::create(&temp_path("unused-validator"), SOURCE, SESSION);
+    // A separate writer fixture is not needed: seal the existing path through
+    // a fresh valid capture and then alter only the manifest metadata.
+    drop(writer.take());
+    let seal_path = temp_path("validator-sealed-mismatch");
+    let mut seal_writer = SidecarWriter::create(&seal_path, SOURCE, SESSION).unwrap();
+    seal_writer.connect_attempted(&connection, START).unwrap();
+    seal_writer.connected(&connection, START + 1).unwrap();
+    seal_writer.disconnected(&connection, DisconnectReason::Shutdown, START + 2).unwrap();
+    seal_writer.finalize(START + 2, START + 3).unwrap();
+    drop(seal_writer);
+
+    let manifest_path = SidecarWriter::manifest_path(&seal_path);
+    let mut manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+    manifest["eventCount"] = serde_json::json!(99);
+    fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+    let before_sidecar = fs::read(&seal_path).unwrap();
+    let before_manifest = fs::read(&manifest_path).unwrap();
+
+    let result = validate_capture(&seal_path).unwrap();
+
+    assert!(matches!(result, CaptureValidation::ManifestMismatch { .. }));
+    assert_eq!(fs::read(&seal_path).unwrap(), before_sidecar);
+    assert_eq!(fs::read(&manifest_path).unwrap(), before_manifest);
+    fs::remove_file(seal_path).unwrap();
+    fs::remove_file(manifest_path).unwrap();
+    fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn validator_classifies_sealed_manifest_consistent_capture() {
+    let path = temp_path("validator-sealed-valid");
+    let connection = identity(Route::Public);
+    let mut writer = SidecarWriter::create(&path, SOURCE, SESSION).unwrap();
+    writer.connect_attempted(&connection, START).unwrap();
+    writer.connected(&connection, START + 1).unwrap();
+    writer.disconnected(&connection, DisconnectReason::Shutdown, START + 2).unwrap();
+    writer.finalize(START + 2, START + 3).unwrap();
+    drop(writer);
+    let before_sidecar = fs::read(&path).unwrap();
+    let manifest_path = SidecarWriter::manifest_path(&path);
+    let before_manifest = fs::read(&manifest_path).unwrap();
+
+    let result = validate_capture(&path).unwrap();
+
+    assert!(matches!(
+        result,
+        CaptureValidation::SealedConsistent { event_count: 3, .. }
+    ));
+    assert_eq!(fs::read(&path).unwrap(), before_sidecar);
+    assert_eq!(fs::read(&manifest_path).unwrap(), before_manifest);
+    fs::remove_file(path).unwrap();
+    fs::remove_file(manifest_path).unwrap();
+}
