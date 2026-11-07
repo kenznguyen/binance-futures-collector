@@ -699,7 +699,6 @@ fn refuses_to_send_new_ping_after_heartbeat_timeout_is_observed() {
     fs::remove_file(path).unwrap();
 }
 
-
 #[test]
 fn requires_heartbeat_timeout_reason_after_timeout_was_observed() {
     let path = temp_path("heartbeat-timeout-reason");
