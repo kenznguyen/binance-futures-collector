@@ -367,8 +367,7 @@ fn refuses_to_finalize_when_sidecar_bytes_were_appended_outside_the_writer() {
     // Simulate an out-of-band modification while the writer is still alive.
     use std::io::Write as _;
     let mut external = fs::OpenOptions::new().append(true).open(&path).unwrap();
-    external.write_all(b"{\"unexpected\":true}
-").unwrap();
+    external.write_all(b"{\"unexpected\":true}\n").unwrap();
     external.sync_all().unwrap();
     drop(external);
 
@@ -439,9 +438,7 @@ fn validator_classifies_malformed_middle_jsonl_record() {
     let original = fs::read_to_string(&path).unwrap();
     let mut lines: Vec<&str> = original.lines().collect();
     lines[1] = "{malformed";
-    fs::write(&path, format!("{}
-", lines.join("
-"))).unwrap();
+    fs::write(&path, format!("{}\n", lines.join("\n"))).unwrap();
     let before = fs::read(&path).unwrap();
 
     let result = validate_capture(&path).unwrap();
