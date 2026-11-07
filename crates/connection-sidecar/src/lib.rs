@@ -842,7 +842,7 @@ pub fn validate_capture(path: impl AsRef<Path>) -> io::Result<CaptureValidation>
         return Err(invalid("sidecar file size limit exceeded"));
     }
 
-    let mut file = File::open(path)?;
+    let file = File::open(path)?;
     let mut bytes = Vec::with_capacity(metadata.len() as usize);
     file.take(MAX_FILE_BYTES + 1).read_to_end(&mut bytes)?;
     if bytes.len() as u64 != metadata.len() || bytes.len() as u64 > MAX_FILE_BYTES {
