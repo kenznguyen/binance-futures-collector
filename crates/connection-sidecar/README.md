@@ -118,3 +118,15 @@ Therefore:
 A downstream system may claim market-data completeness only after it performs and records its own stream-specific coverage checks (for example, order-book update-ID continuity, trade-ID continuity where applicable, expected kline bucket coverage, REST metric sampling windows, reconnect/gap reconciliation, and explicit handling of unavailable or unsupported coverage). Those checks are outside this crate's contract.
 
 **Safe status vocabulary:** report sidecar persistence, manifest consistency, and market-data completeness as separate statuses. If only this crate's evidence is available, report at most `sidecar_persisted` / `manifest_consistent`; report market-data completeness as `unknown` or `not_verified`, never infer it from the watermark or manifest alone.
+
+### Publication error after the final manifest link
+
+A failure can occur after the temporary manifest has been hard-linked to the final manifest path:
+
+- If temporary-name removal fails, both the final manifest and temporary name may remain.
+- If temporary-name removal succeeds but parent-directory sync fails, the final manifest may remain while the temporary name is absent.
+- In either case, `finalize()` returns an error and the writer remains terminal/poisoned. Do not retry finalization with that writer or append more events.
+- A later read-only `validate_capture()` may return `SealedConsistent` if the surviving final manifest agrees with the sidecar. This means only that the files read are structurally consistent. It does **not** retroactively prove that the earlier `finalize()` call returned success or that the parent-directory entry was durably committed at the time of the sync error.
+- A leftover temporary manifest is diagnostic residue; `validate_capture()` intentionally does not remove it. Do not remove the final manifest merely because finalization returned an error.
+
+Consumers must preserve the distinction between the finalize call result, manifest/sidecar content consistency, and independently established durability. Until a separate recovery protocol exists, classify these post-publication-error states as requiring recovery review rather than silently promoting them to successful finalization.
