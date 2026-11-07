@@ -1306,6 +1306,19 @@ mod create_cleanup_tests {
     }
 
     #[test]
+    fn rejects_empty_sidecar_instead_of_classifying_it_as_unsealed_valid() {
+        let sidecar_path = unique_path("empty-sidecar");
+        fs::write(&sidecar_path, []).expect("empty sidecar fixture must be created");
+
+        let error = validate_capture(&sidecar_path)
+            .expect_err("an empty sidecar cannot be a valid capture");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("sidecar must contain at least one event"));
+
+        fs::remove_file(&sidecar_path).expect("test fixture must be removed");
+    }
+
+    #[test]
     fn manifest_removal_failure_after_hard_link_leaves_valid_final_manifest_classifiable() {
         let sidecar_path = unique_path("manifest-unlink-failure");
         let (manifest_path, temp_path) = write_valid_manifest_fixture(&sidecar_path);
