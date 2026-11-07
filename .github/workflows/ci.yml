@@ -112,12 +112,29 @@ jobs:
           for crate in quinn-proto rustls rustls-webpki webpki-root-certs webpki-roots tokio chacha20; do
             echo "::group::cargo tree feature paths: $crate"
             if output="$(cargo tree --locked -e features -i "$crate" 2>&1)"; then
-              printf '%s\\n' "$output"
+              printf '%s\n' "$output"
               echo "REACHABILITY[$crate]=PRESENT_IN_DEFAULT_GRAPH"
             else
               status=$?
-              printf '%s\\n' "$output"
+              printf '%s\n' "$output"
               echo "REACHABILITY[$crate]=NOT_IN_DEFAULT_GRAPH (exit $status)"
+            fi
+            echo "::endgroup::"
+          done
+
+      - name: All-target dependency feature reachability diagnostics
+        shell: bash
+        run: |
+          set -u
+          for crate in quinn-proto rustls rustls-webpki webpki-root-certs webpki-roots tokio chacha20; do
+            echo "::group::cargo tree all-target feature paths: $crate"
+            if output="$(cargo tree --locked --target all -e features -i "$crate" 2>&1)"; then
+              printf '%s\n' "$output"
+              echo "ALL_TARGET_REACHABILITY[$crate]=PRESENT"
+            else
+              status=$?
+              printf '%s\n' "$output"
+              echo "ALL_TARGET_REACHABILITY[$crate]=NOT_FOUND (exit $status)"
             fi
             echo "::endgroup::"
           done
