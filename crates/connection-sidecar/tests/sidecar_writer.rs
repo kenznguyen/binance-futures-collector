@@ -488,7 +488,9 @@ fn validator_classifies_sealed_manifest_consistent_capture() {
     let mut writer = SidecarWriter::create(&path, SOURCE, SESSION).unwrap();
     writer.connect_attempted(&connection, START).unwrap();
     writer.connected(&connection, START + 1).unwrap();
-    writer.disconnected(&connection, DisconnectReason::Shutdown, START + 2).unwrap();
+    writer
+        .disconnected(&connection, DisconnectReason::Shutdown, START + 2)
+        .unwrap();
     writer.finalize(START + 2, START + 3).unwrap();
     drop(writer);
     let before_sidecar = fs::read(&path).unwrap();
