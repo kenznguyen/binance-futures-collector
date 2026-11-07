@@ -1,5 +1,5 @@
 use collector_connection_sidecar::{
-    ConnectionIdentity, ConnectFailureReason, DisconnectReason, Route, SidecarWriter,
+    ConnectFailureReason, ConnectionIdentity, DisconnectReason, Route, SidecarWriter,
 };
 use sha2::{Digest, Sha256};
 use std::fs;
@@ -40,8 +40,7 @@ fn writes_python_contract_jsonl_and_fsyncs_each_event_before_returning() {
     assert_eq!(first.lines().count(), 2);
     let attempted: serde_json::Value = serde_json::from_str(first.lines().next().unwrap()).unwrap();
     assert_eq!(attempted["eventType"], "CONNECT_ATTEMPTED");
-    let connected: serde_json::Value =
-        serde_json::from_str(first.lines().nth(1).unwrap()).unwrap();
+    let connected: serde_json::Value = serde_json::from_str(first.lines().nth(1).unwrap()).unwrap();
     assert_eq!(connected["schemaVersion"], 1);
     assert_eq!(connected["sourceCommit"], SOURCE);
     assert_eq!(connected["sessionId"], SESSION);
@@ -256,7 +255,6 @@ fn rejects_invalid_source_identity_and_reconnect_bounds() {
     fs::remove_file(path).unwrap();
 }
 
-
 #[test]
 fn records_pre_handshake_failures_and_allows_bounded_reconnect() {
     let path = temp_path("pre-handshake-failure");
@@ -265,13 +263,11 @@ fn records_pre_handshake_failures_and_allows_bounded_reconnect() {
 
     writer.connect_attempted(&connection, START).unwrap();
     writer
-        .connect_failed(
-            &connection,
-            ConnectFailureReason::Timeout,
-            START + 30_000,
-        )
+        .connect_failed(&connection, ConnectFailureReason::Timeout, START + 30_000)
         .unwrap();
-    writer.reconnect_scheduled(&connection, 1, 2_000, START + 30_001).unwrap();
+    writer
+        .reconnect_scheduled(&connection, 1, 2_000, START + 30_001)
+        .unwrap();
 
     let lines = fs::read_to_string(&path).unwrap();
     let events: Vec<serde_json::Value> = lines
