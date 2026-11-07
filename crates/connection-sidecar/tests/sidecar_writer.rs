@@ -510,7 +510,6 @@ fn validator_classifies_sealed_manifest_consistent_capture() {
     fs::remove_file(manifest_path).unwrap();
 }
 
-
 #[test]
 fn refuses_to_disconnect_or_finalize_with_an_unanswered_ping() {
     let path = temp_path("pending-ping-disconnect");
@@ -518,7 +517,9 @@ fn refuses_to_disconnect_or_finalize_with_an_unanswered_ping() {
     let mut writer = SidecarWriter::create(&path, SOURCE, SESSION).unwrap();
     writer.connect_attempted(&connection, START).unwrap();
     writer.connected(&connection, START + 1).unwrap();
-    writer.ping_sent(&connection, "hb-unanswered", START + 2).unwrap();
+    writer
+        .ping_sent(&connection, "hb-unanswered", START + 2)
+        .unwrap();
 
     let before = fs::read(&path).unwrap();
     assert!(writer
