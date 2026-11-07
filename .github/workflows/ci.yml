@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, feature/t1-connection-sidecar-integration-20261107]
   pull_request:
 
 env:
