@@ -180,12 +180,7 @@ impl SidecarWriter {
         }
 
         let path = path.as_ref().to_path_buf();
-        let file = OpenOptions::new()
-            .read(true)
-            .append(true)
-            .create_new(true)
-            .open(&path)?;
-        sync_parent_directory(&path)?;
+        let file = create_sidecar_file(&path, sync_parent_directory)?;
 
         Ok(Self {
             file,
@@ -817,6 +812,22 @@ impl SidecarWriter {
     }
 }
 
+
+/// Create the sidecar exclusively and sync its parent directory before returning it.
+/// The sync callback is injectable so the create/cleanup failure boundary can be tested.
+fn create_sidecar_file(
+    path: &Path,
+    sync_parent: impl FnOnce(&Path) -> io::Result<()>,
+) -> io::Result<File> {
+    let file = OpenOptions::new()
+        .read(true)
+        .append(true)
+        .create_new(true)
+        .open(path)?;
+    sync_parent(path)?;
+    Ok(file)
+}
+
 #[cfg(unix)]
 fn ensure_path_matches_open_file(file: &File, path: &Path) -> io::Result<()> {
     use std::os::unix::fs::MetadataExt;
@@ -1069,4 +1080,36 @@ pub fn validate_capture(path: impl AsRef<Path>) -> io::Result<CaptureValidation>
         event_count,
         sidecar_bytes: bytes.len() as u64,
     })
+}
+
+
+#[cfg(test)]
+mod create_cleanup_tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn removes_new_sidecar_when_parent_directory_sync_fails() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock must be after Unix epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "t1-sidecar-create-sync-failure-{}-{nonce}.jsonl",
+            std::process::id()
+        ));
+
+        let result = create_sidecar_file(&path, |_| {
+            Err(io::Error::new(
+                io::ErrorKind::Other,
+                "injected parent-directory sync failure",
+            ))
+        });
+
+        assert!(result.is_err(), "injected sync failure must be returned");
+        assert!(
+            !path.exists(),
+            "failed creation must not leave an orphan sidecar path"
+        );
+    }
 }
