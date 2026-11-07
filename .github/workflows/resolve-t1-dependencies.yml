@@ -1,6 +1,7 @@
 name: Resolve T1 security dependencies
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - feature/t1-connection-sidecar-integration-20261107
