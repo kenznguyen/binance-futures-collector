@@ -1257,4 +1257,76 @@ mod create_cleanup_tests {
 
         assert_eq!(error.to_string(), "injected directory sync failure");
     }
+
+    fn write_valid_manifest_fixture(sidecar_path: &Path) -> (PathBuf, PathBuf) {
+        let sidecar_bytes = b"{\"event\":\"TEST\"}\\n";
+        fs::write(sidecar_path, sidecar_bytes).expect("sidecar fixture must be written");
+        let digest = Sha256::digest(sidecar_bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let manifest_path = SidecarWriter::manifest_path(sidecar_path);
+        let temp_path = manifest_path.with_file_name(format!(
+            "{}.tmp-test",
+            manifest_path.file_name().unwrap().to_string_lossy()
+        ));
+        let manifest = serde_json::json!({
+            "schemaVersion": 1,
+            "sidecarFile": sidecar_path.file_name().unwrap().to_string_lossy(),
+            "sidecarBytes": sidecar_bytes.len(),
+            "sidecarSha256": digest,
+            "captureFinalized": true,
+            "eventCount": 1
+        });
+        fs::write(&temp_path, serde_json::to_vec(&manifest).unwrap())
+            .expect("temp manifest fixture must be written");
+        (manifest_path, temp_path)
+    }
+
+    #[test]
+    fn manifest_removal_failure_after_hard_link_leaves_valid_final_manifest_classifiable() {
+        let sidecar_path = unique_path("manifest-unlink-failure");
+        let (manifest_path, temp_path) = write_valid_manifest_fixture(&sidecar_path);
+        let error = publish_manifest_with(
+            &temp_path,
+            &manifest_path,
+            |temp, final_path| fs::hard_link(temp, final_path),
+            |_| Err(io::Error::new(io::ErrorKind::PermissionDenied, "injected unlink failure")),
+            |_| Ok(()),
+        ).expect_err("persistent temp removal failure must be returned");
+
+        assert!(error.to_string().contains("injected unlink failure"));
+        assert!(manifest_path.exists(), "hard-linked final manifest must remain visible");
+        assert!(temp_path.exists(), "failed temp cleanup must remain diagnosable");
+        assert!(matches!(
+            validate_capture(&sidecar_path).unwrap(),
+            CaptureValidation::SealedConsistent { event_count: 1, .. }
+        ));
+        fs::remove_file(&sidecar_path).unwrap();
+        fs::remove_file(&manifest_path).unwrap();
+        fs::remove_file(&temp_path).unwrap();
+    }
+
+    #[test]
+    fn directory_sync_failure_after_manifest_unlink_leaves_valid_final_manifest_classifiable() {
+        let sidecar_path = unique_path("manifest-dir-sync-failure");
+        let (manifest_path, temp_path) = write_valid_manifest_fixture(&sidecar_path);
+        let error = publish_manifest_with(
+            &temp_path,
+            &manifest_path,
+            |temp, final_path| fs::hard_link(temp, final_path),
+            |path| fs::remove_file(path),
+            |_| Err(io::Error::other("injected manifest directory sync failure")),
+        ).expect_err("directory sync failure must be returned");
+
+        assert!(error.to_string().contains("injected manifest directory sync failure"));
+        assert!(manifest_path.exists(), "final manifest must remain visible");
+        assert!(!temp_path.exists(), "temporary manifest should already be removed");
+        assert!(matches!(
+            validate_capture(&sidecar_path).unwrap(),
+            CaptureValidation::SealedConsistent { event_count: 1, .. }
+        ));
+        fs::remove_file(&sidecar_path).unwrap();
+        fs::remove_file(&manifest_path).unwrap();
+    }
 }
