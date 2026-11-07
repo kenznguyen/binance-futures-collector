@@ -1281,7 +1281,7 @@ mod create_cleanup_tests {
     }
 
     fn write_valid_manifest_fixture(sidecar_path: &Path) -> (PathBuf, PathBuf) {
-        let sidecar_bytes = b"{\"event\":\"TEST\"}\\n";
+        let sidecar_bytes = b"{\"event\":\"TEST\"}\n";
         fs::write(sidecar_path, sidecar_bytes).expect("sidecar fixture must be written");
         let digest = Sha256::digest(sidecar_bytes)
             .iter()
