@@ -472,22 +472,44 @@ impl SidecarWriter {
         self.file.flush()?;
         self.file.sync_all()?;
 
+        // Read one bounded snapshot from a single file handle. The manifest must
+        // describe exactly the bytes accounted for by this writer, not an
+        // out-of-band append, truncation, malformed line, or partial final line.
         let mut digest_file = File::open(&self.path)?;
-        let mut hasher = Sha256::new();
-        let mut buffer = [0_u8; 64 * 1024];
-        loop {
-            let read = digest_file.read(&mut buffer)?;
-            if read == 0 {
-                break;
-            }
-            hasher.update(&buffer[..read]);
+        let mut sidecar_content = Vec::new();
+        digest_file
+            .by_ref()
+            .take(MAX_FILE_BYTES + 1)
+            .read_to_end(&mut sidecar_content)?;
+        let opened_file_bytes = digest_file.metadata()?.len();
+        let sidecar_bytes = sidecar_content.len() as u64;
+        if sidecar_bytes != self.bytes_written || opened_file_bytes != sidecar_bytes {
+            return Err(invalid(
+                "sidecar byte length does not match bytes recorded by the writer",
+            ));
         }
-        let digest = hasher.finalize();
-        let sidecar_sha256 = digest
+        if sidecar_content.last() != Some(&b'\\n') {
+            return Err(invalid("sidecar must end with a complete JSONL record"));
+        }
+        let mut validated_events = 0_u64;
+        for line in sidecar_content.split(|byte| *byte == b'\\n').filter(|line| !line.is_empty()) {
+            let value: serde_json::Value = serde_json::from_slice(line)
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+            if !value.is_object() {
+                return Err(invalid("sidecar JSONL records must be JSON objects"));
+            }
+            validated_events += 1;
+        }
+        if validated_events != self.event_count {
+            return Err(invalid(
+                "sidecar JSONL record count does not match the writer event count",
+            ));
+        }
+
+        let sidecar_sha256 = Sha256::digest(&sidecar_content)
             .iter()
             .map(|byte| format!("{byte:02x}"))
             .collect::<String>();
-        let sidecar_bytes = fs::metadata(&self.path)?.len();
         let sidecar_file = self
             .path
             .file_name()
