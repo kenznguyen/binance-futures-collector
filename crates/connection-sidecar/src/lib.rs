@@ -666,11 +666,19 @@ impl SidecarWriter {
             temp_file.write_all(&manifest_bytes)?;
             temp_file.flush()?;
             temp_file.sync_all()?;
-            fs::hard_link(&temp_path, &manifest_path)?;
-            fs::remove_file(&temp_path)?;
-            temp_manifest_created = false;
-            sync_parent_directory(&manifest_path)?;
-            Ok(())
+            publish_manifest_with(
+                &temp_path,
+                &manifest_path,
+                |temp, final_path| fs::hard_link(temp, final_path),
+                |path| {
+                    let result = fs::remove_file(path);
+                    if result.is_ok() {
+                        temp_manifest_created = false;
+                    }
+                    result
+                },
+                sync_parent_directory,
+            )
         })();
         if let Err(publish_error) = publish_result {
             if temp_manifest_created {
@@ -819,6 +827,20 @@ impl SidecarWriter {
         self.last_event_at_ms = Some(event_at_ms);
         Ok(())
     }
+}
+
+/// Publish a synced temporary manifest, unlink its temporary name, then sync the parent directory.
+fn publish_manifest_with(
+    temp_path: &Path,
+    manifest_path: &Path,
+    hard_link: impl FnOnce(&Path, &Path) -> io::Result<()>,
+    remove_file: impl FnOnce(&Path) -> io::Result<()>,
+    sync_parent: impl FnOnce(&Path) -> io::Result<()>,
+) -> io::Result<()> {
+    hard_link(temp_path, manifest_path)?;
+    remove_file(temp_path)?;
+    sync_parent(manifest_path)?;
+    Ok(())
 }
 
 /// Preserve the publication error while reporting a failed temporary-manifest cleanup.
