@@ -1203,4 +1203,33 @@ mod create_cleanup_tests {
             "sidecar should be removed even when syncing the removal fails"
         );
     }
+    #[test]
+    fn manifest_cleanup_failure_is_reported_alongside_publication_failure() {
+        let path = unique_path("manifest-cleanup-failure");
+        let primary = io::Error::other("injected manifest publication failure");
+        let error = cleanup_temp_manifest_with(
+            &path,
+            primary,
+            |_| Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "injected temporary manifest cleanup failure",
+            )),
+        );
+
+        let message = error.to_string();
+        assert!(message.contains("injected manifest publication failure"));
+        assert!(message.contains("injected temporary manifest cleanup failure"));
+    }
+
+    #[test]
+    fn missing_temp_manifest_does_not_mask_publication_failure() {
+        let path = unique_path("manifest-already-removed");
+        let primary = io::Error::other("injected directory sync failure");
+        let error = cleanup_temp_manifest_with(&path, primary, |_| {
+            Err(io::Error::new(io::ErrorKind::NotFound, "already removed"))
+        });
+
+        assert_eq!(error.to_string(), "injected directory sync failure");
+    }
+
 }
