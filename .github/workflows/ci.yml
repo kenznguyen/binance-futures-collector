@@ -42,6 +42,24 @@ jobs:
       - name: Sidecar writer offline tests
         run: cargo test --manifest-path crates/connection-sidecar/Cargo.toml --all-targets
 
+      - name: Prepare standalone Linux Collector artifact
+        if: github.event_name == 'push'
+        run: |
+          test "$(uname -m)" = "x86_64"
+          cd target/release
+          sha256sum binance-futures-collector > SHA256SUMS
+
+      - name: Upload standalone Linux Collector artifact
+        if: github.event_name == 'push'
+        uses: actions/upload-artifact@v4
+        with:
+          name: t1-collector-linux-x86_64-${{ github.sha }}
+          path: |
+            target/release/binance-futures-collector
+            target/release/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 7
+
   dashboard-backend:
     name: dashboard backend · pytest
     runs-on: ubuntu-latest
