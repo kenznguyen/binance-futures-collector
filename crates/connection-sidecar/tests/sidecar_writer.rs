@@ -298,3 +298,33 @@ fn rejects_connected_without_a_prior_attempt_and_rejects_finalizing_pending_atte
     drop(writer);
     fs::remove_file(path).unwrap();
 }
+
+#[test]
+fn poisons_writer_when_manifest_publication_fails_closed() {
+    let path = temp_path("manifest-publication-failure");
+    let connection = identity(Route::Public);
+    let mut writer = SidecarWriter::create(&path, SOURCE, SESSION).unwrap();
+    writer.connect_attempted(&connection, START).unwrap();
+    writer.connected(&connection, START + 1).unwrap();
+    writer
+        .disconnected(&connection, DisconnectReason::Shutdown, START + 2)
+        .unwrap();
+
+    // Occupy the manifest destination so publication fails deterministically.
+    let manifest_path = SidecarWriter::manifest_path(&path);
+    fs::write(&manifest_path, b"pre-existing manifest").unwrap();
+    let before = fs::read(&path).unwrap();
+
+    assert!(writer.finalize(START + 2, START + 3).is_err());
+
+    // A failed seal must never leave the writer available for additional events.
+    assert!(writer
+        .reconnect_scheduled(&connection, 1, 2_000, START + 4)
+        .is_err());
+    assert_eq!(fs::read(&path).unwrap(), before);
+    assert_eq!(fs::read(&manifest_path).unwrap(), b"pre-existing manifest");
+
+    drop(writer);
+    fs::remove_file(path).unwrap();
+    fs::remove_file(manifest_path).unwrap();
+}
