@@ -698,3 +698,36 @@ fn refuses_to_send_new_ping_after_heartbeat_timeout_is_observed() {
     drop(writer);
     fs::remove_file(path).unwrap();
 }
+
+
+#[test]
+fn requires_heartbeat_timeout_reason_after_timeout_was_observed() {
+    let path = temp_path("heartbeat-timeout-reason");
+    let connection = identity(Route::Public);
+    let mut writer = SidecarWriter::create(&path, SOURCE, SESSION).unwrap();
+    writer.connect_attempted(&connection, START).unwrap();
+    writer.connected(&connection, START + 1).unwrap();
+    writer
+        .ping_sent(&connection, "hb-reason", START + 2)
+        .unwrap();
+    writer
+        .heartbeat_timed_out(&connection, "hb-reason", START + 2 + 60_001)
+        .unwrap();
+
+    let before = fs::read(&path).unwrap();
+    assert!(writer
+        .disconnected(
+            &connection,
+            DisconnectReason::TransportClosed,
+            START + 2 + 60_002,
+        )
+        .is_err());
+    assert_eq!(
+        fs::read(&path).unwrap(),
+        before,
+        "a timeout-observed connection must not be recorded with a different disconnect reason"
+    );
+
+    drop(writer);
+    fs::remove_file(path).unwrap();
+}
