@@ -1,5 +1,6 @@
 use collector_connection_sidecar::{
-    ConnectFailureReason, ConnectionIdentity, DisconnectReason, Route, SidecarWriter,
+    validate_capture, CaptureValidation, ConnectFailureReason, ConnectionIdentity,
+    DisconnectReason, Route, SidecarWriter,
 };
 use sha2::{Digest, Sha256};
 use std::fs;
