@@ -105,6 +105,23 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
+      - name: Dependency feature reachability diagnostics
+        shell: bash
+        run: |
+          set -u
+          for crate in quinn-proto rustls rustls-webpki webpki-root-certs webpki-roots tokio chacha20; do
+            echo "::group::cargo tree feature paths: $crate"
+            if output="$(cargo tree --locked -e features -i "$crate" 2>&1)"; then
+              printf '%s\\n' "$output"
+              echo "REACHABILITY[$crate]=PRESENT_IN_DEFAULT_GRAPH"
+            else
+              status=$?
+              printf '%s\\n' "$output"
+              echo "REACHABILITY[$crate]=NOT_IN_DEFAULT_GRAPH (exit $status)"
+            fi
+            echo "::endgroup::"
+          done
+
       - name: cargo-audit (Rust advisories)
         run: |
           cargo install cargo-audit --locked
