@@ -819,7 +819,7 @@ fn create_sidecar_file(
     path: &Path,
     sync_parent: impl FnMut(&Path) -> io::Result<()>,
 ) -> io::Result<File> {
-    create_sidecar_file_with_cleanup(path, sync_parent, fs::remove_file)
+    create_sidecar_file_with_cleanup(path, sync_parent, |path| fs::remove_file(path))
 }
 
 fn create_sidecar_file_with_cleanup(
@@ -1190,7 +1190,7 @@ mod create_cleanup_tests {
                     ))
                 }
             },
-            fs::remove_file,
+            |path| fs::remove_file(path),
         );
 
         let error = result.expect_err("cleanup directory sync failure must be returned");
