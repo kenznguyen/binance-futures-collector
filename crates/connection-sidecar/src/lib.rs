@@ -858,9 +858,10 @@ pub fn validate_capture(path: impl AsRef<Path>) -> io::Result<CaptureValidation>
     }
 
     let mut event_count = 0_u64;
+    let record_count = bytes.iter().filter(|byte| **byte == b'\n').count();
     for (index, line) in bytes
         .split(|byte| *byte == b'\n')
-        .take(bytes.len().saturating_sub(1))
+        .take(record_count)
         .enumerate()
     {
         let value: serde_json::Value = match serde_json::from_slice(line) {
