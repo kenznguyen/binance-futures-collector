@@ -142,13 +142,13 @@ jobs:
           fi
           echo "DIAGNOSTIC_CLASSIFIER_FIXTURES=4/4_PASS"
           packages=(
-            quinn-proto@0.11.16
-            rustls@0.23.43
-            rustls-webpki@0.103.14
-            webpki-root-certs@1.0.9
-            webpki-roots@1.0.9
-            tokio@1.53.1
-            chacha20@0.10.1
+            quinn-proto@0.11.18
+            rustls@0.23.46
+            rustls-webpki@0.103.16
+            webpki-root-certs@1.0.10
+            webpki-roots@1.0.10
+            tokio@1.53.3
+            chacha20@0.10.2
           )
           for package in "${packages[@]}"; do
             echo "::group::cargo tree default-feature reverse path: $package"
@@ -182,13 +182,13 @@ jobs:
             fi
           }
           packages=(
-            quinn-proto@0.11.16
-            rustls@0.23.43
-            rustls-webpki@0.103.14
-            webpki-root-certs@1.0.9
-            webpki-roots@1.0.9
-            tokio@1.53.1
-            chacha20@0.10.1
+            quinn-proto@0.11.18
+            rustls@0.23.46
+            rustls-webpki@0.103.16
+            webpki-root-certs@1.0.10
+            webpki-roots@1.0.10
+            tokio@1.53.3
+            chacha20@0.10.2
           )
           for package in "${packages[@]}"; do
             echo "::group::cargo tree all-target reverse path: $package"
