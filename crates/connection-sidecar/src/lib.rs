@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
@@ -809,7 +809,125 @@ pub enum CaptureValidation {
     SealedConsistent { event_count: u64, sidecar_bytes: u64 },
 }
 
-/// Offline validator API. Implementation follows after the test seam compiles.
-pub fn validate_capture(_path: impl AsRef<Path>) -> io::Result<CaptureValidation> {
-    Err(io::Error::new(io::ErrorKind::Unsupported, "capture validator is not implemented"))
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ManifestValidationFields {
+    schema_version: u8,
+    sidecar_file: String,
+    sidecar_bytes: u64,
+    sidecar_sha256: String,
+    capture_finalized: bool,
+    event_count: u64,
+}
+
+/// Validate a sidecar and its optional manifest without modifying either file.
+pub fn validate_capture(path: impl AsRef<Path>) -> io::Result<CaptureValidation> {
+    let path = path.as_ref();
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(invalid("sidecar path must be a regular, non-symlink file"));
+    }
+    if metadata.len() > MAX_FILE_BYTES {
+        return Err(invalid("sidecar file size limit exceeded"));
+    }
+
+    let mut file = File::open(path)?;
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    file.take(MAX_FILE_BYTES + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 != metadata.len() || bytes.len() as u64 > MAX_FILE_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "sidecar changed while the validator was reading its bounded snapshot",
+        ));
+    }
+
+    if !bytes.is_empty() && bytes.last() != Some(&b'\\n') {
+        let line_number = bytes.iter().filter(|byte| **byte == b'\\n').count() + 1;
+        return Ok(CaptureValidation::TruncatedFinalLine { line_number });
+    }
+
+    let mut event_count = 0_u64;
+    for (index, line) in bytes.split_terminator(|byte| *byte == b'\\n').enumerate() {
+        let value: serde_json::Value = match serde_json::from_slice(line) {
+            Ok(value) => value,
+            Err(_) => {
+                return Ok(CaptureValidation::MalformedJsonl {
+                    line_number: index + 1,
+                });
+            }
+        };
+        if !value.is_object() {
+            return Ok(CaptureValidation::MalformedJsonl {
+                line_number: index + 1,
+            });
+        }
+        event_count += 1;
+        if event_count > MAX_EVENTS {
+            return Err(invalid("sidecar event count limit exceeded"));
+        }
+    }
+
+    let manifest_path = SidecarWriter::manifest_path(path);
+    let manifest_metadata = match fs::symlink_metadata(&manifest_path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Ok(CaptureValidation::UnsealedValid {
+                sidecar_bytes: bytes.len() as u64,
+                event_count,
+            });
+        }
+        Err(error) => return Err(error),
+    };
+    if manifest_metadata.file_type().is_symlink()
+        || !manifest_metadata.is_file()
+        || manifest_metadata.len() > 1024 * 1024
+    {
+        return Ok(CaptureValidation::ManifestMismatch {
+            reason: "manifest is not a bounded regular file".to_string(),
+        });
+    }
+
+    let manifest_bytes = fs::read(&manifest_path)?;
+    let manifest: ManifestValidationFields = match serde_json::from_slice(&manifest_bytes) {
+        Ok(manifest) => manifest,
+        Err(error) => {
+            return Ok(CaptureValidation::ManifestMismatch {
+                reason: format!("manifest JSON is invalid: {error}"),
+            });
+        }
+    };
+    let expected_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
+    let digest = Sha256::digest(&bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+
+    let mismatch = if manifest.schema_version != 1 {
+        Some("unsupported manifest schema version")
+    } else if !manifest.capture_finalized {
+        Some("manifest does not declare a finalized capture")
+    } else if manifest.sidecar_file != expected_name {
+        Some("manifest sidecar filename does not match the validated file")
+    } else if manifest.sidecar_bytes != bytes.len() as u64 {
+        Some("manifest sidecar byte count does not match")
+    } else if manifest.sidecar_sha256 != digest {
+        Some("manifest sidecar SHA-256 does not match")
+    } else if manifest.event_count != event_count {
+        Some("manifest event count does not match JSONL records")
+    } else {
+        None
+    };
+    if let Some(reason) = mismatch {
+        return Ok(CaptureValidation::ManifestMismatch {
+            reason: reason.to_string(),
+        });
+    }
+
+    Ok(CaptureValidation::SealedConsistent {
+        event_count,
+        sidecar_bytes: bytes.len() as u64,
+    })
 }
