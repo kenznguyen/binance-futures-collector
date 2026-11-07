@@ -200,41 +200,88 @@ impl SidecarWriter {
     }
 
     /// Durably record the attempt before opening the TCP/WebSocket handshake.
-    pub fn connect_attempted(&mut self, identity: &ConnectionIdentity, event_at_ms: u64) -> io::Result<()> {
+    pub fn connect_attempted(
+        &mut self,
+        identity: &ConnectionIdentity,
+        event_at_ms: u64,
+    ) -> io::Result<()> {
         self.ensure_usable()?;
         validate_identity(identity)?;
         if self.connections.contains_key(&identity.connection_id) {
             return Err(invalid("connection_id may be opened only once per session"));
         }
-        self.append_event(identity, "CONNECT_ATTEMPTED", event_at_ms, None, None, None, None,
+        self.append_event(
+            identity,
+            "CONNECT_ATTEMPTED",
+            event_at_ms,
+            None,
+            None,
+            None,
+            None,
             Some(identity.subscriptions.len()),
-            Some(subscription_set_sha256(&identity.subscriptions)))?;
-        self.connections.insert(identity.connection_id.clone(), ConnectionState {
-            identity: identity.clone(),
-            lifecycle: Lifecycle::Connecting,
-            heartbeat_ids: HashSet::new(),
-            pending_pings: HashMap::new(),
-            reconnect_scheduled: false,
-        });
+            Some(subscription_set_sha256(&identity.subscriptions)),
+        )?;
+        self.connections.insert(
+            identity.connection_id.clone(),
+            ConnectionState {
+                identity: identity.clone(),
+                lifecycle: Lifecycle::Connecting,
+                heartbeat_ids: HashSet::new(),
+                pending_pings: HashMap::new(),
+                reconnect_scheduled: false,
+            },
+        );
         Ok(())
     }
 
     /// Record a DNS, transport, timeout, or handshake failure before CONNECTED.
-    pub fn connect_failed(&mut self, identity: &ConnectionIdentity, reason: ConnectFailureReason, event_at_ms: u64) -> io::Result<()> {
+    pub fn connect_failed(
+        &mut self,
+        identity: &ConnectionIdentity,
+        reason: ConnectFailureReason,
+        event_at_ms: u64,
+    ) -> io::Result<()> {
         self.ensure_connecting(identity)?;
-        self.append_event(identity, "CONNECT_FAILED", event_at_ms, None, Some(reason.as_str()),
-            None, None, None, None)?;
-        self.connections.get_mut(&identity.connection_id).expect("checked above").lifecycle = Lifecycle::Disconnected;
+        self.append_event(
+            identity,
+            "CONNECT_FAILED",
+            event_at_ms,
+            None,
+            Some(reason.as_str()),
+            None,
+            None,
+            None,
+            None,
+        )?;
+        self.connections
+            .get_mut(&identity.connection_id)
+            .expect("checked above")
+            .lifecycle = Lifecycle::Disconnected;
         Ok(())
     }
 
     /// A successful handshake can only follow a durable CONNECT_ATTEMPTED event.
-    pub fn connected(&mut self, identity: &ConnectionIdentity, event_at_ms: u64) -> io::Result<()> {
+    pub fn connected(
+        &mut self,
+        identity: &ConnectionIdentity,
+        event_at_ms: u64,
+    ) -> io::Result<()> {
         self.ensure_connecting(identity)?;
-        self.append_event(identity, "CONNECTED", event_at_ms, None, None, None, None,
+        self.append_event(
+            identity,
+            "CONNECTED",
+            event_at_ms,
+            None,
+            None,
+            None,
+            None,
             Some(identity.subscriptions.len()),
-            Some(subscription_set_sha256(&identity.subscriptions)))?;
-        self.connections.get_mut(&identity.connection_id).expect("checked above").lifecycle = Lifecycle::Connected;
+            Some(subscription_set_sha256(&identity.subscriptions)),
+        )?;
+        self.connections
+            .get_mut(&identity.connection_id)
+            .expect("checked above")
+            .lifecycle = Lifecycle::Connected;
         Ok(())
     }
 
@@ -534,10 +581,14 @@ impl SidecarWriter {
     fn ensure_connecting(&self, identity: &ConnectionIdentity) -> io::Result<&ConnectionState> {
         self.ensure_usable()?;
         validate_identity(identity)?;
-        let state = self.connections.get(&identity.connection_id)
+        let state = self
+            .connections
+            .get(&identity.connection_id)
             .ok_or_else(|| invalid("event references an unknown connection_id"))?;
         if state.identity != *identity {
-            return Err(invalid("connection_id reused with a different batch, route, or subscription set"));
+            return Err(invalid(
+                "connection_id reused with a different batch, route, or subscription set",
+            ));
         }
         if state.lifecycle != Lifecycle::Connecting {
             return Err(invalid("event requires a pending connection attempt"));
