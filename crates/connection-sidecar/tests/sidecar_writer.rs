@@ -738,7 +738,9 @@ fn resolves_other_pending_ping_after_one_heartbeat_times_out() {
     let mut writer = SidecarWriter::create(&path, SOURCE, SESSION).unwrap();
     writer.connect_attempted(&connection, START).unwrap();
     writer.connected(&connection, START + 1).unwrap();
-    writer.ping_sent(&connection, "hb-expired", START + 2).unwrap();
+    writer
+        .ping_sent(&connection, "hb-expired", START + 2)
+        .unwrap();
     writer.ping_sent(&connection, "hb-live", START + 3).unwrap();
 
     let timeout_at = START + 2 + 60_001;
@@ -757,11 +759,7 @@ fn resolves_other_pending_ping_after_one_heartbeat_times_out() {
     assert_eq!(fs::read(&path).unwrap(), before_rejected_pong);
 
     writer
-        .disconnected(
-            &connection,
-            DisconnectReason::HeartbeatTimeout,
-            timeout_at,
-        )
+        .disconnected(&connection, DisconnectReason::HeartbeatTimeout, timeout_at)
         .unwrap();
     writer.finalize(timeout_at, timeout_at + 1).unwrap();
 
