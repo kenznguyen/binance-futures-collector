@@ -1291,13 +1291,25 @@ mod create_cleanup_tests {
             &temp_path,
             &manifest_path,
             |temp, final_path| fs::hard_link(temp, final_path),
-            |_| Err(io::Error::new(io::ErrorKind::PermissionDenied, "injected unlink failure")),
+            |_| {
+                Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "injected unlink failure",
+                ))
+            },
             |_| Ok(()),
-        ).expect_err("persistent temp removal failure must be returned");
+        )
+        .expect_err("persistent temp removal failure must be returned");
 
         assert!(error.to_string().contains("injected unlink failure"));
-        assert!(manifest_path.exists(), "hard-linked final manifest must remain visible");
-        assert!(temp_path.exists(), "failed temp cleanup must remain diagnosable");
+        assert!(
+            manifest_path.exists(),
+            "hard-linked final manifest must remain visible"
+        );
+        assert!(
+            temp_path.exists(),
+            "failed temp cleanup must remain diagnosable"
+        );
         assert!(matches!(
             validate_capture(&sidecar_path).unwrap(),
             CaptureValidation::SealedConsistent { event_count: 1, .. }
@@ -1317,11 +1329,19 @@ mod create_cleanup_tests {
             |temp, final_path| fs::hard_link(temp, final_path),
             |path| fs::remove_file(path),
             |_| Err(io::Error::other("injected manifest directory sync failure")),
-        ).expect_err("directory sync failure must be returned");
+        )
+        .expect_err("directory sync failure must be returned");
 
-        assert!(error.to_string().contains("injected manifest directory sync failure"));
+        assert!(
+            error
+                .to_string()
+                .contains("injected manifest directory sync failure")
+        );
         assert!(manifest_path.exists(), "final manifest must remain visible");
-        assert!(!temp_path.exists(), "temporary manifest should already be removed");
+        assert!(
+            !temp_path.exists(),
+            "temporary manifest should already be removed"
+        );
         assert!(matches!(
             validate_capture(&sidecar_path).unwrap(),
             CaptureValidation::SealedConsistent { event_count: 1, .. }
