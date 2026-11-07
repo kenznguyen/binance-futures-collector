@@ -1,0 +1,1 @@
+Temporary trigger for exact-head GitHub Actions verification; safe to delete after workflow creation.
