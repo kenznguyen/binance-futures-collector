@@ -1207,14 +1207,12 @@ mod create_cleanup_tests {
     fn manifest_cleanup_failure_is_reported_alongside_publication_failure() {
         let path = unique_path("manifest-cleanup-failure");
         let primary = io::Error::other("injected manifest publication failure");
-        let error = cleanup_temp_manifest_with(
-            &path,
-            primary,
-            |_| Err(io::Error::new(
+        let error = cleanup_temp_manifest_with(&path, primary, |_| {
+            Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "injected temporary manifest cleanup failure",
-            )),
-        );
+            ))
+        });
 
         let message = error.to_string();
         assert!(message.contains("injected manifest publication failure"));
