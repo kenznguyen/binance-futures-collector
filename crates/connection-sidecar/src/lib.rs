@@ -542,6 +542,9 @@ impl SidecarWriter {
         let manifest_bytes = serde_json::to_vec_pretty(&manifest)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
 
+        // Finalization is terminal: fail closed before publication so any error,
+        // including one after the manifest hard-link succeeds, cannot permit later appends.
+        self.poisoned = true;
         let publish_result = (|| -> io::Result<()> {
             let mut temp_file = OpenOptions::new()
                 .write(true)
