@@ -312,7 +312,12 @@ impl SidecarWriter {
         heartbeat_id: &str,
         event_at_ms: u64,
     ) -> io::Result<()> {
-        self.ensure_connected(identity)?;
+        let state = self.ensure_connected(identity)?;
+        if state.heartbeat_timeout_observed {
+            return Err(invalid(
+                "cannot send a Ping after a heartbeat timeout was observed",
+            ));
+        }
         if heartbeat_id.is_empty() || heartbeat_id.len() > 128 {
             return Err(invalid("heartbeat_id must contain 1..=128 bytes"));
         }
