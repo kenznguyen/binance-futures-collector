@@ -1098,8 +1098,7 @@ mod create_cleanup_tests {
         ));
 
         let result = create_sidecar_file(&path, |_| {
-            Err(io::Error::new(
-                io::ErrorKind::Other,
+            Err(io::Error::other(
                 "injected parent-directory sync failure",
             ))
         });
