@@ -446,6 +446,11 @@ impl SidecarWriter {
                 "heartbeat-timeout disconnect requires a recorded PING_TIMEOUT event",
             ));
         }
+        if state.heartbeat_timeout_observed && reason != DisconnectReason::HeartbeatTimeout {
+            return Err(invalid(
+                "a connection with a recorded PING_TIMEOUT must disconnect for heartbeat timeout",
+            ));
+        }
         self.append_event(
             identity,
             "DISCONNECTED",
