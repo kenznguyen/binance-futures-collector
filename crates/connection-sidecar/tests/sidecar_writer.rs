@@ -114,6 +114,7 @@ fn rejects_non_monotonic_timestamps_without_appending() {
     let path = temp_path("ordering");
     let connection = identity(Route::Public);
     let mut writer = SidecarWriter::create(&path, SOURCE, SESSION).unwrap();
+    writer.connect_attempted(&connection, START + 9).unwrap();
     writer.connected(&connection, START + 10).unwrap();
 
     assert!(writer.ping_sent(&connection, "hb-1", START + 9).is_err());
