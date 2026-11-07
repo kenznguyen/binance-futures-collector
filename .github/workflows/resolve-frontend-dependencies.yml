@@ -1,0 +1,61 @@
+name: Resolve frontend transitive security updates
+
+on:
+  push:
+    branches: [feature/t1-connection-sidecar-integration-20261107]
+    paths:
+      - ".github/workflows/resolve-frontend-dependencies.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dashboard/frontend
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/t1-connection-sidecar-integration-20261107
+          persist-credentials: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: dashboard/frontend/package-lock.json
+
+      - name: Resolve patched transitive packages in lockfile only
+        run: |
+          npm update source-map-js postcss-selector-parser --package-lock-only --ignore-scripts
+          git diff --exit-code -- package.json
+
+      - name: Verify patched versions and production audit
+        run: |
+          node -e "const l=require('./package-lock.json'); const a=l.packages['node_modules/source-map-js']?.version; const b=l.packages['node_modules/postcss-selector-parser']?.version; console.log({sourceMapJs:a,postcssSelectorParser:b}); if (!a || !((a.split('.').map(Number)[0] > 1) || (a.split('.').map(Number)[0]===1 && (a.split('.').map(Number)[1] > 2 || (a.split('.').map(Number)[1]===2 && a.split('.').map(Number)[2]>=2))))) process.exit(1); if (!b || !((b.split('.').map(Number)[0] > 6) || (b.split('.').map(Number)[0]===6 && (b.split('.').map(Number)[1] > 1 || (b.split('.').map(Number)[1]===1 && b.split('.').map(Number)[2]>=5))))) process.exit(1)"
+          npm audit --omit=dev --audit-level=high
+
+      - name: Clean install, build, and tests
+        run: |
+          npm ci
+          npm run build
+          npm test
+
+      - name: Full dependency audit (informational, same policy as CI)
+        continue-on-error: true
+        run: npm audit --audit-level=high
+
+      - name: Commit lockfile-only remediation
+        working-directory: .
+        run: |
+          if git diff --quiet -- dashboard/frontend/package-lock.json; then
+            echo "No lockfile changes were produced."
+            exit 1
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add dashboard/frontend/package-lock.json
+          git commit -m "fix(frontend): patch vulnerable transitive dependencies"
+          git push origin HEAD:feature/t1-connection-sidecar-integration-20261107
