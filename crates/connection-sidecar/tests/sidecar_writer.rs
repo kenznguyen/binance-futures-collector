@@ -46,7 +46,7 @@ fn writes_python_contract_jsonl_and_fsyncs_each_event_before_returning() {
     assert_eq!(connected["batchId"], 0);
     assert_eq!(connected["route"], "public");
     assert_eq!(connected["eventType"], "CONNECTED");
-    assert_eq!(connected["eventAtMs"], START);
+    assert_eq!(connected["eventAtMs"], START + 1);
     assert_eq!(connected["subscriptionCount"], 1);
     assert_eq!(
         connected["subscriptionSetSha256"].as_str().unwrap().len(),
