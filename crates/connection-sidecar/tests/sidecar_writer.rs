@@ -328,3 +328,27 @@ fn poisons_writer_when_manifest_publication_fails_closed() {
     fs::remove_file(path).unwrap();
     fs::remove_file(manifest_path).unwrap();
 }
+
+#[test]
+fn poisons_writer_when_sidecar_readback_fails_during_finalization() {
+    let path = temp_path("finalize-readback-failure");
+    let connection = identity(Route::Public);
+    let mut writer = SidecarWriter::create(&path, SOURCE, SESSION).unwrap();
+    writer.connect_attempted(&connection, START).unwrap();
+    writer.connected(&connection, START + 1).unwrap();
+    writer
+        .disconnected(&connection, DisconnectReason::Shutdown, START + 2)
+        .unwrap();
+
+    // Keep the writer's file descriptor open but remove its pathname. The
+    // flush/sync calls succeed; opening the path for digest readback must fail.
+    fs::remove_file(&path).unwrap();
+    assert!(writer.finalize(START + 2, START + 3).is_err());
+
+    // The failed seal is terminal: no further event may be appended.
+    assert!(writer
+        .reconnect_scheduled(&connection, 1, 2_000, START + 4)
+        .is_err());
+    assert!(!SidecarWriter::manifest_path(&path).exists());
+    drop(writer);
+}
