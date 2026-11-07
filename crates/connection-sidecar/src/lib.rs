@@ -145,6 +145,7 @@ struct ConnectionState {
     lifecycle: Lifecycle,
     heartbeat_ids: HashSet<String>,
     pending_pings: HashMap<String, u64>,
+    heartbeat_timeout_observed: bool,
     reconnect_scheduled: bool,
 }
 
@@ -251,6 +252,7 @@ impl SidecarWriter {
                 lifecycle: Lifecycle::Connecting,
                 heartbeat_ids: HashSet::new(),
                 pending_pings: HashMap::new(),
+                heartbeat_timeout_observed: false,
                 reconnect_scheduled: false,
             },
         );
@@ -383,6 +385,43 @@ impl SidecarWriter {
         Ok(())
     }
 
+    /// Durably resolve one outstanding Ping after the 60-second timeout threshold.
+    pub fn heartbeat_timed_out(
+        &mut self,
+        identity: &ConnectionIdentity,
+        heartbeat_id: &str,
+        event_at_ms: u64,
+    ) -> io::Result<()> {
+        self.ensure_connected(identity)?;
+        let sent_at = self
+            .connections
+            .get(&identity.connection_id)
+            .and_then(|state| state.pending_pings.get(heartbeat_id).copied())
+            .ok_or_else(|| invalid("heartbeat timeout has no matching outstanding Ping"))?;
+        if event_at_ms < sent_at || event_at_ms - sent_at <= MAX_RECONNECT_DELAY_MS {
+            return Err(invalid("heartbeat timeout requires more than 60 seconds elapsed"));
+        }
+
+        self.append_event(
+            identity,
+            "PING_TIMEOUT",
+            event_at_ms,
+            Some(heartbeat_id),
+            Some("HEARTBEAT_TIMEOUT"),
+            None,
+            None,
+            None,
+            None,
+        )?;
+        let state = self
+            .connections
+            .get_mut(&identity.connection_id)
+            .expect("checked above");
+        state.pending_pings.remove(heartbeat_id);
+        state.heartbeat_timeout_observed = true;
+        Ok(())
+    }
+
     pub fn disconnected(
         &mut self,
         identity: &ConnectionIdentity,
@@ -393,6 +432,11 @@ impl SidecarWriter {
         if !state.pending_pings.is_empty() {
             return Err(invalid(
                 "cannot disconnect while heartbeat Pings remain unanswered",
+            ));
+        }
+        if reason == DisconnectReason::HeartbeatTimeout && !state.heartbeat_timeout_observed {
+            return Err(invalid(
+                "heartbeat-timeout disconnect requires a recorded PING_TIMEOUT event",
             ));
         }
         self.append_event(
