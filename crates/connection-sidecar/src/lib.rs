@@ -261,11 +261,7 @@ impl SidecarWriter {
     }
 
     /// A successful handshake can only follow a durable CONNECT_ATTEMPTED event.
-    pub fn connected(
-        &mut self,
-        identity: &ConnectionIdentity,
-        event_at_ms: u64,
-    ) -> io::Result<()> {
+    pub fn connected(&mut self, identity: &ConnectionIdentity, event_at_ms: u64) -> io::Result<()> {
         self.ensure_connecting(identity)?;
         self.append_event(
             identity,
