@@ -465,6 +465,10 @@ impl SidecarWriter {
             ));
         }
 
+        // Once finalization passes validation it is terminal. Poison before the
+        // first filesystem operation so flush, sync, readback, metadata, and
+        // publication failures can never leave the writer available for appends.
+        self.poisoned = true;
         self.file.flush()?;
         self.file.sync_all()?;
 
@@ -542,9 +546,7 @@ impl SidecarWriter {
         let manifest_bytes = serde_json::to_vec_pretty(&manifest)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
 
-        // Finalization is terminal: fail closed before publication so any error,
-        // including one after the manifest hard-link succeeds, cannot permit later appends.
-        self.poisoned = true;
+        // Finalization was made terminal before the first filesystem operation.
         let publish_result = (|| -> io::Result<()> {
             let mut temp_file = OpenOptions::new()
                 .write(true)
