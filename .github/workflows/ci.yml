@@ -122,19 +122,28 @@ jobs:
             echo "::endgroup::"
           done
 
-      - name: All-target dependency feature reachability diagnostics
+      - name: All-target exact package reachability diagnostics
         shell: bash
         run: |
           set -u
-          for crate in quinn-proto rustls rustls-webpki webpki-root-certs webpki-roots tokio chacha20; do
-            echo "::group::cargo tree all-target feature paths: $crate"
-            if output="$(cargo tree --locked --target all -e features -i "$crate" 2>&1)"; then
+          packages=(
+            quinn-proto@0.11.16
+            rustls@0.23.43
+            rustls-webpki@0.103.14
+            webpki-root-certs@1.0.9
+            webpki-roots@1.0.9
+            tokio@1.53.1
+            chacha20@0.10.1
+          )
+          for package in "${packages[@]}"; do
+            echo "::group::cargo tree all-target reverse path: $package"
+            if output="$(cargo tree --locked --target all -i "$package" 2>&1)"; then
               printf '%s\n' "$output"
-              echo "ALL_TARGET_REACHABILITY[$crate]=PRESENT"
+              echo "ALL_TARGET_PACKAGE_REACHABILITY[$package]=PRESENT"
             else
               status=$?
               printf '%s\n' "$output"
-              echo "ALL_TARGET_REACHABILITY[$crate]=NOT_FOUND (exit $status)"
+              echo "ALL_TARGET_PACKAGE_REACHABILITY[$package]=NOT_REACHABLE_OR_NOT_RESOLVED (exit $status)"
             fi
             echo "::endgroup::"
           done
