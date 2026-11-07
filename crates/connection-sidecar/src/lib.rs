@@ -228,7 +228,9 @@ impl SidecarWriter {
             .checked_add(subscription_bytes)
             .ok_or_else(|| invalid("session subscription byte count overflow"))?;
         if aggregate_subscription_bytes > MAX_SESSION_SUBSCRIPTION_BYTES {
-            return Err(invalid("session subscription metadata exceeds the 1 MiB bound"));
+            return Err(invalid(
+                "session subscription metadata exceeds the 1 MiB bound",
+            ));
         }
         self.append_event(
             identity,
@@ -389,7 +391,9 @@ impl SidecarWriter {
     ) -> io::Result<()> {
         let state = self.ensure_connected(identity)?;
         if !state.pending_pings.is_empty() {
-            return Err(invalid("cannot disconnect while heartbeat Pings remain unanswered"));
+            return Err(invalid(
+                "cannot disconnect while heartbeat Pings remain unanswered",
+            ));
         }
         self.append_event(
             identity,
@@ -595,7 +599,9 @@ impl SidecarWriter {
         let manifest_bytes = serde_json::to_vec_pretty(&manifest)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
         if manifest_bytes.len() > MAX_MANIFEST_BYTES {
-            return Err(invalid("serialized capture manifest exceeds the 1 MiB bound"));
+            return Err(invalid(
+                "serialized capture manifest exceeds the 1 MiB bound",
+            ));
         }
 
         // Finalization was made terminal before the first filesystem operation.
@@ -766,7 +772,9 @@ fn ensure_path_matches_open_file(file: &File, path: &Path) -> io::Result<()> {
         || open_metadata.dev() != path_metadata.dev()
         || open_metadata.ino() != path_metadata.ino()
     {
-        return Err(invalid("sidecar path no longer identifies the writer's open file"));
+        return Err(invalid(
+            "sidecar path no longer identifies the writer's open file",
+        ));
     }
     Ok(())
 }
@@ -779,7 +787,9 @@ fn ensure_path_matches_open_file(file: &File, path: &Path) -> io::Result<()> {
         || !path_metadata.is_file()
         || open_metadata.len() != path_metadata.len()
     {
-        return Err(invalid("sidecar path no longer matches the writer's open file"));
+        return Err(invalid(
+            "sidecar path no longer matches the writer's open file",
+        ));
     }
     Ok(())
 }
