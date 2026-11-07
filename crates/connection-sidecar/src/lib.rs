@@ -797,3 +797,19 @@ fn sync_parent_directory(_path: &Path) -> io::Result<()> {
     // Directory handles cannot be synced portably through std on every target.
     Ok(())
 }
+
+
+/// Read-only classification of a captured connection-sidecar file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CaptureValidation {
+    UnsealedValid { sidecar_bytes: u64, event_count: u64 },
+    TruncatedFinalLine { line_number: usize },
+    MalformedJsonl { line_number: usize },
+    ManifestMismatch { reason: String },
+    SealedConsistent { event_count: u64, sidecar_bytes: u64 },
+}
+
+/// Offline validator API. Implementation follows after the test seam compiles.
+pub fn validate_capture(_path: impl AsRef<Path>) -> io::Result<CaptureValidation> {
+    Err(io::Error::new(io::ErrorKind::Unsupported, "capture validator is not implemented"))
+}
