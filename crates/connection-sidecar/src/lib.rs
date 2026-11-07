@@ -812,7 +812,6 @@ impl SidecarWriter {
     }
 }
 
-
 /// Create the sidecar exclusively and sync its parent directory before returning it.
 /// The sync callback is injectable so the create/cleanup failure boundary can be tested.
 fn create_sidecar_file(
@@ -1081,7 +1080,6 @@ pub fn validate_capture(path: impl AsRef<Path>) -> io::Result<CaptureValidation>
         sidecar_bytes: bytes.len() as u64,
     })
 }
-
 
 #[cfg(test)]
 mod create_cleanup_tests {
