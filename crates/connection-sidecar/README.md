@@ -93,3 +93,28 @@ Each unique socket-attempt ID follows one of these paths:
 - `CONNECT_ATTEMPTED → CONNECT_FAILED`
 
 Both terminal events may be followed by one `RECONNECT_SCHEDULED`. A later retry must use a new `connectionId`; the upstream stable logical (batch, route) key is not a socket-attempt ID. A session cannot be finalized while any attempt remains unresolved.
+
+
+## Interpreting finalization and completeness
+
+The sidecar has three distinct properties. They must not be treated as interchangeable:
+
+1. **Durable event persistence** means a writer method returned after its JSONL line was flushed and `sync_data()` completed. This is evidence that the sidecar event was persisted according to the writer's filesystem contract. It says nothing about market-data messages that were never delivered to, or never submitted to, this writer.
+2. **Manifest consistency** means the finalized manifest agrees with the sidecar snapshot's filename, schema version, byte count, SHA-256 and JSONL event count. The offline `validate_capture()` result `SealedConsistent` establishes this structural agreement for the files it read. It is not proof that the exchange stream was complete, that every expected subscription delivered data, or that no market-data event was lost.
+3. **Market-data completeness** is a separate claim that requires independent evidence about the actual market-data streams and their expected coverage. This connection sidecar does not collect or validate market-data payloads, trade IDs, kline buckets, order-book update-ID continuity, REST poll coverage, or downstream ingestion.
+
+### The watermark is a caller assertion
+
+`capture_complete_through_ms` is supplied by the caller to `finalize()`. The writer checks only local ordering constraints: the watermark must not precede the final sidecar event, and `finalized_at_ms` must not precede the watermark. The writer does not query Binance, inspect market-data files, reconcile stream sequence IDs, inspect gap registries, or independently establish that collection continued without interruption through that time.
+
+Therefore:
+
+- A watermark records what the caller asserts as its intended completeness boundary; it is not independently verified evidence of market-data coverage.
+- `capture_finalized: true` means the sidecar finalization procedure completed and the manifest was published. It does not mean a market-data capture session is complete.
+- `SealedConsistent` means the JSONL and manifest agree structurally. It does not certify market-data completeness or correctness.
+- A valid JSONL file without a manifest is `UnsealedValid`: it is incomplete from the sidecar-finalization perspective and must not be promoted to a completed capture.
+- A missing manifest must never be interpreted as success, and validation must never repair, truncate, append to, or resume the source files.
+
+A downstream system may claim market-data completeness only after it performs and records its own stream-specific coverage checks (for example, order-book update-ID continuity, trade-ID continuity where applicable, expected kline bucket coverage, REST metric sampling windows, reconnect/gap reconciliation, and explicit handling of unavailable or unsupported coverage). Those checks are outside this crate's contract.
+
+**Safe status vocabulary:** report sidecar persistence, manifest consistency, and market-data completeness as separate statuses. If only this crate's evidence is available, report at most `sidecar_persisted` / `manifest_consistent`; report market-data completeness as `unknown` or `not_verified`, never infer it from the watermark or manifest alone.
