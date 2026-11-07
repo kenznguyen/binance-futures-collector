@@ -509,3 +509,95 @@ fn validator_classifies_sealed_manifest_consistent_capture() {
     fs::remove_file(path).unwrap();
     fs::remove_file(manifest_path).unwrap();
 }
+
+
+#[test]
+fn refuses_to_disconnect_or_finalize_with_an_unanswered_ping() {
+    let path = temp_path("pending-ping-disconnect");
+    let connection = identity(Route::Public);
+    let mut writer = SidecarWriter::create(&path, SOURCE, SESSION).unwrap();
+    writer.connect_attempted(&connection, START).unwrap();
+    writer.connected(&connection, START + 1).unwrap();
+    writer.ping_sent(&connection, "hb-unanswered", START + 2).unwrap();
+
+    let before = fs::read(&path).unwrap();
+    assert!(writer
+        .disconnected(&connection, DisconnectReason::RemoteClose, START + 3)
+        .is_err());
+    assert_eq!(fs::read(&path).unwrap(), before);
+    assert!(writer.finalize(START + 2, START + 4).is_err());
+    assert!(!SidecarWriter::manifest_path(&path).exists());
+
+    drop(writer);
+    fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn enforces_aggregate_subscription_budget_across_the_session() {
+    let path = temp_path("aggregate-subscription-budget");
+    let mut writer = SidecarWriter::create(&path, SOURCE, SESSION).unwrap();
+
+    let subscriptions = (0..2_400)
+        .map(|index| format!("{}-{index:04}", "x".repeat(240)))
+        .collect::<Vec<_>>();
+    let first = ConnectionIdentity {
+        connection_id: "socket-aggregate-001".to_string(),
+        batch_id: 1,
+        route: Route::Public,
+        subscriptions: subscriptions.clone(),
+    };
+    let second = ConnectionIdentity {
+        connection_id: "socket-aggregate-002".to_string(),
+        batch_id: 2,
+        route: Route::Market,
+        subscriptions,
+    };
+
+    writer.connect_attempted(&first, START).unwrap();
+    let before = fs::read(&path).unwrap();
+    assert!(writer.connect_attempted(&second, START + 1).is_err());
+    assert_eq!(fs::read(&path).unwrap(), before);
+
+    drop(writer);
+    fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn refuses_to_finalize_when_sidecar_path_is_replaced_with_same_size_valid_jsonl() {
+    let path = temp_path("same-size-path-replacement");
+    let backup = path.with_extension("original.jsonl");
+    let connection = identity(Route::Public);
+    let mut writer = SidecarWriter::create(&path, SOURCE, SESSION).unwrap();
+    writer.connect_attempted(&connection, START).unwrap();
+    writer.connected(&connection, START + 1).unwrap();
+    writer
+        .disconnected(&connection, DisconnectReason::Shutdown, START + 2)
+        .unwrap();
+
+    let original = fs::read(&path).unwrap();
+    let mut replacement = original.clone();
+    let source_offset = replacement
+        .windows(SOURCE.len())
+        .position(|window| window == SOURCE.as_bytes())
+        .unwrap();
+    replacement[source_offset] = if replacement[source_offset] == b'a' {
+        b'b'
+    } else {
+        b'a'
+    };
+    assert_eq!(replacement.len(), original.len());
+    assert!(serde_json::from_slice::<serde_json::Value>(
+        &replacement[..replacement.len() - 1]
+    )
+    .is_err() || replacement.iter().filter(|byte| **byte == b'\\n').count() == 3);
+
+    fs::rename(&path, &backup).unwrap();
+    fs::write(&path, &replacement).unwrap();
+
+    assert!(writer.finalize(START + 2, START + 3).is_err());
+    assert!(!SidecarWriter::manifest_path(&path).exists());
+
+    drop(writer);
+    fs::remove_file(path).unwrap();
+    fs::remove_file(backup).unwrap();
+}
