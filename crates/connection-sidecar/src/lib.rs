@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Read, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 const MAX_EVENT_BYTES: usize = 16 * 1024;
@@ -14,6 +14,9 @@ const MAX_RECONNECT_DELAY_MS: u64 = 60_000;
 const MAX_TIMESTAMP_MS: u64 = i64::MAX as u64;
 const MAX_SUBSCRIPTIONS: usize = 10_000;
 const MAX_SUBSCRIPTION_BYTES: usize = 256;
+const MAX_SESSION_SUBSCRIPTION_BYTES: usize = 1024 * 1024;
+const MAX_SESSION_CONNECTIONS: usize = 1_024;
+const MAX_MANIFEST_BYTES: usize = 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -154,6 +157,7 @@ pub struct SidecarWriter {
     last_event_at_ms: Option<u64>,
     event_count: u64,
     bytes_written: u64,
+    session_subscription_bytes: usize,
     connections: HashMap<String, ConnectionState>,
     poisoned: bool,
 }
@@ -190,6 +194,7 @@ impl SidecarWriter {
             last_event_at_ms: None,
             event_count: 0,
             bytes_written: 0,
+            session_subscription_bytes: 0,
             connections: HashMap::new(),
             poisoned: false,
         })
@@ -210,6 +215,20 @@ impl SidecarWriter {
         if self.connections.contains_key(&identity.connection_id) {
             return Err(invalid("connection_id may be opened only once per session"));
         }
+        if self.connections.len() >= MAX_SESSION_CONNECTIONS {
+            return Err(invalid("session connection count limit exceeded"));
+        }
+        let subscription_bytes = identity
+            .subscriptions
+            .iter()
+            .fold(0_usize, |total, item| total.saturating_add(item.len()));
+        let aggregate_subscription_bytes = self
+            .session_subscription_bytes
+            .checked_add(subscription_bytes)
+            .ok_or_else(|| invalid("session subscription byte count overflow"))?;
+        if aggregate_subscription_bytes > MAX_SESSION_SUBSCRIPTION_BYTES {
+            return Err(invalid("session subscription metadata exceeds the 1 MiB bound"));
+        }
         self.append_event(
             identity,
             "CONNECT_ATTEMPTED",
@@ -221,6 +240,7 @@ impl SidecarWriter {
             Some(identity.subscriptions.len()),
             Some(subscription_set_sha256(&identity.subscriptions)),
         )?;
+        self.session_subscription_bytes = aggregate_subscription_bytes;
         self.connections.insert(
             identity.connection_id.clone(),
             ConnectionState {
@@ -366,7 +386,10 @@ impl SidecarWriter {
         reason: DisconnectReason,
         event_at_ms: u64,
     ) -> io::Result<()> {
-        self.ensure_connected(identity)?;
+        let state = self.ensure_connected(identity)?;
+        if !state.pending_pings.is_empty() {
+            return Err(invalid("cannot disconnect while heartbeat Pings remain unanswered"));
+        }
         self.append_event(
             identity,
             "DISCONNECTED",
@@ -437,11 +460,9 @@ impl SidecarWriter {
         if self.event_count == 0 {
             return Err(invalid("cannot finalize an empty sidecar"));
         }
-        if self
-            .connections
-            .values()
-            .any(|state| state.lifecycle != Lifecycle::Disconnected)
-        {
+        if self.connections.values().any(|state| {
+            state.lifecycle != Lifecycle::Disconnected || !state.pending_pings.is_empty()
+        }) {
             return Err(invalid(
                 "all connection attempts must be resolved before session finalization",
             ));
@@ -475,12 +496,15 @@ impl SidecarWriter {
         // Read one bounded snapshot from a single file handle. The manifest must
         // describe exactly the bytes accounted for by this writer, not an
         // out-of-band append, truncation, malformed line, or partial final line.
-        let mut digest_file = File::open(&self.path)?;
+        ensure_path_matches_open_file(&self.file, &self.path)?;
+        let mut digest_file = self.file.try_clone()?;
+        digest_file.seek(SeekFrom::Start(0))?;
         let mut sidecar_content = Vec::new();
         std::io::Read::by_ref(&mut digest_file)
             .take(MAX_FILE_BYTES + 1)
             .read_to_end(&mut sidecar_content)?;
         let opened_file_bytes = digest_file.metadata()?.len();
+        ensure_path_matches_open_file(&self.file, &self.path)?;
         let sidecar_bytes = sidecar_content.len() as u64;
         if sidecar_bytes != self.bytes_written || opened_file_bytes != sidecar_bytes {
             return Err(invalid(
@@ -569,6 +593,9 @@ impl SidecarWriter {
         let temp_path = manifest_path.with_file_name(temp_name);
         let manifest_bytes = serde_json::to_vec_pretty(&manifest)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        if manifest_bytes.len() > MAX_MANIFEST_BYTES {
+            return Err(invalid("serialized capture manifest exceeds the 1 MiB bound"));
+        }
 
         // Finalization was made terminal before the first filesystem operation.
         let publish_result = (|| -> io::Result<()> {
@@ -725,6 +752,35 @@ impl SidecarWriter {
         self.last_event_at_ms = Some(event_at_ms);
         Ok(())
     }
+}
+
+#[cfg(unix)]
+fn ensure_path_matches_open_file(file: &File, path: &Path) -> io::Result<()> {
+    use std::os::unix::fs::MetadataExt;
+
+    let open_metadata = file.metadata()?;
+    let path_metadata = fs::symlink_metadata(path)?;
+    if path_metadata.file_type().is_symlink()
+        || !path_metadata.is_file()
+        || open_metadata.dev() != path_metadata.dev()
+        || open_metadata.ino() != path_metadata.ino()
+    {
+        return Err(invalid("sidecar path no longer identifies the writer's open file"));
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn ensure_path_matches_open_file(file: &File, path: &Path) -> io::Result<()> {
+    let open_metadata = file.metadata()?;
+    let path_metadata = fs::symlink_metadata(path)?;
+    if path_metadata.file_type().is_symlink()
+        || !path_metadata.is_file()
+        || open_metadata.len() != path_metadata.len()
+    {
+        return Err(invalid("sidecar path no longer matches the writer's open file"));
+    }
+    Ok(())
 }
 
 fn validate_identity(identity: &ConnectionIdentity) -> io::Result<()> {
