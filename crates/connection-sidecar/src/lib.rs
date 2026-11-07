@@ -399,7 +399,9 @@ impl SidecarWriter {
             .and_then(|state| state.pending_pings.get(heartbeat_id).copied())
             .ok_or_else(|| invalid("heartbeat timeout has no matching outstanding Ping"))?;
         if event_at_ms < sent_at || event_at_ms - sent_at <= MAX_RECONNECT_DELAY_MS {
-            return Err(invalid("heartbeat timeout requires more than 60 seconds elapsed"));
+            return Err(invalid(
+                "heartbeat timeout requires more than 60 seconds elapsed",
+            ));
         }
 
         self.append_event(
