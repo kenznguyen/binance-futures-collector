@@ -352,3 +352,32 @@ fn poisons_writer_when_sidecar_readback_fails_during_finalization() {
     assert!(!SidecarWriter::manifest_path(&path).exists());
     drop(writer);
 }
+
+
+#[test]
+fn refuses_to_finalize_when_sidecar_bytes_were_appended_outside_the_writer() {
+    let path = temp_path("external-append");
+    let connection = identity(Route::Public);
+    let mut writer = SidecarWriter::create(&path, SOURCE, SESSION).unwrap();
+    writer.connect_attempted(&connection, START).unwrap();
+    writer.connected(&connection, START + 1).unwrap();
+    writer
+        .disconnected(&connection, DisconnectReason::Shutdown, START + 2)
+        .unwrap();
+
+    // Simulate an out-of-band modification while the writer is still alive.
+    use std::io::Write as _;
+    let mut external = fs::OpenOptions::new().append(true).open(&path).unwrap();
+    external.write_all(b"{\"unexpected\":true}\n").unwrap();
+    external.sync_all().unwrap();
+    drop(external);
+
+    assert!(
+        writer.finalize(START + 2, START + 3).is_err(),
+        "finalize must reject bytes that are not represented by the writer event counter"
+    );
+    assert!(!SidecarWriter::manifest_path(&path).exists());
+
+    drop(writer);
+    fs::remove_file(path).unwrap();
+}
