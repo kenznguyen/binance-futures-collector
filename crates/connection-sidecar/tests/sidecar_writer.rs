@@ -607,3 +607,64 @@ fn refuses_to_finalize_when_sidecar_path_is_replaced_with_same_size_valid_jsonl(
     fs::remove_file(path).unwrap();
     fs::remove_file(backup).unwrap();
 }
+
+
+#[test]
+fn records_heartbeat_timeout_and_allows_terminal_disconnect_and_finalize() {
+    let path = temp_path("heartbeat-timeout");
+    let connection = identity(Route::Public);
+    let mut writer = SidecarWriter::create(&path, SOURCE, SESSION).unwrap();
+    writer.connect_attempted(&connection, START).unwrap();
+    writer.connected(&connection, START + 1).unwrap();
+    writer
+        .ping_sent(&connection, "hb-timeout", START + 2)
+        .unwrap();
+
+    writer
+        .disconnected(
+            &connection,
+            DisconnectReason::HeartbeatTimeout,
+            START + 2 + 60_001,
+        )
+        .expect("a timed-out heartbeat must be explicitly resolved before disconnect");
+
+    let contents = fs::read_to_string(&path).unwrap();
+    assert!(contents.contains("\"eventType\":\"PING_TIMEOUT\""));
+    assert!(contents.contains("\"eventType\":\"DISCONNECTED\""));
+    assert!(contents.contains("\"reason\":\"HEARTBEAT_TIMEOUT\""));
+
+    writer
+        .finalize(START + 2 + 60_001, START + 2 + 60_002)
+        .expect("a heartbeat-timeout disconnect must permit sealing");
+    drop(writer);
+
+    let manifest_path = SidecarWriter::manifest_path(&path);
+    assert!(manifest_path.exists());
+    fs::remove_file(path).unwrap();
+    fs::remove_file(manifest_path).unwrap();
+}
+
+#[test]
+fn refuses_heartbeat_timeout_disconnect_before_timeout_threshold() {
+    let path = temp_path("heartbeat-timeout-early");
+    let connection = identity(Route::Public);
+    let mut writer = SidecarWriter::create(&path, SOURCE, SESSION).unwrap();
+    writer.connect_attempted(&connection, START).unwrap();
+    writer.connected(&connection, START + 1).unwrap();
+    writer
+        .ping_sent(&connection, "hb-not-yet-timeout", START + 2)
+        .unwrap();
+
+    let before = fs::read(&path).unwrap();
+    assert!(writer
+        .disconnected(
+            &connection,
+            DisconnectReason::HeartbeatTimeout,
+            START + 2 + 60_000,
+        )
+        .is_err());
+    assert_eq!(fs::read(&path).unwrap(), before);
+
+    drop(writer);
+    fs::remove_file(path).unwrap();
+}
