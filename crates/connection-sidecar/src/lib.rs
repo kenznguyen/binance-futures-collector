@@ -813,17 +813,47 @@ impl SidecarWriter {
 }
 
 /// Create the sidecar exclusively and sync its parent directory before returning it.
-/// The sync callback is injectable so the create/cleanup failure boundary can be tested.
+/// If the initial directory sync fails, remove the newly-created file and sync that
+/// removal before returning the original error.
 fn create_sidecar_file(
     path: &Path,
-    sync_parent: impl FnOnce(&Path) -> io::Result<()>,
+    sync_parent: impl FnMut(&Path) -> io::Result<()>,
+) -> io::Result<File> {
+    create_sidecar_file_with_cleanup(path, sync_parent, fs::remove_file)
+}
+
+fn create_sidecar_file_with_cleanup(
+    path: &Path,
+    mut sync_parent: impl FnMut(&Path) -> io::Result<()>,
+    remove_file: impl FnOnce(&Path) -> io::Result<()>,
 ) -> io::Result<File> {
     let file = OpenOptions::new()
         .read(true)
         .append(true)
         .create_new(true)
         .open(path)?;
-    sync_parent(path)?;
+
+    if let Err(original_error) = sync_parent(path) {
+        drop(file);
+        if let Err(cleanup_error) = remove_file(path) {
+            return Err(io::Error::new(
+                original_error.kind(),
+                format!(
+                    "initial parent-directory sync failed: {original_error}; removing orphan sidecar failed: {cleanup_error}"
+                ),
+            ));
+        }
+        if let Err(cleanup_sync_error) = sync_parent(path) {
+            return Err(io::Error::new(
+                original_error.kind(),
+                format!(
+                    "initial parent-directory sync failed: {original_error}; syncing sidecar removal failed: {cleanup_sync_error}"
+                ),
+            ));
+        }
+        return Err(original_error);
+    }
+
     Ok(file)
 }
 
@@ -1086,25 +1116,83 @@ mod create_cleanup_tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    #[test]
-    fn removes_new_sidecar_when_parent_directory_sync_fails() {
+    fn unique_path(label: &str) -> PathBuf {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("system clock must be after Unix epoch")
             .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "t1-sidecar-create-sync-failure-{}-{nonce}.jsonl",
+        std::env::temp_dir().join(format!(
+            "t1-sidecar-{label}-{}-{nonce}.jsonl",
             std::process::id()
-        ));
+        ))
+    }
 
+    #[test]
+    fn removes_new_sidecar_when_parent_directory_sync_fails() {
+        let path = unique_path("create-sync-failure");
         let result = create_sidecar_file(&path, |_| {
             Err(io::Error::other("injected parent-directory sync failure"))
         });
 
-        assert!(result.is_err(), "injected sync failure must be returned");
+        let error = result.expect_err("injected sync failure must be returned");
+        assert_eq!(error.kind(), io::ErrorKind::Other);
+        assert!(
+            error
+                .to_string()
+                .contains("injected parent-directory sync failure"),
+            "the original sync error must be preserved"
+        );
         assert!(
             !path.exists(),
             "failed creation must not leave an orphan sidecar path"
+        );
+    }
+
+    #[test]
+    fn reports_both_errors_when_orphan_removal_fails() {
+        let path = unique_path("remove-failure");
+        let result = create_sidecar_file_with_cleanup(
+            &path,
+            |_| Err(io::Error::other("injected initial sync failure")),
+            |_| Err(io::Error::new(io::ErrorKind::PermissionDenied, "injected remove failure")),
+        );
+
+        let error = result.expect_err("cleanup failure must be returned");
+        let message = error.to_string();
+        assert!(message.contains("injected initial sync failure"));
+        assert!(message.contains("injected remove failure"));
+        assert!(path.exists(), "failed removal should leave the path for diagnosis");
+        fs::remove_file(&path).expect("test must remove its intentionally orphaned file");
+    }
+
+    #[test]
+    fn reports_second_directory_sync_failure_after_removal() {
+        let path = unique_path("cleanup-sync-failure");
+        let mut sync_calls = 0;
+        let result = create_sidecar_file_with_cleanup(
+            &path,
+            |_| {
+                sync_calls += 1;
+                if sync_calls == 1 {
+                    Err(io::Error::other("injected initial sync failure"))
+                } else {
+                    Err(io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        "injected cleanup directory sync failure",
+                    ))
+                }
+            },
+            fs::remove_file,
+        );
+
+        let error = result.expect_err("cleanup directory sync failure must be returned");
+        let message = error.to_string();
+        assert!(message.contains("injected initial sync failure"));
+        assert!(message.contains("injected cleanup directory sync failure"));
+        assert_eq!(sync_calls, 2);
+        assert!(
+            !path.exists(),
+            "sidecar should be removed even when syncing the removal fails"
         );
     }
 }
