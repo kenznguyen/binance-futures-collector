@@ -130,3 +130,9 @@ A failure can occur after the temporary manifest has been hard-linked to the fin
 - A leftover temporary manifest is diagnostic residue; `validate_capture()` intentionally does not remove it. Do not remove the final manifest merely because finalization returned an error.
 
 Consumers must preserve the distinction between the finalize call result, manifest/sidecar content consistency, and independently established durability. Until a separate recovery protocol exists, classify these post-publication-error states as requiring recovery review rather than silently promoting them to successful finalization.
+
+### Temporary manifest without a final manifest
+
+If the process stops after creating/writing the temporary manifest but before the hard-link to the final manifest, the sidecar may remain valid while only a temporary manifest file exists. In that state, `validate_capture()` returns `UnsealedValid` because no final manifest is present; it does not scan for, classify, or remove temporary manifest files.
+
+Therefore, `UnsealedValid` means only that the sidecar is valid and no final manifest was found. It does **not** prove that finalization was never attempted. A matching temporary manifest is diagnostic evidence of an interrupted publication attempt and requires recovery review. Do not promote it to a sealed capture, rename it to the final path, or delete it automatically without a separately specified recovery protocol.
