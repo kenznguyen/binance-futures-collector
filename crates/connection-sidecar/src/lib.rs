@@ -430,22 +430,56 @@ impl SidecarWriter {
         reason: DisconnectReason,
         event_at_ms: u64,
     ) -> io::Result<()> {
-        let state = self.ensure_connected(identity)?;
-        if !state.pending_pings.is_empty() {
-            return Err(invalid(
-                "cannot disconnect while heartbeat Pings remain unanswered",
-            ));
-        }
-        if reason == DisconnectReason::HeartbeatTimeout && !state.heartbeat_timeout_observed {
+        let (heartbeat_timeout_observed, mut pending_heartbeat_ids) = {
+            let state = self.ensure_connected(identity)?;
+            (
+                state.heartbeat_timeout_observed,
+                state.pending_pings.keys().cloned().collect::<Vec<_>>(),
+            )
+        };
+        if reason == DisconnectReason::HeartbeatTimeout && !heartbeat_timeout_observed {
             return Err(invalid(
                 "heartbeat-timeout disconnect requires a recorded PING_TIMEOUT event",
             ));
         }
-        if state.heartbeat_timeout_observed && reason != DisconnectReason::HeartbeatTimeout {
+        if heartbeat_timeout_observed && reason != DisconnectReason::HeartbeatTimeout {
             return Err(invalid(
                 "a connection with a recorded PING_TIMEOUT must disconnect for heartbeat timeout",
             ));
         }
+
+        // A closed socket can no longer answer outstanding Pings. Record each
+        // one as abandoned with the actual socket-close reason; do not invent
+        // a PING_TIMEOUT when the strict heartbeat threshold was not observed.
+        pending_heartbeat_ids.sort_unstable();
+        let mut abandoned_count = 0;
+        for heartbeat_id in pending_heartbeat_ids {
+            if let Err(error) = self.append_event(
+                identity,
+                "PING_ABANDONED",
+                event_at_ms,
+                Some(&heartbeat_id),
+                Some(reason.as_str()),
+                None,
+                None,
+                None,
+                None,
+            ) {
+                // Once part of a multi-event disconnect has been persisted,
+                // any later failure must make this writer terminal.
+                if abandoned_count > 0 {
+                    self.poisoned = true;
+                }
+                return Err(error);
+            }
+            self.connections
+                .get_mut(&identity.connection_id)
+                .expect("checked above")
+                .pending_pings
+                .remove(&heartbeat_id);
+            abandoned_count += 1;
+        }
+
         self.append_event(
             identity,
             "DISCONNECTED",
