@@ -630,7 +630,10 @@ impl OrderbookManager {
             };
 
             let Some(applied) = applied else {
-                warn!("[{}] Gap during attach; retaining partial book until resync", symbol);
+                warn!(
+                    "[{}] Gap during attach; retaining partial book until resync",
+                    symbol
+                );
                 return Ok(false);
             };
 
@@ -1378,8 +1381,7 @@ mod tests {
 
         // The reconnect jumps from 100 to 120. The live loop intentionally
         // applies absolute quantities without a pu guard: touched levels heal.
-        let mut reconnect_diff =
-            update(125, &[(100.0, 0.4)], &[(100.5, 2.0)]);
+        let mut reconnect_diff = update(125, &[(100.0, 0.4)], &[(100.5, 2.0)]);
         reconnect_diff.first_update_id = 121;
         reconnect_diff.prev_update_id = 120;
 
