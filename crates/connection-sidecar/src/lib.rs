@@ -1445,12 +1445,10 @@ mod create_cleanup_tests {
                 "batch-id" => inventory[0]["batchId"] = serde_json::json!(1),
                 "route" => inventory[0]["route"] = serde_json::json!("market"),
                 "subscriptions" => {
-                    inventory[0]["subscriptions"] =
-                        serde_json::json!(["btcusdt@aggTrade"]);
+                    inventory[0]["subscriptions"] = serde_json::json!(["btcusdt@aggTrade"]);
                 }
                 "subscription-hash" => {
-                    inventory[0]["subscriptionSetSha256"] =
-                        serde_json::json!("0".repeat(64));
+                    inventory[0]["subscriptionSetSha256"] = serde_json::json!("0".repeat(64));
                 }
                 "duplicate-connection" => {
                     let duplicate = inventory[0].clone();
