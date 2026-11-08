@@ -1084,11 +1084,27 @@ pub enum CaptureValidation {
 #[serde(rename_all = "camelCase")]
 struct ManifestValidationFields {
     schema_version: u8,
+    source_commit: String,
+    session_id: String,
     sidecar_file: String,
     sidecar_bytes: u64,
     sidecar_sha256: String,
     capture_finalized: bool,
     event_count: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct EventValidationFields {
+    schema_version: u8,
+    event_id: String,
+    source_commit: String,
+    session_id: String,
+    connection_id: String,
+    batch_id: u32,
+    route: String,
+    event_type: String,
+    event_at_ms: u64,
 }
 
 /// Validate a sidecar and its optional manifest without modifying either file.
@@ -1125,6 +1141,7 @@ pub fn validate_capture(path: impl AsRef<Path>) -> io::Result<CaptureValidation>
     }
 
     let mut event_count = 0_u64;
+    let mut event_identity: Option<(String, String)> = None;
     let record_count = bytes.iter().filter(|byte| **byte == b'\n').count();
     for (index, line) in bytes
         .split(|byte| *byte == b'\n')
@@ -1144,6 +1161,53 @@ pub fn validate_capture(path: impl AsRef<Path>) -> io::Result<CaptureValidation>
                 line_number: index + 1,
             });
         }
+        let event: EventValidationFields = match serde_json::from_value(value) {
+            Ok(event) => event,
+            Err(_) => {
+                return Ok(CaptureValidation::MalformedJsonl {
+                    line_number: index + 1,
+                });
+            }
+        };
+        let valid_event_type = matches!(
+            event.event_type.as_str(),
+            "CONNECT_ATTEMPTED"
+                | "CONNECT_FAILED"
+                | "CONNECTED"
+                | "PING_SENT"
+                | "PONG_RECEIVED"
+                | "PING_TIMEOUT"
+                | "PING_ABANDONED"
+                | "DISCONNECTED"
+                | "RECONNECT_SCHEDULED"
+        );
+        if event.schema_version != 1
+            || event.event_id.is_empty()
+            || event.source_commit.len() != 40
+            || !is_lower_hex(&event.source_commit, 40)
+            || event.session_id.is_empty()
+            || event.session_id.len() > 128
+            || event.connection_id.is_empty()
+            || event.connection_id.len() > 128
+            || event.batch_id > MAX_BATCH_ID
+            || !matches!(event.route.as_str(), "public" | "market")
+            || !valid_event_type
+            || event.event_at_ms > MAX_TIMESTAMP_MS
+        {
+            return Ok(CaptureValidation::MalformedJsonl {
+                line_number: index + 1,
+            });
+        }
+        let identity = (event.source_commit, event.session_id);
+        if event_identity
+            .as_ref()
+            .is_some_and(|expected| expected != &identity)
+        {
+            return Ok(CaptureValidation::MalformedJsonl {
+                line_number: index + 1,
+            });
+        }
+        event_identity.get_or_insert(identity);
         event_count += 1;
         if event_count > MAX_EVENTS {
             return Err(invalid("sidecar event count limit exceeded"));
@@ -1188,8 +1252,15 @@ pub fn validate_capture(path: impl AsRef<Path>) -> io::Result<CaptureValidation>
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
 
+    let expected_identity = event_identity
+        .as_ref()
+        .expect("a non-empty sidecar has at least one event");
     let mismatch = if manifest.schema_version != 1 {
         Some("unsupported manifest schema version")
+    } else if manifest.source_commit != expected_identity.0 {
+        Some("manifest source commit does not match JSONL events")
+    } else if manifest.session_id != expected_identity.1 {
+        Some("manifest session ID does not match JSONL events")
     } else if !manifest.capture_finalized {
         Some("manifest does not declare a finalized capture")
     } else if manifest.sidecar_file != expected_name {
