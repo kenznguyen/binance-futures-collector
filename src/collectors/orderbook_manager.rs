@@ -1378,7 +1378,6 @@ mod tests {
 
         // The reconnect jumps from 100 to 120. The live loop intentionally
         // applies absolute quantities without a pu guard: touched levels heal.
-        let reconnect_diff = bridge_diff(121, 125, 120);
         let mut reconnect_diff =
             update(125, &[(100.0, 0.4)], &[(100.5, 2.0)]);
         reconnect_diff.first_update_id = 121;
