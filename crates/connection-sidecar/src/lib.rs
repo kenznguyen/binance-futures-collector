@@ -1220,6 +1220,124 @@ mod create_cleanup_tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
 
+
+    fn write_schema_fixture(
+        sidecar_path: &Path,
+        manifest_source_commit: &str,
+        manifest_session_id: &str,
+    ) -> (PathBuf, PathBuf) {
+        let source_commit = "bc4f0ef633fbeee4a49defd72827f17162693805";
+        let session_id = "validator-session";
+        let event = serde_json::json!({
+            "schemaVersion": 1,
+            "eventId": "validator-session:0",
+            "sourceCommit": source_commit,
+            "sessionId": session_id,
+            "connectionId": "validator-connection",
+            "batchId": 0,
+            "route": "public",
+            "eventType": "CONNECT_ATTEMPTED",
+            "eventAtMs": 1,
+            "subscriptionCount": 1,
+            "subscriptionSetSha256": subscription_set_sha256(&["btcusdt@depth@100ms".to_string()])
+        });
+        let sidecar_bytes = [serde_json::to_vec(&event).unwrap(), vec![b'\\n']].concat();
+        fs::write(sidecar_path, &sidecar_bytes).expect("sidecar fixture must be written");
+        let digest = Sha256::digest(&sidecar_bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let manifest_path = SidecarWriter::manifest_path(sidecar_path);
+        let manifest = serde_json::json!({
+            "schemaVersion": 1,
+            "sourceCommit": manifest_source_commit,
+            "sessionId": manifest_session_id,
+            "sidecarFile": sidecar_path.file_name().unwrap().to_string_lossy(),
+            "sidecarBytes": sidecar_bytes.len(),
+            "sidecarSha256": digest,
+            "captureFinalized": true,
+            "captureCompleteThroughMs": 1,
+            "finalizedAtMs": 1,
+            "eventCount": 1,
+            "connectionSubscriptions": [{
+                "connectionId": "validator-connection",
+                "batchId": 0,
+                "route": "public",
+                "subscriptions": ["btcusdt@depth@100ms"],
+                "subscriptionSetSha256": subscription_set_sha256(&["btcusdt@depth@100ms".to_string()])
+            }]
+        });
+        fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap())
+            .expect("manifest fixture must be written");
+        (manifest_path, sidecar_path.to_path_buf())
+    }
+
+    #[test]
+    fn rejects_json_object_missing_required_event_type_even_when_manifest_hash_matches() {
+        let sidecar_path = unique_path("missing-event-type");
+        let event = serde_json::json!({
+            "schemaVersion": 1,
+            "eventId": "validator-session:0",
+            "sourceCommit": "bc4f0ef633fbeee4a49defd72827f17162693805",
+            "sessionId": "validator-session",
+            "connectionId": "validator-connection",
+            "batchId": 0,
+            "route": "public",
+            "eventAtMs": 1
+        });
+        let sidecar_bytes = [serde_json::to_vec(&event).unwrap(), vec![b'\\n']].concat();
+        fs::write(&sidecar_path, &sidecar_bytes).unwrap();
+        let digest = Sha256::digest(&sidecar_bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let manifest_path = SidecarWriter::manifest_path(&sidecar_path);
+        let manifest = serde_json::json!({
+            "schemaVersion": 1,
+            "sourceCommit": "bc4f0ef633fbeee4a49defd72827f17162693805",
+            "sessionId": "validator-session",
+            "sidecarFile": sidecar_path.file_name().unwrap().to_string_lossy(),
+            "sidecarBytes": sidecar_bytes.len(),
+            "sidecarSha256": digest,
+            "captureFinalized": true,
+            "captureCompleteThroughMs": 1,
+            "finalizedAtMs": 1,
+            "eventCount": 1,
+            "connectionSubscriptions": []
+        });
+        fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+
+        let result = validate_capture(&sidecar_path).unwrap();
+        assert!(
+            matches!(result, CaptureValidation::MalformedJsonl { line_number: 1 }),
+            "missing required eventType must not validate: {result:?}"
+        );
+        fs::remove_file(&sidecar_path).unwrap();
+        fs::remove_file(&manifest_path).unwrap();
+    }
+
+    #[test]
+    fn rejects_manifest_source_commit_or_session_id_mismatch() {
+        for (label, manifest_source, manifest_session) in [
+            ("source-commit", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "validator-session"),
+            ("session-id", "bc4f0ef633fbeee4a49defd72827f17162693805", "different-session"),
+        ] {
+            let sidecar_path = unique_path(label);
+            let (manifest_path, _) = write_schema_fixture(
+                &sidecar_path,
+                manifest_source,
+                manifest_session,
+            );
+            let result = validate_capture(&sidecar_path).unwrap();
+            assert!(
+                matches!(result, CaptureValidation::ManifestMismatch { .. }),
+                "manifest {label} mismatch must be rejected: {result:?}"
+            );
+            fs::remove_file(&sidecar_path).unwrap();
+            fs::remove_file(&manifest_path).unwrap();
+        }
+    }
+
     fn unique_path(label: &str) -> PathBuf {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
