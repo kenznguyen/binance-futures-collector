@@ -1137,7 +1137,10 @@ fn manifest_inventory_matches(
             || !seen.insert(item.connection_id.as_str())
             || item.subscriptions.is_empty()
             || item.subscriptions.len() > MAX_SUBSCRIPTIONS
-            || item.subscriptions.iter().any(|name| name.is_empty() || name.len() > MAX_SUBSCRIPTION_BYTES)
+            || item
+                .subscriptions
+                .iter()
+                .any(|name| name.is_empty() || name.len() > MAX_SUBSCRIPTION_BYTES)
             || item.subscriptions.windows(2).any(|pair| pair[0] >= pair[1])
             || item.subscription_set_sha256 != subscription_set_sha256(&item.subscriptions)
         {
@@ -1264,27 +1267,48 @@ pub fn validate_capture(path: impl AsRef<Path>) -> io::Result<CaptureValidation>
         event_identity.get_or_insert(identity);
         let event_subscription_metadata = match event.event_type.as_str() {
             "CONNECT_ATTEMPTED" | "CONNECTED" => {
-                match (event.subscription_count, event.subscription_set_sha256.as_ref()) {
-                    (Some(count), Some(hash)) if count <= MAX_SUBSCRIPTIONS && is_lower_hex(hash, 64) => {
+                match (
+                    event.subscription_count,
+                    event.subscription_set_sha256.as_ref(),
+                ) {
+                    (Some(count), Some(hash))
+                        if count <= MAX_SUBSCRIPTIONS && is_lower_hex(hash, 64) =>
+                    {
                         Some((count, hash.clone()))
                     }
-                    _ => return Ok(CaptureValidation::MalformedJsonl { line_number: index + 1 }),
+                    _ => {
+                        return Ok(CaptureValidation::MalformedJsonl {
+                            line_number: index + 1,
+                        })
+                    }
                 }
             }
             _ => None,
         };
         match observed_connections.entry(event.connection_id.clone()) {
             std::collections::hash_map::Entry::Vacant(entry) => {
-                entry.insert((event.batch_id, event.route.clone(), event_subscription_metadata));
+                entry.insert((
+                    event.batch_id,
+                    event.route.clone(),
+                    event_subscription_metadata,
+                ));
             }
             std::collections::hash_map::Entry::Occupied(mut entry) => {
                 let observed = entry.get_mut();
                 if observed.0 != event.batch_id || observed.1 != event.route {
-                    return Ok(CaptureValidation::MalformedJsonl { line_number: index + 1 });
+                    return Ok(CaptureValidation::MalformedJsonl {
+                        line_number: index + 1,
+                    });
                 }
                 if let Some(metadata) = event_subscription_metadata {
-                    if observed.2.as_ref().is_some_and(|previous| previous != &metadata) {
-                        return Ok(CaptureValidation::MalformedJsonl { line_number: index + 1 });
+                    if observed
+                        .2
+                        .as_ref()
+                        .is_some_and(|previous| previous != &metadata)
+                    {
+                        return Ok(CaptureValidation::MalformedJsonl {
+                            line_number: index + 1,
+                        });
                     }
                     observed.2 = Some(metadata);
                 }
@@ -1353,7 +1377,8 @@ pub fn validate_capture(path: impl AsRef<Path>) -> io::Result<CaptureValidation>
         Some("manifest sidecar SHA-256 does not match")
     } else if manifest.event_count != event_count {
         Some("manifest event count does not match JSONL records")
-    } else if !manifest_inventory_matches(&manifest.connection_subscriptions, &observed_connections) {
+    } else if !manifest_inventory_matches(&manifest.connection_subscriptions, &observed_connections)
+    {
         Some("manifest connection subscription inventory does not match JSONL events")
     } else {
         None
