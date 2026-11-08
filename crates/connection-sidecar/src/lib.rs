@@ -1425,8 +1425,11 @@ mod create_cleanup_tests {
             "duplicate-connection",
         ] {
             let sidecar_path = unique_path(label);
-            let (manifest_path, _) =
-                write_schema_fixture(&sidecar_path, "bc4f0ef633fbeee4a49defd72827f17162693805", "validator-session");
+            let (manifest_path, _) = write_schema_fixture(
+                &sidecar_path,
+                "bc4f0ef633fbeee4a49defd72827f17162693805",
+                "validator-session",
+            );
             let mut manifest: serde_json::Value =
                 serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
             let inventory = manifest["connectionSubscriptions"]
