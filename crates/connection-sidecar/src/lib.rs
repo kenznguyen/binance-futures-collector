@@ -512,6 +512,27 @@ impl SidecarWriter {
         capture_complete_through_ms: u64,
         finalized_at_ms: u64,
     ) -> io::Result<CaptureManifest> {
+        self.finalize_with_publish(
+            capture_complete_through_ms,
+            finalized_at_ms,
+            |temp_path, manifest_path| {
+                publish_manifest_with(
+                    temp_path,
+                    manifest_path,
+                    |temp, final_path| fs::hard_link(temp, final_path),
+                    |path| fs::remove_file(path),
+                    sync_parent_directory,
+                )
+            },
+        )
+    }
+
+    fn finalize_with_publish(
+        &mut self,
+        capture_complete_through_ms: u64,
+        finalized_at_ms: u64,
+        publish_manifest: impl FnOnce(&Path, &Path) -> io::Result<()>,
+    ) -> io::Result<CaptureManifest> {
         self.ensure_usable()?;
         if self.event_count == 0 {
             return Err(invalid("cannot finalize an empty sidecar"));
@@ -666,19 +687,7 @@ impl SidecarWriter {
             temp_file.write_all(&manifest_bytes)?;
             temp_file.flush()?;
             temp_file.sync_all()?;
-            publish_manifest_with(
-                &temp_path,
-                &manifest_path,
-                |temp, final_path| fs::hard_link(temp, final_path),
-                |path| {
-                    let result = fs::remove_file(path);
-                    if result.is_ok() {
-                        temp_manifest_created = false;
-                    }
-                    result
-                },
-                sync_parent_directory,
-            )
+            publish_manifest(&temp_path, &manifest_path)
         })();
         if let Err(publish_error) = publish_result {
             if temp_manifest_created {
@@ -1325,6 +1334,67 @@ mod create_cleanup_tests {
             .contains("sidecar must contain at least one event"));
 
         fs::remove_file(&sidecar_path).expect("test fixture must be removed");
+    }
+
+    #[test]
+    fn post_hard_link_publication_failure_poisons_writer_and_preserves_manifest_consistency() {
+        let sidecar_path = unique_path("post-link-writer-poison");
+        let identity = ConnectionIdentity {
+            connection_id: "socket-post-link-failure".to_string(),
+            batch_id: 0,
+            route: Route::Public,
+            subscriptions: vec!["btcusdt@depth@100ms".to_string()],
+        };
+        let mut writer = SidecarWriter::create(
+            &sidecar_path,
+            "bc4f0ef633fbeee4a49defd72827f17162693805",
+            "post-link-failure-session",
+        )
+        .expect("sidecar writer must be created");
+        writer
+            .connect_attempted(&identity, 1)
+            .expect("connection attempt must be recorded");
+        writer
+            .connect_failed(&identity, ConnectFailureReason::Shutdown, 2)
+            .expect("failed connection must be resolved");
+
+        let manifest_path = SidecarWriter::manifest_path(&sidecar_path);
+        let error = writer
+            .finalize_with_publish(2, 3, |temp_path, final_path| {
+                fs::hard_link(temp_path, final_path)?;
+                Err(io::Error::other("injected post-hard-link publication failure"))
+            })
+            .expect_err("injected post-link failure must be returned");
+
+        assert!(error
+            .to_string()
+            .contains("injected post-hard-link publication failure"));
+        assert!(
+            manifest_path.exists(),
+            "the final manifest was published before the injected failure"
+        );
+        assert!(
+            !manifest_path.with_file_name(format!(
+                "{}.tmp-{}-{}",
+                manifest_path.file_name().unwrap().to_string_lossy(),
+                std::process::id(),
+                2
+            )).exists(),
+            "temporary manifest should be cleaned up after publication failure"
+        );
+
+        let append_error = writer
+            .reconnect_scheduled(&identity, 1, 100, 4)
+            .expect_err("writer must reject appends after manifest publication");
+        assert_eq!(append_error.kind(), io::ErrorKind::BrokenPipe);
+
+        assert!(matches!(
+            validate_capture(&sidecar_path).expect("published capture must validate"),
+            CaptureValidation::SealedConsistent { event_count: 2, .. }
+        ));
+
+        fs::remove_file(&sidecar_path).expect("sidecar fixture must be removed");
+        fs::remove_file(&manifest_path).expect("manifest fixture must be removed");
     }
 
     #[test]
