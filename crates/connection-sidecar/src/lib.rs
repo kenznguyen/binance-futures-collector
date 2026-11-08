@@ -1120,9 +1120,16 @@ struct EventValidationFields {
     subscription_set_sha256: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ObservedConnection {
+    batch_id: u32,
+    route: String,
+    subscription_metadata: Option<(usize, String)>,
+}
+
 fn manifest_inventory_matches(
     inventory: &[ConnectionSubscriptionValidationFields],
-    observed: &HashMap<String, (u32, String, Option<(usize, String)>)>,
+    observed: &HashMap<String, ObservedConnection>,
 ) -> bool {
     if inventory.len() != observed.len() || inventory.len() > MAX_SESSION_CONNECTIONS {
         return false;
@@ -1149,10 +1156,10 @@ fn manifest_inventory_matches(
         let Some((batch_id, route, metadata)) = observed.get(&item.connection_id) else {
             return false;
         };
-        if *batch_id != item.batch_id || route != &item.route {
+        if batch_id.batch_id != item.batch_id || batch_id.route != item.route {
             return false;
         }
-        let Some((count, hash)) = metadata else {
+        let Some((count, hash)) = &batch_id.subscription_metadata else {
             return false;
         };
         if *count != item.subscriptions.len() || hash != &item.subscription_set_sha256 {
@@ -1197,8 +1204,7 @@ pub fn validate_capture(path: impl AsRef<Path>) -> io::Result<CaptureValidation>
 
     let mut event_count = 0_u64;
     let mut event_identity: Option<(String, String)> = None;
-    let mut observed_connections: HashMap<String, (u32, String, Option<(usize, String)>)> =
-        HashMap::new();
+    let mut observed_connections: HashMap<String, ObservedConnection> = HashMap::new();
     let record_count = bytes.iter().filter(|byte| **byte == b'\n').count();
     for (index, line) in bytes
         .split(|byte| *byte == b'\n')
@@ -1287,22 +1293,22 @@ pub fn validate_capture(path: impl AsRef<Path>) -> io::Result<CaptureValidation>
         };
         match observed_connections.entry(event.connection_id.clone()) {
             std::collections::hash_map::Entry::Vacant(entry) => {
-                entry.insert((
-                    event.batch_id,
-                    event.route.clone(),
-                    event_subscription_metadata,
-                ));
+                entry.insert(ObservedConnection {
+                    batch_id: event.batch_id,
+                    route: event.route.clone(),
+                    subscription_metadata: event_subscription_metadata,
+                });
             }
             std::collections::hash_map::Entry::Occupied(mut entry) => {
                 let observed = entry.get_mut();
-                if observed.0 != event.batch_id || observed.1 != event.route {
+                if observed.batch_id != event.batch_id || observed.route != event.route {
                     return Ok(CaptureValidation::MalformedJsonl {
                         line_number: index + 1,
                     });
                 }
                 if let Some(metadata) = event_subscription_metadata {
                     if observed
-                        .2
+                        .subscription_metadata
                         .as_ref()
                         .is_some_and(|previous| previous != &metadata)
                     {
@@ -1310,7 +1316,7 @@ pub fn validate_capture(path: impl AsRef<Path>) -> io::Result<CaptureValidation>
                             line_number: index + 1,
                         });
                     }
-                    observed.2 = Some(metadata);
+                    observed.subscription_metadata = Some(metadata);
                 }
             }
         }
