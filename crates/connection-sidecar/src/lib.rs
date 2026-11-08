@@ -1156,7 +1156,8 @@ fn manifest_inventory_matches(
         let Some(observed_connection) = observed.get(&item.connection_id) else {
             return false;
         };
-        if observed_connection.batch_id != item.batch_id || observed_connection.route != item.route {
+        if observed_connection.batch_id != item.batch_id || observed_connection.route != item.route
+        {
             return false;
         }
         let Some((count, hash)) = &observed_connection.subscription_metadata else {
