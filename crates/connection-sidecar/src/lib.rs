@@ -1528,9 +1528,22 @@ mod create_cleanup_tests {
     }
 
     fn write_valid_manifest_fixture(sidecar_path: &Path) -> (PathBuf, PathBuf) {
-        let sidecar_bytes = b"{\"event\":\"TEST\"}\n";
-        fs::write(sidecar_path, sidecar_bytes).expect("sidecar fixture must be written");
-        let digest = Sha256::digest(sidecar_bytes)
+        let source_commit = "bc4f0ef633fbeee4a49defd72827f17162693805";
+        let session_id = "publication-fixture-session";
+        let event = serde_json::json!({
+            "schemaVersion": 1,
+            "eventId": "publication-fixture-session:0",
+            "sourceCommit": source_commit,
+            "sessionId": session_id,
+            "connectionId": "publication-fixture-connection",
+            "batchId": 0,
+            "route": "public",
+            "eventType": "CONNECT_ATTEMPTED",
+            "eventAtMs": 1
+        });
+        let sidecar_bytes = [serde_json::to_vec(&event).unwrap(), vec![b'\n']].concat();
+        fs::write(sidecar_path, &sidecar_bytes).expect("sidecar fixture must be written");
+        let digest = Sha256::digest(&sidecar_bytes)
             .iter()
             .map(|byte| format!("{byte:02x}"))
             .collect::<String>();
@@ -1541,6 +1554,8 @@ mod create_cleanup_tests {
         ));
         let manifest = serde_json::json!({
             "schemaVersion": 1,
+            "sourceCommit": source_commit,
+            "sessionId": session_id,
             "sidecarFile": sidecar_path.file_name().unwrap().to_string_lossy(),
             "sidecarBytes": sidecar_bytes.len(),
             "sidecarSha256": digest,
@@ -1551,7 +1566,6 @@ mod create_cleanup_tests {
             .expect("temp manifest fixture must be written");
         (manifest_path, temp_path)
     }
-
     #[test]
     fn rejects_empty_sidecar_instead_of_classifying_it_as_unsealed_valid() {
         let sidecar_path = unique_path("empty-sidecar");
