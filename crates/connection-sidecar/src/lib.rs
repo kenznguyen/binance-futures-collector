@@ -452,8 +452,8 @@ impl SidecarWriter {
         // one as abandoned with the actual socket-close reason; do not invent
         // a PING_TIMEOUT when the strict heartbeat threshold was not observed.
         pending_heartbeat_ids.sort_unstable();
-        let mut abandoned_count = 0;
-        for heartbeat_id in pending_heartbeat_ids {
+        let had_pending_pings = !pending_heartbeat_ids.is_empty();
+        for (abandoned_count, heartbeat_id) in pending_heartbeat_ids.into_iter().enumerate() {
             if let Err(error) = self.append_event(
                 identity,
                 "PING_ABANDONED",
@@ -477,10 +477,9 @@ impl SidecarWriter {
                 .expect("checked above")
                 .pending_pings
                 .remove(&heartbeat_id);
-            abandoned_count += 1;
         }
 
-        self.append_event(
+        if let Err(error) = self.append_event(
             identity,
             "DISCONNECTED",
             event_at_ms,
@@ -490,7 +489,12 @@ impl SidecarWriter {
             None,
             None,
             None,
-        )?;
+        ) {
+            if had_pending_pings {
+                self.poisoned = true;
+            }
+            return Err(error);
+        }
         self.connections
             .get_mut(&identity.connection_id)
             .expect("checked above")
