@@ -614,35 +614,32 @@ impl OrderbookManager {
                 rule.label()
             );
 
-            // Apply updates from bridge onwards
-            let mut last_u = snapshot_u;
-            let mut applied = 0;
+            // Apply updates from bridge onwards. Keep the sequence logic pure so
+            // snapshot reconciliation and missing-diff behavior can be tested offline.
+            let applied = {
+                let mut book = self
+                    .orderbooks
+                    .get_mut(symbol)
+                    .context("Orderbook disappeared during attach")?;
+                Self::apply_attach_updates_to_book(
+                    &mut book,
+                    snapshot_u,
+                    &normalized[idx..],
+                    self.config.orderbook.depth_limit as usize,
+                )?
+            };
 
-            for (i, update) in normalized[idx..].iter().enumerate() {
-                // Verify continuity using pu AFTER first message
-                if i > 0 && update.prev_update_id != last_u {
-                    warn!(
-                        "[{}] Gap during attach: expected pu={}, got pu={} (U={}, u={})",
-                        symbol,
-                        last_u,
-                        update.prev_update_id,
-                        update.first_update_id,
-                        update.final_update_id
-                    );
-                    return Ok(false);
-                }
-
-                // Skip if message is fully covered by snapshot
-                if update.final_update_id <= snapshot_u {
-                    continue;
-                }
-
-                self.apply_diff(symbol, update).await?;
-                last_u = update.final_update_id;
-                applied += 1;
-            }
+            let Some(applied) = applied else {
+                warn!("[{}] Gap during attach; retaining partial book until resync", symbol);
+                return Ok(false);
+            };
 
             if applied > 0 {
+                let last_u = self
+                    .orderbooks
+                    .get(symbol)
+                    .map(|book| book.last_update_id)
+                    .unwrap_or(snapshot_u);
                 info!(
                     "[{}] Attach successful: processed {} messages, last_u={}",
                     symbol, applied, last_u
@@ -713,6 +710,38 @@ impl OrderbookManager {
         }
 
         Ok(())
+    }
+
+    /// Apply a normalized attach sequence to a snapshot book.
+    ///
+    /// Returns None when a pu break is encountered. Updates before the break
+    /// remain applied, matching the existing attach lifecycle; the caller keeps
+    /// the symbol out of LIVE and lets the bounded resync path recover it.
+    fn apply_attach_updates_to_book(
+        book: &mut Orderbook,
+        snapshot_u: u64,
+        updates: &[DepthUpdateWs],
+        depth_limit: usize,
+    ) -> Result<Option<usize>> {
+        let mut last_u = snapshot_u;
+        let mut applied = 0;
+
+        for (index, update) in updates.iter().enumerate() {
+            if index > 0 && update.prev_update_id != last_u {
+                return Ok(None);
+            }
+
+            if update.final_update_id <= snapshot_u {
+                continue;
+            }
+
+            Self::apply_update_to_book(book, update)?;
+            Self::trim_book_to_depth(depth_limit, book);
+            last_u = update.final_update_id;
+            applied += 1;
+        }
+
+        Ok((applied > 0).then_some(applied))
     }
 
     /// Apply one diff update to a book: quantity 0 deletes the level, anything
@@ -1279,6 +1308,92 @@ mod tests {
             .keys()
             .map(|b| f64::from_bits(*b))
             .min_by(|a, b| a.total_cmp(b))
+    }
+
+    fn snapshot_book(last_update_id: u64) -> Orderbook {
+        let mut book = empty_book();
+        book.last_update_id = last_update_id;
+        book.bids.insert(100.0f64.to_bits(), 1.0);
+        book.bids.insert(99.5f64.to_bits(), 2.0);
+        book.asks.insert(100.5f64.to_bits(), 1.5);
+        book.asks.insert(101.0f64.to_bits(), 3.0);
+        book
+    }
+
+    #[test]
+    fn snapshot_plus_buffered_diffs_matches_independent_reconstruction() {
+        let mut actual = snapshot_book(100);
+        let diffs = [
+            bridge_diff(90, 95, 89), // already covered by snapshot
+            bridge_diff(101, 105, 100),
+        ];
+        let mut first = update(105, &[(100.0, 0.7), (98.0, 4.0)], &[(100.5, 0.0)]);
+        first.first_update_id = 101;
+        first.prev_update_id = 100;
+        let applied = OrderbookManager::apply_attach_updates_to_book(
+            &mut actual,
+            100,
+            &[diffs[0].clone(), first],
+            100,
+        )
+        .unwrap();
+
+        // Independently reconstruct the expected state from the REST snapshot
+        // plus the accepted absolute-quantity diff.
+        let mut expected = snapshot_book(100);
+        expected.bids.insert(100.0f64.to_bits(), 0.7);
+        expected.bids.insert(98.0f64.to_bits(), 4.0);
+        expected.asks.remove(&100.5f64.to_bits());
+        expected.last_update_id = 105;
+
+        assert_eq!(applied, Some(1));
+        assert_eq!(actual.last_update_id, expected.last_update_id);
+        assert_eq!(actual.bids, expected.bids);
+        assert_eq!(actual.asks, expected.asks);
+    }
+
+    #[test]
+    fn initial_attach_rejects_a_missing_diff_after_the_bridge() {
+        let mut actual = snapshot_book(100);
+        let first = bridge_diff(101, 105, 100);
+        let after_gap = bridge_diff(111, 115, 109);
+
+        let result = OrderbookManager::apply_attach_updates_to_book(
+            &mut actual,
+            100,
+            &[first, after_gap],
+            100,
+        )
+        .unwrap();
+
+        // The first bridged event is applied, but the pu break prevents the
+        // attach from being accepted as LIVE.
+        assert_eq!(result, None);
+        assert_eq!(actual.last_update_id, 105);
+    }
+
+    #[test]
+    fn reconnect_pu_break_is_visible_in_raw_sequence_but_live_book_can_stale() {
+        let mut book = snapshot_book(100);
+
+        // The reconnect jumps from 100 to 120. The live loop intentionally
+        // applies absolute quantities without a pu guard: touched levels heal.
+        let reconnect_diff = bridge_diff(121, 125, 120);
+        let mut reconnect_diff =
+            update(125, &[(100.0, 0.4)], &[(100.5, 2.0)]);
+        reconnect_diff.first_update_id = 121;
+        reconnect_diff.prev_update_id = 120;
+
+        OrderbookManager::apply_update_to_book(&mut book, &reconnect_diff).unwrap();
+        assert_eq!(book.bids[&100.0f64.to_bits()], 0.4);
+        assert_eq!(book.asks[&100.5f64.to_bits()], 2.0);
+
+        // A quiet level changed during the outage is absent from this diff and
+        // therefore remains stale in memory until a later absolute update or
+        // snapshot reconstruction.
+        assert_eq!(book.bids[&99.5f64.to_bits()], 2.0);
+        assert_eq!(reconnect_diff.prev_update_id, 120);
+        assert_ne!(reconnect_diff.prev_update_id, 100);
     }
 
     #[test]
