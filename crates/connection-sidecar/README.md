@@ -18,7 +18,8 @@ Supported event types:
 - `CONNECT_FAILED` (DNS, transport, timeout, or handshake rejection before CONNECTED)
 - `CONNECTED` (only after a successful handshake)
 - `PING_SENT` and `PONG_RECEIVED`, paired by a unique `heartbeatId`; `PING_TIMEOUT` records an outstanding PING that exceeded the strict 60,000 ms response threshold
-- `DISCONNECTED`, with `REMOTE_CLOSE`, `TRANSPORT_ERROR`, `HEARTBEAT_TIMEOUT`, `SHUTDOWN`, or `UNKNOWN`
+- `PING_ABANDONED` records an outstanding PING that can no longer receive a Pong because its socket closed; its `reason` is the actual `DISCONNECTED` reason and is not a heartbeat-timeout assertion
+- `DISCONNECTED`, with `REMOTE_CLOSE`, `TRANSPORT_ERROR`, `HEARTBEAT_TIMEOUT`, `SHUTDOWN`, or `UNKNOWN`. On socket closure, every still-outstanding PING is durably recorded as `PING_ABANDONED` before `DISCONNECTED`; outstanding PINGs do not block recording a truthful early close.
 - `RECONNECT_SCHEDULED`, with bounded `attempt` and `delayMs`
 
 The `CONNECTED` event stores the number of subscriptions and a deterministic SHA-256 of the sorted subscription set. The manifest stores the exact subscription names and their hash for audit/reconciliation.
