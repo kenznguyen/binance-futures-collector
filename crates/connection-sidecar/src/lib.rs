@@ -1678,7 +1678,9 @@ mod create_cleanup_tests {
             "batchId": 0,
             "route": "public",
             "eventType": "CONNECT_ATTEMPTED",
-            "eventAtMs": 1
+            "eventAtMs": 1,
+            "subscriptionCount": 1,
+            "subscriptionSetSha256": subscription_set_sha256(&["btcusdt@depth@100ms".to_string()])
         });
         let sidecar_bytes = [serde_json::to_vec(&event).unwrap(), vec![b'\n']].concat();
         fs::write(sidecar_path, &sidecar_bytes).expect("sidecar fixture must be written");
@@ -1699,7 +1701,14 @@ mod create_cleanup_tests {
             "sidecarBytes": sidecar_bytes.len(),
             "sidecarSha256": digest,
             "captureFinalized": true,
-            "eventCount": 1
+            "eventCount": 1,
+            "connectionSubscriptions": [{
+                "connectionId": "publication-fixture-connection",
+                "batchId": 0,
+                "route": "public",
+                "subscriptions": ["btcusdt@depth@100ms"],
+                "subscriptionSetSha256": subscription_set_sha256(&["btcusdt@depth@100ms".to_string()])
+            }]
         });
         fs::write(&temp_path, serde_json::to_vec(&manifest).unwrap())
             .expect("temp manifest fixture must be written");
