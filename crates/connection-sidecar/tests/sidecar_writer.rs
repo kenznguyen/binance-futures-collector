@@ -513,7 +513,11 @@ fn validator_classifies_sealed_manifest_consistent_capture() {
 #[test]
 fn resolves_outstanding_ping_when_socket_closes_before_timeout() {
     for (label, reason, expected_reason) in [
-        ("early-remote-close", DisconnectReason::RemoteClose, "REMOTE_CLOSE"),
+        (
+            "early-remote-close",
+            DisconnectReason::RemoteClose,
+            "REMOTE_CLOSE",
+        ),
         (
             "early-transport-error",
             DisconnectReason::TransportError,
