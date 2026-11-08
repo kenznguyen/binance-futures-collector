@@ -1241,7 +1241,7 @@ mod create_cleanup_tests {
             "subscriptionCount": 1,
             "subscriptionSetSha256": subscription_set_sha256(&["btcusdt@depth@100ms".to_string()])
         });
-        let sidecar_bytes = [serde_json::to_vec(&event).unwrap(), vec![b'\\n']].concat();
+        let sidecar_bytes = [serde_json::to_vec(&event).unwrap(), vec![b'\n']].concat();
         fs::write(sidecar_path, &sidecar_bytes).expect("sidecar fixture must be written");
         let digest = Sha256::digest(&sidecar_bytes)
             .iter()
@@ -1285,7 +1285,7 @@ mod create_cleanup_tests {
             "route": "public",
             "eventAtMs": 1
         });
-        let sidecar_bytes = [serde_json::to_vec(&event).unwrap(), vec![b'\\n']].concat();
+        let sidecar_bytes = [serde_json::to_vec(&event).unwrap(), vec![b'\n']].concat();
         fs::write(&sidecar_path, &sidecar_bytes).unwrap();
         let digest = Sha256::digest(&sidecar_bytes)
             .iter()
