@@ -1153,13 +1153,13 @@ fn manifest_inventory_matches(
         {
             return false;
         }
-        let Some((batch_id, route, metadata)) = observed.get(&item.connection_id) else {
+        let Some(observed_connection) = observed.get(&item.connection_id) else {
             return false;
         };
-        if batch_id.batch_id != item.batch_id || batch_id.route != item.route {
+        if observed_connection.batch_id != item.batch_id || observed_connection.route != item.route {
             return false;
         }
-        let Some((count, hash)) = &batch_id.subscription_metadata else {
+        let Some((count, hash)) = &observed_connection.subscription_metadata else {
             return false;
         };
         if *count != item.subscriptions.len() || hash != &item.subscription_set_sha256 {
