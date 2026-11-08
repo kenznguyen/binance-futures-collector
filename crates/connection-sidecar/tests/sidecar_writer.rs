@@ -511,26 +511,52 @@ fn validator_classifies_sealed_manifest_consistent_capture() {
 }
 
 #[test]
-fn refuses_to_disconnect_or_finalize_with_an_unanswered_ping() {
-    let path = temp_path("pending-ping-disconnect");
-    let connection = identity(Route::Public);
-    let mut writer = SidecarWriter::create(&path, SOURCE, SESSION).unwrap();
-    writer.connect_attempted(&connection, START).unwrap();
-    writer.connected(&connection, START + 1).unwrap();
-    writer
-        .ping_sent(&connection, "hb-unanswered", START + 2)
-        .unwrap();
+fn resolves_outstanding_ping_when_socket_closes_before_timeout() {
+    for (label, reason, expected_reason) in [
+        ("early-remote-close", DisconnectReason::RemoteClose, "REMOTE_CLOSE"),
+        (
+            "early-transport-error",
+            DisconnectReason::TransportError,
+            "TRANSPORT_ERROR",
+        ),
+    ] {
+        let path = temp_path(label);
+        let connection = identity(Route::Public);
+        let mut writer = SidecarWriter::create(&path, SOURCE, SESSION).unwrap();
+        writer.connect_attempted(&connection, START).unwrap();
+        writer.connected(&connection, START + 1).unwrap();
+        writer
+            .ping_sent(&connection, "hb-unanswered", START + 2)
+            .unwrap();
 
-    let before = fs::read(&path).unwrap();
-    assert!(writer
-        .disconnected(&connection, DisconnectReason::RemoteClose, START + 3)
-        .is_err());
-    assert_eq!(fs::read(&path).unwrap(), before);
-    assert!(writer.finalize(START + 2, START + 4).is_err());
-    assert!(!SidecarWriter::manifest_path(&path).exists());
+        writer
+            .disconnected(&connection, reason, START + 3)
+            .expect("socket closure must explicitly abandon outstanding Pings");
 
-    drop(writer);
-    fs::remove_file(path).unwrap();
+        let contents = fs::read_to_string(&path).unwrap();
+        let events: Vec<serde_json::Value> = contents
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(events.len(), 5);
+        assert_eq!(events[3]["eventType"], "PING_ABANDONED");
+        assert_eq!(events[3]["heartbeatId"], "hb-unanswered");
+        assert_eq!(events[3]["reason"], expected_reason);
+        assert_eq!(events[4]["eventType"], "DISCONNECTED");
+        assert_eq!(events[4]["reason"], expected_reason);
+        assert!(!contents.contains("PING_TIMEOUT"));
+
+        writer
+            .reconnect_scheduled(&connection, 1, 2_000, START + 4)
+            .expect("reconnect may be scheduled after the socket is terminal");
+        writer.finalize(START + 4, START + 5).unwrap();
+
+        let manifest_path = SidecarWriter::manifest_path(&path);
+        assert!(manifest_path.exists());
+        drop(writer);
+        fs::remove_file(path).unwrap();
+        fs::remove_file(manifest_path).unwrap();
+    }
 }
 
 #[test]
