@@ -1413,6 +1413,60 @@ mod create_cleanup_tests {
         }
     }
 
+    #[test]
+    fn rejects_manifest_connection_subscription_inventory_mismatches() {
+        for label in [
+            "missing-connection",
+            "extra-connection",
+            "batch-id",
+            "route",
+            "subscriptions",
+            "subscription-hash",
+            "duplicate-connection",
+        ] {
+            let sidecar_path = unique_path(label);
+            let (manifest_path, _) =
+                write_schema_fixture(&sidecar_path, "bc4f0ef633fbeee4a49defd72827f17162693805", "validator-session");
+            let mut manifest: serde_json::Value =
+                serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+            let inventory = manifest["connectionSubscriptions"]
+                .as_array_mut()
+                .expect("fixture inventory must be an array");
+            match label {
+                "missing-connection" => inventory.clear(),
+                "extra-connection" => {
+                    let mut extra = inventory[0].clone();
+                    extra["connectionId"] = serde_json::json!("unobserved-connection");
+                    inventory.push(extra);
+                }
+                "batch-id" => inventory[0]["batchId"] = serde_json::json!(1),
+                "route" => inventory[0]["route"] = serde_json::json!("market"),
+                "subscriptions" => {
+                    inventory[0]["subscriptions"] =
+                        serde_json::json!(["btcusdt@aggTrade"]);
+                }
+                "subscription-hash" => {
+                    inventory[0]["subscriptionSetSha256"] =
+                        serde_json::json!("0".repeat(64));
+                }
+                "duplicate-connection" => {
+                    let duplicate = inventory[0].clone();
+                    inventory.push(duplicate);
+                }
+                _ => unreachable!(),
+            }
+            fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+
+            let result = validate_capture(&sidecar_path).unwrap();
+            assert!(
+                matches!(result, CaptureValidation::ManifestMismatch { .. }),
+                "manifest inventory mismatch {label} must be rejected: {result:?}"
+            );
+            fs::remove_file(&sidecar_path).unwrap();
+            fs::remove_file(&manifest_path).unwrap();
+        }
+    }
+
     fn unique_path(label: &str) -> PathBuf {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
