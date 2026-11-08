@@ -1362,7 +1362,9 @@ mod create_cleanup_tests {
         let error = writer
             .finalize_with_publish(2, 3, |temp_path, final_path| {
                 fs::hard_link(temp_path, final_path)?;
-                Err(io::Error::other("injected post-hard-link publication failure"))
+                Err(io::Error::other(
+                    "injected post-hard-link publication failure",
+                ))
             })
             .expect_err("injected post-link failure must be returned");
 
@@ -1374,12 +1376,14 @@ mod create_cleanup_tests {
             "the final manifest was published before the injected failure"
         );
         assert!(
-            !manifest_path.with_file_name(format!(
-                "{}.tmp-{}-{}",
-                manifest_path.file_name().unwrap().to_string_lossy(),
-                std::process::id(),
-                2
-            )).exists(),
+            !manifest_path
+                .with_file_name(format!(
+                    "{}.tmp-{}-{}",
+                    manifest_path.file_name().unwrap().to_string_lossy(),
+                    std::process::id(),
+                    2
+                ))
+                .exists(),
             "temporary manifest should be cleaned up after publication failure"
         );
 
