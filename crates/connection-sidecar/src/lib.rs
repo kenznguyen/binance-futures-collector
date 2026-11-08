@@ -1220,7 +1220,6 @@ mod create_cleanup_tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-
     fn write_schema_fixture(
         sidecar_path: &Path,
         manifest_source_commit: &str,
@@ -1319,15 +1318,20 @@ mod create_cleanup_tests {
     #[test]
     fn rejects_manifest_source_commit_or_session_id_mismatch() {
         for (label, manifest_source, manifest_session) in [
-            ("source-commit", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "validator-session"),
-            ("session-id", "bc4f0ef633fbeee4a49defd72827f17162693805", "different-session"),
+            (
+                "source-commit",
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "validator-session",
+            ),
+            (
+                "session-id",
+                "bc4f0ef633fbeee4a49defd72827f17162693805",
+                "different-session",
+            ),
         ] {
             let sidecar_path = unique_path(label);
-            let (manifest_path, _) = write_schema_fixture(
-                &sidecar_path,
-                manifest_source,
-                manifest_session,
-            );
+            let (manifest_path, _) =
+                write_schema_fixture(&sidecar_path, manifest_source, manifest_session);
             let result = validate_capture(&sidecar_path).unwrap();
             assert!(
                 matches!(result, CaptureValidation::ManifestMismatch { .. }),
