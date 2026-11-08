@@ -1091,6 +1091,17 @@ struct ManifestValidationFields {
     sidecar_sha256: String,
     capture_finalized: bool,
     event_count: u64,
+    connection_subscriptions: Vec<ConnectionSubscriptionValidationFields>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ConnectionSubscriptionValidationFields {
+    connection_id: String,
+    batch_id: u32,
+    route: String,
+    subscriptions: Vec<String>,
+    subscription_set_sha256: String,
 }
 
 #[derive(Deserialize)]
@@ -1105,6 +1116,47 @@ struct EventValidationFields {
     route: String,
     event_type: String,
     event_at_ms: u64,
+    subscription_count: Option<usize>,
+    subscription_set_sha256: Option<String>,
+}
+
+fn manifest_inventory_matches(
+    inventory: &[ConnectionSubscriptionValidationFields],
+    observed: &HashMap<String, (u32, String, Option<(usize, String)>)>,
+) -> bool {
+    if inventory.len() != observed.len() || inventory.len() > MAX_SESSION_CONNECTIONS {
+        return false;
+    }
+
+    let mut seen = HashSet::new();
+    for item in inventory {
+        if item.connection_id.is_empty()
+            || item.connection_id.len() > 128
+            || item.batch_id > MAX_BATCH_ID
+            || !matches!(item.route.as_str(), "public" | "market")
+            || !seen.insert(item.connection_id.as_str())
+            || item.subscriptions.is_empty()
+            || item.subscriptions.len() > MAX_SUBSCRIPTIONS
+            || item.subscriptions.iter().any(|name| name.is_empty() || name.len() > MAX_SUBSCRIPTION_BYTES)
+            || item.subscriptions.windows(2).any(|pair| pair[0] >= pair[1])
+            || item.subscription_set_sha256 != subscription_set_sha256(&item.subscriptions)
+        {
+            return false;
+        }
+        let Some((batch_id, route, metadata)) = observed.get(&item.connection_id) else {
+            return false;
+        };
+        if *batch_id != item.batch_id || route != &item.route {
+            return false;
+        }
+        let Some((count, hash)) = metadata else {
+            return false;
+        };
+        if *count != item.subscriptions.len() || hash != &item.subscription_set_sha256 {
+            return false;
+        }
+    }
+    seen.len() == observed.len()
 }
 
 /// Validate a sidecar and its optional manifest without modifying either file.
@@ -1142,6 +1194,8 @@ pub fn validate_capture(path: impl AsRef<Path>) -> io::Result<CaptureValidation>
 
     let mut event_count = 0_u64;
     let mut event_identity: Option<(String, String)> = None;
+    let mut observed_connections: HashMap<String, (u32, String, Option<(usize, String)>)> =
+        HashMap::new();
     let record_count = bytes.iter().filter(|byte| **byte == b'\n').count();
     for (index, line) in bytes
         .split(|byte| *byte == b'\n')
@@ -1208,6 +1262,34 @@ pub fn validate_capture(path: impl AsRef<Path>) -> io::Result<CaptureValidation>
             });
         }
         event_identity.get_or_insert(identity);
+        let event_subscription_metadata = match event.event_type.as_str() {
+            "CONNECT_ATTEMPTED" | "CONNECTED" => {
+                match (event.subscription_count, event.subscription_set_sha256.as_ref()) {
+                    (Some(count), Some(hash)) if count <= MAX_SUBSCRIPTIONS && is_lower_hex(hash, 64) => {
+                        Some((count, hash.clone()))
+                    }
+                    _ => return Ok(CaptureValidation::MalformedJsonl { line_number: index + 1 }),
+                }
+            }
+            _ => None,
+        };
+        match observed_connections.entry(event.connection_id.clone()) {
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert((event.batch_id, event.route.clone(), event_subscription_metadata));
+            }
+            std::collections::hash_map::Entry::Occupied(mut entry) => {
+                let observed = entry.get_mut();
+                if observed.0 != event.batch_id || observed.1 != event.route {
+                    return Ok(CaptureValidation::MalformedJsonl { line_number: index + 1 });
+                }
+                if let Some(metadata) = event_subscription_metadata {
+                    if observed.2.as_ref().is_some_and(|previous| previous != &metadata) {
+                        return Ok(CaptureValidation::MalformedJsonl { line_number: index + 1 });
+                    }
+                    observed.2 = Some(metadata);
+                }
+            }
+        }
         event_count += 1;
         if event_count > MAX_EVENTS {
             return Err(invalid("sidecar event count limit exceeded"));
@@ -1271,6 +1353,8 @@ pub fn validate_capture(path: impl AsRef<Path>) -> io::Result<CaptureValidation>
         Some("manifest sidecar SHA-256 does not match")
     } else if manifest.event_count != event_count {
         Some("manifest event count does not match JSONL records")
+    } else if !manifest_inventory_matches(&manifest.connection_subscriptions, &observed_connections) {
+        Some("manifest connection subscription inventory does not match JSONL events")
     } else {
         None
     };
