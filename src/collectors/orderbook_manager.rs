@@ -1376,7 +1376,7 @@ mod tests {
     }
 
     #[test]
-    fn reconnect_pu_break_is_visible_in_raw_sequence_but_live_book_can_stale() {
+    fn reconnect_pu_break_leaves_untouched_levels_stale_in_live_book() {
         let mut book = snapshot_book(100);
 
         // The reconnect jumps from 100 to 120. The live loop intentionally
@@ -1394,7 +1394,7 @@ mod tests {
         // snapshot reconstruction.
         assert_eq!(book.bids[&99.5f64.to_bits()], 2.0);
         assert_eq!(reconnect_diff.prev_update_id, 120);
-        assert_ne!(reconnect_diff.prev_update_id, 100);
+        assert_eq!(book.last_update_id, 125);
     }
 
     #[test]
