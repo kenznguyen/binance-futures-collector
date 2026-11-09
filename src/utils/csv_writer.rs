@@ -14,6 +14,61 @@ use crate::config::Config;
 use crate::constants;
 use crate::models::*;
 
+/// Validate a plain decimal lexical form without converting or normalizing it.
+/// Optional sign and exponent are accepted; the original bytes are retained for CSV.
+fn validate_decimal_string(value: &str, field: &str) -> Result<()> {
+    let bytes = value.as_bytes();
+    let mut index = 0;
+
+    if bytes.is_empty() {
+        anyhow::bail!("invalid empty decimal value for {field}");
+    }
+
+    if matches!(bytes[index], b'+' | b'-') {
+        index += 1;
+    }
+
+    let integer_start = index;
+    while index < bytes.len() && bytes[index].is_ascii_digit() {
+        index += 1;
+    }
+    let integer_digits = index - integer_start;
+
+    let mut fractional_digits = 0;
+    if index < bytes.len() && bytes[index] == b'.' {
+        index += 1;
+        let fraction_start = index;
+        while index < bytes.len() && bytes[index].is_ascii_digit() {
+            index += 1;
+        }
+        fractional_digits = index - fraction_start;
+    }
+
+    if integer_digits == 0 && fractional_digits == 0 {
+        anyhow::bail!("invalid decimal syntax for {field}");
+    }
+
+    if index < bytes.len() && matches!(bytes[index], b'e' | b'E') {
+        index += 1;
+        if index < bytes.len() && matches!(bytes[index], b'+' | b'-') {
+            index += 1;
+        }
+        let exponent_start = index;
+        while index < bytes.len() && bytes[index].is_ascii_digit() {
+            index += 1;
+        }
+        if index == exponent_start {
+            anyhow::bail!("invalid decimal exponent for {field}");
+        }
+    }
+
+    if index != bytes.len() {
+        anyhow::bail!("invalid decimal syntax for {field}");
+    }
+
+    Ok(())
+}
+
 /// Row with sortable metadata for depth updates
 #[derive(Clone)]
 struct DepthUpdateRow {
@@ -411,23 +466,19 @@ impl CsvWriter {
     }
 
     pub async fn write_kline(&self, kline: &KlineCsv) -> Result<()> {
+        // Validate every source decimal before opening/creating the destination file.
+        // Keep the original lexical representation; never round-trip through f64.
+        validate_decimal_string(&kline.open, "open")?;
+        validate_decimal_string(&kline.high, "high")?;
+        validate_decimal_string(&kline.low, "low")?;
+        validate_decimal_string(&kline.close, "close")?;
+        validate_decimal_string(&kline.volume, "volume")?;
+        validate_decimal_string(&kline.quote_volume, "quote_volume")?;
+        validate_decimal_string(&kline.taker_buy_base, "taker_buy_base")?;
+        validate_decimal_string(&kline.taker_buy_quote, "taker_buy_quote")?;
+
         let file_path = self.get_daily_file_path("klines", &kline.symbol, kline.timestamp_ms);
         let buffer = self.get_or_create_buffer(&file_path).await?;
-
-        // Format all numeric values to 12 decimal places
-        let open_formatted = format!("{:.12}", kline.open.parse::<f64>().unwrap_or(0.0));
-        let high_formatted = format!("{:.12}", kline.high.parse::<f64>().unwrap_or(0.0));
-        let low_formatted = format!("{:.12}", kline.low.parse::<f64>().unwrap_or(0.0));
-        let close_formatted = format!("{:.12}", kline.close.parse::<f64>().unwrap_or(0.0));
-        let volume_formatted = format!("{:.12}", kline.volume.parse::<f64>().unwrap_or(0.0));
-        let quote_volume_formatted =
-            format!("{:.12}", kline.quote_volume.parse::<f64>().unwrap_or(0.0));
-        let taker_buy_base_formatted =
-            format!("{:.12}", kline.taker_buy_base.parse::<f64>().unwrap_or(0.0));
-        let taker_buy_quote_formatted = format!(
-            "{:.12}",
-            kline.taker_buy_quote.parse::<f64>().unwrap_or(0.0)
-        );
 
         let row = format!(
             "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
@@ -437,15 +488,15 @@ impl CsvWriter {
             kline.timestamp_ms,
             Self::iso_utc(kline.timestamp_ms),
             kline.symbol,
-            open_formatted,
-            high_formatted,
-            low_formatted,
-            close_formatted,
-            volume_formatted,
-            quote_volume_formatted,
+            kline.open,
+            kline.high,
+            kline.low,
+            kline.close,
+            kline.volume,
+            kline.quote_volume,
             kline.trade_count,
-            taker_buy_base_formatted,
-            taker_buy_quote_formatted
+            kline.taker_buy_base,
+            kline.taker_buy_quote
         );
 
         self.write_row(buffer, &row).await
