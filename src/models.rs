@@ -434,3 +434,21 @@ pub fn format_decimal_str(value: &str) -> String {
 pub fn format_decimal(value: f64) -> String {
     format!("{:.12}", value)
 }
+
+
+#[cfg(test)]
+mod decimal_string_tests {
+    use super::format_decimal_str;
+
+    #[test]
+    fn decimal_string_passthrough_preserves_source_lexeme_exactly() {
+        for value in [
+            "123456789.123456789123456789",
+            "0.000000000000000000000000000123",
+            "1.230000000000000000",
+            "987654321.000000000000000001",
+        ] {
+            assert_eq!(format_decimal_str(value), value);
+        }
+    }
+}
