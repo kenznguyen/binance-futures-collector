@@ -422,12 +422,10 @@ pub struct PremiumIndexKlineCsv {
     pub close: String,
 }
 
-/// Format decimal string to 12 decimal places
+/// Preserve an exchange-provided decimal string exactly.
+/// Numeric syntax is validated at the CSV persistence boundary.
 pub fn format_decimal_str(value: &str) -> String {
-    match value.parse::<f64>() {
-        Ok(v) => format!("{:.12}", v),
-        Err(_) => value.to_string(),
-    }
+    value.to_string()
 }
 
 /// Format decimal to 12 decimal places
