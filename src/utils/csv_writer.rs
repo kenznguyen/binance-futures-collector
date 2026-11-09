@@ -1266,7 +1266,9 @@ mod tests {
 
         let path = w.get_daily_file_path("klines", "btcusdt", TS);
         assert!(w.write_kline(&k).await.is_err());
-        assert!(!path.exists(), "invalid numeric input must not create a CSV file");
+        assert!(
+            !path.exists(),
+            "invalid numeric input must not create a CSV file"
+        );
     }
-
 }
