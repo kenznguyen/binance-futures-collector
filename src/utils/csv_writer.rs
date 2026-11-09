@@ -1205,4 +1205,68 @@ mod tests {
         let s = p.to_string_lossy();
         assert!(s.ends_with("trades/btcusdt/2023-11-14/btcusdt_trades_2023-11-14.csv"));
     }
+    #[tokio::test]
+    async fn kline_writer_preserves_exact_source_decimal_lexemes() {
+        let dir = tempfile::tempdir().unwrap();
+        let w = test_writer(dir.path());
+        let k = KlineCsv {
+            exchange: "binance".to_string(),
+            market: "futures".to_string(),
+            datatype: "klines".to_string(),
+            timestamp_ms: TS,
+            symbol: "btcusdt".to_string(),
+            open: "123456789.123456789123456789".to_string(),
+            high: "123456789.123456789123456790".to_string(),
+            low: "0.000000000000000000000000000123".to_string(),
+            close: "1.230000000000000000".to_string(),
+            volume: "0.000000000000000000000000000001".to_string(),
+            quote_volume: "987654321.000000000000000001".to_string(),
+            trade_count: 7,
+            taker_buy_base: "0.000000000000000000000000000009".to_string(),
+            taker_buy_quote: "999999999999.000000000000000001".to_string(),
+        };
+
+        w.write_kline(&k).await.unwrap();
+        w.flush_all().await.unwrap();
+
+        let path = w.get_daily_file_path("klines", "btcusdt", TS);
+        let content = std::fs::read_to_string(path).unwrap();
+        let row: Vec<&str> = content.lines().nth(1).unwrap().split(',').collect();
+
+        assert_eq!(row[6], "123456789.123456789123456789");
+        assert_eq!(row[7], "123456789.123456789123456790");
+        assert_eq!(row[8], "0.000000000000000000000000000123");
+        assert_eq!(row[9], "1.230000000000000000");
+        assert_eq!(row[10], "0.000000000000000000000000000001");
+        assert_eq!(row[11], "987654321.000000000000000001");
+        assert_eq!(row[13], "0.000000000000000000000000000009");
+        assert_eq!(row[14], "999999999999.000000000000000001");
+    }
+
+    #[tokio::test]
+    async fn kline_writer_rejects_non_decimal_input_without_creating_a_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let w = test_writer(dir.path());
+        let k = KlineCsv {
+            exchange: "binance".to_string(),
+            market: "futures".to_string(),
+            datatype: "klines".to_string(),
+            timestamp_ms: TS,
+            symbol: "btcusdt".to_string(),
+            open: "NaN".to_string(),
+            high: "3001.2".to_string(),
+            low: "2999.3".to_string(),
+            close: "3000.4".to_string(),
+            volume: "12.5".to_string(),
+            quote_volume: "37505.0".to_string(),
+            trade_count: 87,
+            taker_buy_base: "6.0".to_string(),
+            taker_buy_quote: "18002.4".to_string(),
+        };
+
+        let path = w.get_daily_file_path("klines", "btcusdt", TS);
+        assert!(w.write_kline(&k).await.is_err());
+        assert!(!path.exists(), "invalid numeric input must not create a CSV file");
+    }
+
 }
