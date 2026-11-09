@@ -63,3 +63,15 @@ Scope: repair the confirmed WebSocket kline decimal-loss path only.
 - Latest branch HEAD with additional tests: NOT VERIFIED.
 - This does not prove target VPS filesystem behavior, source completeness, Binance REST reconciliation, FINAL_ONLY/product identity implementation, or production readiness.
 - No deployment, VPS operation, T1 activation, T0/T2 change, live order, exchange credential use, or destructive data operation was performed.
+
+
+## CI startup investigation — 2026-11-09
+
+- Reconfirmed exact branch HEAD: `bb70a28d21486cb844d6fb8536be310172502abd`.
+- Reconfirmed `.github/workflows/ci.yml` blob: `8329039c807d63cf6834ca9c85fbd0cd99e474d4`.
+- Workflow triggers are configured for push to `main` and `feature/t1-connection-sidecar-integration-20261107`, plus all pull requests. The collector job uses `ubuntu-latest`; no conditional skip or path filter explains the absence of jobs.
+- Latest exact-head run: [42645946681](https://github.com/kenznguyen/binance-futures-collector/actions/runs/42645946681), event `push`, conclusion `startup_failure`, run_attempt 1, zero jobs, created and updated at `2026-11-09T15:34:00Z`.
+- Earlier runs [42645569066](https://github.com/kenznguyen/binance-futures-collector/actions/runs/42645569066) (push) and [42645581768](https://github.com/kenznguyen/binance-futures-collector/actions/runs/42645581768) (pull_request) also ended `startup_failure` with zero jobs.
+- Because GitHub created the workflow runs/check suites but no job records exist, there is no runner step log or Rust test output to attribute to the source. This is an Actions startup/provisioning failure, not a Rust test failure.
+- No workflow configuration change is justified by current evidence. No workflow dispatch or rerun endpoint is available through the connected GitHub actions in this session; do not fabricate a rerun.
+- Exact latest HEAD and the additional lexical edge tests remain NOT VERIFIED. The implementation checkpoint `ad03560b6409de3c28688fb25d57fa49aed66a9f` remains the only green CI evidence for this fix.
