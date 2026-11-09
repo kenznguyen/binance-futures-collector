@@ -1303,8 +1303,20 @@ mod tests {
 
     #[test]
     fn decimal_lexical_validation_rejects_non_finite_and_malformed_forms() {
-        for value in ["NaN", "inf", "-Infinity", "not-a-number", "1,2", "1\n0", "", "."] {
-            assert!(validate_decimal_string(value, "fixture").is_err(), "{value}");
+        for value in [
+            "NaN",
+            "inf",
+            "-Infinity",
+            "not-a-number",
+            "1,2",
+            "1\n0",
+            "",
+            ".",
+        ] {
+            assert!(
+                validate_decimal_string(value, "fixture").is_err(),
+                "{value}"
+            );
         }
     }
 
