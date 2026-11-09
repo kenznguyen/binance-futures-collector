@@ -435,7 +435,6 @@ pub fn format_decimal(value: f64) -> String {
     format!("{:.12}", value)
 }
 
-
 #[cfg(test)]
 mod decimal_string_tests {
     use super::format_decimal_str;
