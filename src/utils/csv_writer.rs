@@ -1294,6 +1294,20 @@ mod tests {
         assert_eq!(row[14], "999999999999.000000000000000001");
     }
 
+    #[test]
+    fn decimal_lexical_validation_accepts_exact_decimal_and_exponent_forms() {
+        for value in ["0", "-1.2", "+0.3", "1e-8", "1.2300E+4", ".25", "5."] {
+            assert!(validate_decimal_string(value, "fixture").is_ok(), "{value}");
+        }
+    }
+
+    #[test]
+    fn decimal_lexical_validation_rejects_non_finite_and_malformed_forms() {
+        for value in ["NaN", "inf", "-Infinity", "not-a-number", "1,2", "1\\n0", "", "."] {
+            assert!(validate_decimal_string(value, "fixture").is_err(), "{value}");
+        }
+    }
+
     #[tokio::test]
     async fn kline_writer_rejects_non_decimal_input_without_creating_a_file() {
         let dir = tempfile::tempdir().unwrap();
@@ -1304,7 +1318,7 @@ mod tests {
             datatype: "klines".to_string(),
             timestamp_ms: TS,
             symbol: "btcusdt".to_string(),
-            open: "NaN".to_string(),
+            open: "not-a-number".to_string(),
             high: "3001.2".to_string(),
             low: "2999.3".to_string(),
             close: "3000.4".to_string(),
