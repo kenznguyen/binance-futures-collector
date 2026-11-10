@@ -1,0 +1,112 @@
+name: T0 SSH Preflight
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: t0-ssh-preflight
+  cancel-in-progress: false
+
+jobs:
+  ssh-preflight:
+    name: Read-only Scaleway SSH check
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Validate secrets and run read-only SSH checks
+        shell: bash
+        env:
+          SCW_SSH_HOST: ${{ secrets.SCW_SSH_HOST }}
+          SCW_SSH_PORT: ${{ secrets.SCW_SSH_PORT }}
+          SCW_SSH_USER: ${{ secrets.SCW_SSH_USER }}
+          SCW_SSH_PRIVATE_KEY: ${{ secrets.SCW_SSH_PRIVATE_KEY }}
+          SCW_SSH_KNOWN_HOSTS: ${{ secrets.SCW_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          KEY_FILE="$RUNNER_TEMP/scw_preflight_key"
+          KNOWN_HOSTS_FILE="$RUNNER_TEMP/scw_preflight_known_hosts"
+          trap 'rm -f "$KEY_FILE" "$KNOWN_HOSTS_FILE"' EXIT
+
+          : "${SCW_SSH_HOST:?Missing SCW_SSH_HOST secret}"
+          : "${SCW_SSH_PORT:?Missing SCW_SSH_PORT secret}"
+          : "${SCW_SSH_USER:?Missing SCW_SSH_USER secret}"
+          : "${SCW_SSH_PRIVATE_KEY:?Missing SCW_SSH_PRIVATE_KEY secret}"
+          : "${SCW_SSH_KNOWN_HOSTS:?Missing SCW_SSH_KNOWN_HOSTS secret}"
+
+          if ! [[ "$SCW_SSH_PORT" =~ ^[0-9]{1,5}$ ]] || (( SCW_SSH_PORT < 1 || SCW_SSH_PORT > 65535 )); then
+            echo "SCW_SSH_PORT must be an integer between 1 and 65535" >&2
+            exit 1
+          fi
+
+          printf '%s\n' "$SCW_SSH_PRIVATE_KEY" > "$KEY_FILE"
+          printf '%s\n' "$SCW_SSH_KNOWN_HOSTS" > "$KNOWN_HOSTS_FILE"
+          chmod 600 "$KEY_FILE" "$KNOWN_HOSTS_FILE"
+
+          # Validate the key format and require a pinned host-key entry for this host/port.
+          ssh-keygen -y -P "" -f "$KEY_FILE" >/dev/null
+          HOST_KEY_LOOKUP="[$SCW_SSH_HOST]:$SCW_SSH_PORT"
+          ssh-keygen -F "$HOST_KEY_LOOKUP" -f "$KNOWN_HOSTS_FILE" >/dev/null
+
+          {
+            echo "=== GitHub Actions evidence ==="
+            echo "workflow=T0 SSH Preflight"
+            echo "repository=$GITHUB_REPOSITORY"
+            echo "ref=$GITHUB_REF"
+            echo "source_sha=$GITHUB_SHA"
+            echo "run_id=$GITHUB_RUN_ID"
+            echo "run_attempt=$GITHUB_RUN_ATTEMPT"
+            echo "runner_utc=$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+            echo "ssh_host=$SCW_SSH_HOST"
+            echo "ssh_port=$SCW_SSH_PORT"
+            echo "ssh_user=$SCW_SSH_USER"
+            echo
+            echo "=== Pinned host key fingerprint(s) ==="
+            ssh-keygen -lf "$KNOWN_HOSTS_FILE"
+            echo
+            echo "=== Remote read-only checks ==="
+            ssh \
+              -p "$SCW_SSH_PORT" \
+              -i "$KEY_FILE" \
+              -o BatchMode=yes \
+              -o IdentitiesOnly=yes \
+              -o PreferredAuthentications=publickey \
+              -o PasswordAuthentication=no \
+              -o KbdInteractiveAuthentication=no \
+              -o StrictHostKeyChecking=yes \
+              -o UserKnownHostsFile="$KNOWN_HOSTS_FILE" \
+              -o ConnectTimeout=10 \
+              -o ServerAliveInterval=5 \
+              -o ServerAliveCountMax=2 \
+              "$SCW_SSH_USER@$SCW_SSH_HOST" 'bash -s' <<'REMOTE'
+          set -eu
+          echo "remote_utc=$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          echo "hostname=$(hostname -f 2>/dev/null || hostname)"
+          echo "whoami=$(whoami)"
+          echo "kernel=$(uname -a)"
+          echo "--- uptime ---"
+          uptime
+          echo "--- filesystem ---"
+          df -h / /home
+          echo "--- tmux sessions ---"
+          if command -v tmux >/dev/null 2>&1; then
+            tmux list-sessions 2>&1 || echo "No active tmux sessions"
+          else
+            echo "tmux is not installed"
+          fi
+          echo "--- relevant process names (no command-line arguments) ---"
+          ps -eo pid=,comm= | grep -Ei 't0|market|gunicorn|python' || true
+          REMOTE
+          } 2>&1 | tee evidence/preflight.txt
+
+      - name: Upload preflight evidence
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: t0-ssh-preflight-${{ github.run_id }}-${{ github.run_attempt }}
+          path: evidence/preflight.txt
+          if-no-files-found: warn
+          retention-days: 14
