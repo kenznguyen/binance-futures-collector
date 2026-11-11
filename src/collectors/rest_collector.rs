@@ -9,7 +9,7 @@ use tokio::time::{interval, sleep};
 use crate::config::Config;
 use crate::models::*;
 use crate::rest::RestClient;
-use crate::utils::{time_utils, CsvWriter};
+use crate::utils::{multiply_decimal_strings, time_utils, CsvWriter};
 
 /// Buckets to fetch per `/futures/data` poll. These endpoints are limiter-paced
 /// (~20-min effective cadence for ~500 symbols on one IP); fetching 8× 5-min
@@ -321,9 +321,16 @@ impl RestCollector {
                     }
                 };
 
-                let oi_value: f64 = oi_data.open_interest.parse().unwrap_or(0.0);
-                let price: f64 = mark_price.parse().unwrap_or(0.0);
-                let value = oi_value * price;
+                let value = match multiply_decimal_strings(&oi_data.open_interest, &mark_price) {
+                    Ok(value) => value,
+                    Err(e) => {
+                        warn!(
+                            "Skipping open interest for {}: invalid source decimal: {}",
+                            symbol, e
+                        );
+                        return;
+                    }
+                };
 
                 let csv = OpenInterestCsv {
                     exchange: "binance".to_string(),
@@ -333,7 +340,7 @@ impl RestCollector {
                     symbol: oi_data.symbol.to_lowercase(),
                     price: format_decimal_str(&mark_price),
                     open_interest: format_decimal_str(&oi_data.open_interest),
-                    oi_value: format_decimal(value),
+                    oi_value: value,
                 };
 
                 if let Err(e) = self.csv_writer.write_open_interest(&csv).await {
@@ -430,15 +437,18 @@ impl RestCollector {
                         if !self.is_new_bucket(&key, ratio.timestamp) {
                             continue;
                         }
-                        let (long_ratio, short_ratio) = if let (Some(long), Some(short)) =
-                            (ratio.long_account.as_ref(), ratio.short_account.as_ref())
-                        {
-                            (long.clone(), short.clone())
-                        } else {
-                            let ls_ratio: f64 = ratio.long_short_ratio.parse().unwrap_or(1.0);
-                            let long_pct = ls_ratio / (1.0 + ls_ratio);
-                            let short_pct = 1.0 - long_pct;
-                            (format_decimal(long_pct), format_decimal(short_pct))
+                        let (long_ratio, short_ratio) = match (
+                            ratio.long_account.as_ref(),
+                            ratio.short_account.as_ref(),
+                        ) {
+                            (Some(long), Some(short)) => (long.clone(), short.clone()),
+                            _ => {
+                                warn!(
+                                    "Skipping {} ratio for {} at {}: source long/short account values are missing",
+                                    ratio_type, symbol, ratio.timestamp
+                                );
+                                continue;
+                            }
                         };
 
                         let csv = LongShortRatioCsv {
