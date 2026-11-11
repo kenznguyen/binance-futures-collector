@@ -763,66 +763,36 @@ impl OrderbookManager {
         Ok((applied > 0).then_some(applied))
     }
 
-    /// Apply one diff update to a book: quantity 0 deletes the level, anything
-    /// else replaces it. Uses the pre-converted floats when present, falling
-    /// back to parsing the wire strings.
+    /// Apply one diff update to a book. Source decimal strings are retained
+    /// verbatim for snapshots; f64 values are only an internal computational view.
     fn apply_update_to_book(book: &mut Orderbook, update: &DepthUpdateWs) -> Result<()> {
         for [price_str, quantity_str] in &update.bids {
+            let price: f64 = price_str.parse()?;
+            let quantity: f64 = quantity_str.parse()?;
             let price_key = normalize_plain_decimal(price_str)?;
-            if normalize_plain_decimal(quantity_str)? == "0" {
+            let quantity_key = normalize_plain_decimal(quantity_str)?;
+            if quantity_key == "0" {
+                book.bids.remove(&price.to_bits());
                 book.raw_bids.remove(&price_key);
             } else {
-                book.raw_bids.insert(price_key, (price_str.clone(), quantity_str.clone()));
+                book.bids.insert(price.to_bits(), quantity);
+                book.raw_bids
+                    .insert(price_key, (price_str.clone(), quantity_str.clone()));
             }
         }
+
         for [price_str, quantity_str] in &update.asks {
+            let price: f64 = price_str.parse()?;
+            let quantity: f64 = quantity_str.parse()?;
             let price_key = normalize_plain_decimal(price_str)?;
-            if normalize_plain_decimal(quantity_str)? == "0" {
+            let quantity_key = normalize_plain_decimal(quantity_str)?;
+            if quantity_key == "0" {
+                book.asks.remove(&price.to_bits());
                 book.raw_asks.remove(&price_key);
             } else {
-                book.raw_asks.insert(price_key, (price_str.clone(), quantity_str.clone()));
-            }
-        }
-
-        if let Some(b_floats) = &update.b_floats {
-            for (price, qty) in b_floats {
-                if *qty == 0.0 {
-                    book.bids.remove(&price.to_bits());
-                } else {
-                    book.bids.insert(price.to_bits(), *qty);
-                }
-            }
-        } else {
-            // Fallback: parse from strings
-            for [price_str, qty_str] in &update.bids {
-                let price: f64 = price_str.parse()?;
-                let qty: f64 = qty_str.parse()?;
-                if qty == 0.0 {
-                    book.bids.remove(&price.to_bits());
-                } else {
-                    book.bids.insert(price.to_bits(), qty);
-                }
-            }
-        }
-
-        if let Some(a_floats) = &update.a_floats {
-            for (price, qty) in a_floats {
-                if *qty == 0.0 {
-                    book.asks.remove(&price.to_bits());
-                } else {
-                    book.asks.insert(price.to_bits(), *qty);
-                }
-            }
-        } else {
-            // Fallback: parse from strings
-            for [price_str, qty_str] in &update.asks {
-                let price: f64 = price_str.parse()?;
-                let qty: f64 = qty_str.parse()?;
-                if qty == 0.0 {
-                    book.asks.remove(&price.to_bits());
-                } else {
-                    book.asks.insert(price.to_bits(), qty);
-                }
+                book.asks.insert(price.to_bits(), quantity);
+                book.raw_asks
+                    .insert(price_key, (price_str.clone(), quantity_str.clone()));
             }
         }
 
@@ -1297,8 +1267,6 @@ mod tests {
                 .iter()
                 .map(|(p, q)| [p.to_string(), q.to_string()])
                 .collect(),
-            b_floats: None,
-            a_floats: None,
         }
     }
 
@@ -1479,14 +1447,21 @@ mod tests {
     }
 
     #[test]
-    fn diff_prefers_preconverted_floats() {
+    fn diff_preserves_exact_wire_decimal_strings() {
         let mut book = empty_book();
-        let mut u = update(5, &[(1.0, 1.0)], &[]);
-        // When floats are present, the string levels must be ignored.
-        u.b_floats = Some(vec![(2.0, 9.0)]);
+        let mut u = update(5, &[], &[]);
+        u.bids = vec![[
+            "123456789.123456789123456789".to_string(),
+            "0.000000000000000000123456789".to_string(),
+        ]];
         OrderbookManager::apply_update_to_book(&mut book, &u).unwrap();
-        assert_eq!(book.bids.len(), 1);
-        assert_eq!(book.bids[&2.0f64.to_bits()], 9.0);
+        assert_eq!(
+            book.raw_bids.get("123456789.123456789123456789"),
+            Some(&(
+                "123456789.123456789123456789".to_string(),
+                "0.000000000000000000123456789".to_string()
+            ))
+        );
     }
 
     #[test]
