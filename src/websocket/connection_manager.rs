@@ -637,39 +637,6 @@ impl WebSocketManager {
 
         match event_type {
             Some("depthUpdate") => {
-                // Pre-convert floats for orderbook operations (8-10% CPU reduction)
-                if let Some(bids_raw) = data.get("b").and_then(|b| b.as_array()) {
-                    let b_floats: Vec<(f64, f64)> = bids_raw
-                        .iter()
-                        .filter_map(|item| {
-                            let arr = item.as_array()?;
-                            let p = arr.first()?.as_str()?.parse::<f64>().ok()?;
-                            let q = arr.get(1)?.as_str()?.parse::<f64>().ok()?;
-                            Some((p, q))
-                        })
-                        .collect();
-
-                    if let Some(obj) = data.as_object_mut() {
-                        obj.insert("b_floats".to_string(), serde_json::to_value(&b_floats)?);
-                    }
-                }
-
-                if let Some(asks_raw) = data.get("a").and_then(|a| a.as_array()) {
-                    let a_floats: Vec<(f64, f64)> = asks_raw
-                        .iter()
-                        .filter_map(|item| {
-                            let arr = item.as_array()?;
-                            let p = arr.first()?.as_str()?.parse::<f64>().ok()?;
-                            let q = arr.get(1)?.as_str()?.parse::<f64>().ok()?;
-                            Some((p, q))
-                        })
-                        .collect();
-
-                    if let Some(obj) = data.as_object_mut() {
-                        obj.insert("a_floats".to_string(), serde_json::to_value(&a_floats)?);
-                    }
-                }
-
                 let update: DepthUpdateWs = serde_json::from_value(data)?;
 
                 // Buffer the update (don't process yet - that's the orderbook manager's job)
