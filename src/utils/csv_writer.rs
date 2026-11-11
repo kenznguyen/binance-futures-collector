@@ -69,6 +69,13 @@ fn validate_decimal_string(value: &str, field: &str) -> Result<()> {
     Ok(())
 }
 
+fn validate_decimal_fields(fields: &[(&str, &str)]) -> Result<()> {
+    for (field, value) in fields {
+        validate_decimal_string(value, field)?;
+    }
+    Ok(())
+}
+
 /// Row with sortable metadata for depth updates
 #[derive(Clone)]
 struct DepthUpdateRow {
@@ -398,10 +405,10 @@ impl CsvWriter {
                 snapshot.timestamp_ms,
             );
 
-            // Format price and quantity to 12 decimal places
-            let price_formatted = format!("{:.12}", snapshot.price.parse::<f64>().unwrap_or(0.0));
-            let quantity_formatted =
-                format!("{:.12}", snapshot.quantity.parse::<f64>().unwrap_or(0.0));
+            validate_decimal_fields(&[
+                ("price", &snapshot.price),
+                ("quantity", &snapshot.quantity),
+            ])?;
 
             let row = format!(
                 "{},{},{},{},{},{},{},{},{},{},{}",
@@ -413,8 +420,8 @@ impl CsvWriter {
                 snapshot.symbol,
                 snapshot.event_type,
                 snapshot.side,
-                price_formatted,
-                quantity_formatted,
+                snapshot.price,
+                snapshot.quantity,
                 snapshot.last_update_id
             );
 
@@ -438,12 +445,10 @@ impl CsvWriter {
             return Ok(());
         }
 
+        validate_decimal_fields(&[("price", &trade.price), ("quantity", &trade.quantity)])?;
+
         let file_path = self.get_daily_file_path("trades", &trade.symbol, trade.timestamp_ms);
         let buffer = self.get_or_create_buffer(&file_path).await?;
-
-        // Format price and quantity to 12 decimal places
-        let price_formatted = format!("{:.12}", trade.price.parse::<f64>().unwrap_or(0.0));
-        let quantity_formatted = format!("{:.12}", trade.quantity.parse::<f64>().unwrap_or(0.0));
 
         let row = format!(
             "{},{},{},{},{},{},{},{},{},{},{},{},{}",
@@ -455,8 +460,8 @@ impl CsvWriter {
             trade.symbol,
             trade.trade_id,
             trade.side,
-            price_formatted,
-            quantity_formatted,
+            trade.price,
+            trade.quantity,
             trade.is_buyer_maker,
             trade.first_update_id,
             trade.last_update_id
@@ -503,18 +508,18 @@ impl CsvWriter {
     }
 
     pub async fn write_liquidation(&self, liquidation: &LiquidationCsv) -> Result<()> {
+        validate_decimal_fields(&[
+            ("price", &liquidation.price),
+            ("quantity", &liquidation.quantity),
+            ("value", &liquidation.value),
+        ])?;
+
         let file_path = self.get_daily_file_path(
             "liquidations",
             &liquidation.symbol,
             liquidation.timestamp_ms,
         );
         let buffer = self.get_or_create_buffer(&file_path).await?;
-
-        // Format all numeric values to 12 decimal places
-        let price_formatted = format!("{:.12}", liquidation.price.parse::<f64>().unwrap_or(0.0));
-        let quantity_formatted =
-            format!("{:.12}", liquidation.quantity.parse::<f64>().unwrap_or(0.0));
-        let value_formatted = format!("{:.12}", liquidation.value.parse::<f64>().unwrap_or(0.0));
 
         let row = format!(
             "{},{},{},{},{},{},{},{},{},{}",
@@ -525,9 +530,9 @@ impl CsvWriter {
             Self::iso_utc(liquidation.timestamp_ms),
             liquidation.symbol,
             liquidation.side,
-            price_formatted,
-            quantity_formatted,
-            value_formatted
+            liquidation.price,
+            liquidation.quantity,
+            liquidation.value
         );
 
         self.write_row(buffer, &row).await
@@ -538,6 +543,8 @@ impl CsvWriter {
             "write_funding_rate() called for symbol={} at ts={}",
             funding_rate.symbol, funding_rate.timestamp_ms
         );
+        validate_decimal_fields(&[("funding_rate", &funding_rate.funding_rate)])?;
+
         let file_path = self.get_daily_file_path(
             "funding_rates",
             &funding_rate.symbol,
@@ -545,12 +552,6 @@ impl CsvWriter {
         );
         debug!("write_funding_rate() file_path={:?}", file_path);
         let buffer = self.get_or_create_buffer(&file_path).await?;
-
-        // Format funding_rate to 12 decimal places
-        let funding_rate_formatted = format!(
-            "{:.12}",
-            funding_rate.funding_rate.parse::<f64>().unwrap_or(0.0)
-        );
 
         let row = format!(
             "{},{},{},{},{},{},{},{}",
@@ -560,7 +561,7 @@ impl CsvWriter {
             funding_rate.timestamp_ms,
             Self::iso_utc(funding_rate.timestamp_ms),
             funding_rate.symbol,
-            funding_rate_formatted,
+            funding_rate.funding_rate,
             funding_rate.next_funding_time
         );
 
@@ -568,14 +569,14 @@ impl CsvWriter {
     }
 
     pub async fn write_open_interest(&self, oi: &OpenInterestCsv) -> Result<()> {
+        validate_decimal_fields(&[
+            ("price", &oi.price),
+            ("open_interest", &oi.open_interest),
+            ("oi_value", &oi.oi_value),
+        ])?;
+
         let file_path = self.get_daily_file_path("open_interest", &oi.symbol, oi.timestamp_ms);
         let buffer = self.get_or_create_buffer(&file_path).await?;
-
-        // Format all numeric values to 12 decimal places
-        let price_formatted = format!("{:.12}", oi.price.parse::<f64>().unwrap_or(0.0));
-        let open_interest_formatted =
-            format!("{:.12}", oi.open_interest.parse::<f64>().unwrap_or(0.0));
-        let oi_value_formatted = format!("{:.12}", oi.oi_value.parse::<f64>().unwrap_or(0.0));
 
         let row = format!(
             "{},{},{},{},{},{},{},{},{}",
@@ -585,28 +586,24 @@ impl CsvWriter {
             oi.timestamp_ms,
             Self::iso_utc(oi.timestamp_ms),
             oi.symbol,
-            price_formatted,
-            open_interest_formatted,
-            oi_value_formatted
+            oi.price,
+            oi.open_interest,
+            oi.oi_value
         );
 
         self.write_row(buffer, &row).await
     }
 
     pub async fn write_long_short_ratio(&self, ratio: &LongShortRatioCsv) -> Result<()> {
+        validate_decimal_fields(&[
+            ("long_ratio", &ratio.long_ratio),
+            ("short_ratio", &ratio.short_ratio),
+            ("long_short_ratio", &ratio.long_short_ratio),
+        ])?;
+
         let file_path =
             self.get_daily_file_path("long_short_ratio", &ratio.symbol, ratio.timestamp_ms);
         let buffer = self.get_or_create_buffer(&file_path).await?;
-
-        // Format all ratio values to 12 decimal places
-        let long_ratio_formatted =
-            format!("{:.12}", ratio.long_ratio.parse::<f64>().unwrap_or(0.0));
-        let short_ratio_formatted =
-            format!("{:.12}", ratio.short_ratio.parse::<f64>().unwrap_or(0.0));
-        let long_short_ratio_formatted = format!(
-            "{:.12}",
-            ratio.long_short_ratio.parse::<f64>().unwrap_or(0.0)
-        );
 
         let row = format!(
             "{},{},{},{},{},{},{},{},{},{},{}",
@@ -618,24 +615,25 @@ impl CsvWriter {
             ratio.symbol,
             ratio.period,
             ratio.ratio_type,
-            long_ratio_formatted,
-            short_ratio_formatted,
-            long_short_ratio_formatted
+            ratio.long_ratio,
+            ratio.short_ratio,
+            ratio.long_short_ratio
         );
 
         self.write_row(buffer, &row).await
     }
 
     pub async fn write_mark_price_kline(&self, kline: &MarkPriceKlineCsv) -> Result<()> {
+        validate_decimal_fields(&[
+            ("open", &kline.open),
+            ("high", &kline.high),
+            ("low", &kline.low),
+            ("close", &kline.close),
+        ])?;
+
         let file_path =
             self.get_daily_file_path("mark_price_klines", &kline.symbol, kline.timestamp_ms);
         let buffer = self.get_or_create_buffer(&file_path).await?;
-
-        // Format all numeric values to 12 decimal places
-        let open_formatted = format!("{:.12}", kline.open.parse::<f64>().unwrap_or(0.0));
-        let high_formatted = format!("{:.12}", kline.high.parse::<f64>().unwrap_or(0.0));
-        let low_formatted = format!("{:.12}", kline.low.parse::<f64>().unwrap_or(0.0));
-        let close_formatted = format!("{:.12}", kline.close.parse::<f64>().unwrap_or(0.0));
 
         let row = format!(
             "{},{},{},{},{},{},{},{},{},{}",
@@ -645,25 +643,26 @@ impl CsvWriter {
             kline.timestamp_ms,
             Self::iso_utc(kline.timestamp_ms),
             kline.symbol,
-            open_formatted,
-            high_formatted,
-            low_formatted,
-            close_formatted
+            kline.open,
+            kline.high,
+            kline.low,
+            kline.close
         );
 
         self.write_row(buffer, &row).await
     }
 
     pub async fn write_index_price_kline(&self, kline: &IndexPriceKlineCsv) -> Result<()> {
+        validate_decimal_fields(&[
+            ("open", &kline.open),
+            ("high", &kline.high),
+            ("low", &kline.low),
+            ("close", &kline.close),
+        ])?;
+
         let file_path =
             self.get_daily_file_path("index_price_klines", &kline.symbol, kline.timestamp_ms);
         let buffer = self.get_or_create_buffer(&file_path).await?;
-
-        // Format all numeric values to 12 decimal places
-        let open_formatted = format!("{:.12}", kline.open.parse::<f64>().unwrap_or(0.0));
-        let high_formatted = format!("{:.12}", kline.high.parse::<f64>().unwrap_or(0.0));
-        let low_formatted = format!("{:.12}", kline.low.parse::<f64>().unwrap_or(0.0));
-        let close_formatted = format!("{:.12}", kline.close.parse::<f64>().unwrap_or(0.0));
 
         let row = format!(
             "{},{},{},{},{},{},{},{},{},{}",
@@ -673,27 +672,25 @@ impl CsvWriter {
             kline.timestamp_ms,
             Self::iso_utc(kline.timestamp_ms),
             kline.symbol,
-            open_formatted,
-            high_formatted,
-            low_formatted,
-            close_formatted
+            kline.open,
+            kline.high,
+            kline.low,
+            kline.close
         );
 
         self.write_row(buffer, &row).await
     }
 
     pub async fn write_taker_buy_sell_ratio(&self, ratio: &TakerBuySellVolumeCsv) -> Result<()> {
+        validate_decimal_fields(&[
+            ("buy_volume", &ratio.buy_volume),
+            ("sell_volume", &ratio.sell_volume),
+            ("buy_sell_ratio", &ratio.buy_sell_ratio),
+        ])?;
+
         let file_path =
             self.get_daily_file_path("taker_buy_sell_ratio", &ratio.symbol, ratio.timestamp_ms);
         let buffer = self.get_or_create_buffer(&file_path).await?;
-
-        // Format all numeric values to 12 decimal places
-        let buy_volume_formatted =
-            format!("{:.12}", ratio.buy_volume.parse::<f64>().unwrap_or(0.0));
-        let sell_volume_formatted =
-            format!("{:.12}", ratio.sell_volume.parse::<f64>().unwrap_or(0.0));
-        let buy_sell_ratio_formatted =
-            format!("{:.12}", ratio.buy_sell_ratio.parse::<f64>().unwrap_or(0.0));
 
         let row = format!(
             "{},{},{},{},{},{},{},{},{},{}",
@@ -704,24 +701,25 @@ impl CsvWriter {
             Self::iso_utc(ratio.timestamp_ms),
             ratio.symbol,
             ratio.period,
-            buy_volume_formatted,
-            sell_volume_formatted,
-            buy_sell_ratio_formatted
+            ratio.buy_volume,
+            ratio.sell_volume,
+            ratio.buy_sell_ratio
         );
 
         self.write_row(buffer, &row).await
     }
 
     pub async fn write_premium_index_kline(&self, kline: &PremiumIndexKlineCsv) -> Result<()> {
+        validate_decimal_fields(&[
+            ("open", &kline.open),
+            ("high", &kline.high),
+            ("low", &kline.low),
+            ("close", &kline.close),
+        ])?;
+
         let file_path =
             self.get_daily_file_path("premium_index_klines", &kline.symbol, kline.timestamp_ms);
         let buffer = self.get_or_create_buffer(&file_path).await?;
-
-        // Format all numeric values to 12 decimal places
-        let open_formatted = format!("{:.12}", kline.open.parse::<f64>().unwrap_or(0.0));
-        let high_formatted = format!("{:.12}", kline.high.parse::<f64>().unwrap_or(0.0));
-        let low_formatted = format!("{:.12}", kline.low.parse::<f64>().unwrap_or(0.0));
-        let close_formatted = format!("{:.12}", kline.close.parse::<f64>().unwrap_or(0.0));
 
         let row = format!(
             "{},{},{},{},{},{},{},{},{},{}",
@@ -731,10 +729,10 @@ impl CsvWriter {
             kline.timestamp_ms,
             Self::iso_utc(kline.timestamp_ms),
             kline.symbol,
-            open_formatted,
-            high_formatted,
-            low_formatted,
-            close_formatted
+            kline.open,
+            kline.high,
+            kline.low,
+            kline.close
         );
 
         self.write_row(buffer, &row).await
