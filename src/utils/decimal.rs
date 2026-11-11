@@ -1,7 +1,5 @@
 use anyhow::{bail, Result};
 
-/// Multiply two exchange decimal strings without converting through binary floating point.
-/// The result is exact for the supplied finite decimal values and retains their combined scale.
 /// Normalize a plain exchange decimal into a canonical key without changing its value.
 /// Exponent notation is rejected here because Binance order-book price/quantity levels
 /// are expected as ordinary decimal strings.
@@ -75,6 +73,8 @@ pub fn compare_normalized_decimals(left: &str, right: &str) -> std::cmp::Orderin
     if left_negative { magnitude.reverse() } else { magnitude }
 }
 
+/// Multiply two exchange decimal strings without converting through binary floating point.
+/// The result is exact for the supplied finite decimal values and retains their combined scale.
 pub fn multiply_decimal_strings(left: &str, right: &str) -> Result<String> {
     fn parse(value: &str) -> Result<(bool, Vec<u8>, usize)> {
         let (mantissa, exponent) = match value.find(|character| character == 'e' || character == 'E') {
