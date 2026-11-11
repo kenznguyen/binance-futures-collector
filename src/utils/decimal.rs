@@ -68,10 +68,18 @@ pub fn multiply_decimal_strings(left: &str, right: &str) -> Result<String> {
             product[left_index + right_index] += u32::from(*left_digit) * u32::from(*right_digit);
         }
     }
-    for index in 0..product.len() - 1 {
+    let mut index = 0;
+    while index < product.len() {
         let carry = product[index] / 10;
         product[index] %= 10;
-        product[index + 1] += carry;
+        if carry > 0 {
+            if index + 1 == product.len() {
+                product.push(carry);
+            } else {
+                product[index + 1] += carry;
+            }
+        }
+        index += 1;
     }
     while product.len() > 1 && product.last() == Some(&0) {
         product.pop();
