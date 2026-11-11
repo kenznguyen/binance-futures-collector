@@ -11,7 +11,7 @@ use crate::config::Config;
 use crate::constants;
 use crate::models::*;
 use crate::rest::RestClient;
-use crate::utils::{CsvWriter, GapRegistry};
+use crate::utils::{compare_normalized_decimals, normalize_plain_decimal, CsvWriter, GapRegistry};
 use crate::websocket::connection_manager::WebSocketManager;
 
 /// Manages orderbook state and gap detection for all symbols
@@ -93,8 +93,10 @@ fn find_bridge(snapshot_u: u64, diffs: &[DepthUpdateWs]) -> Option<(usize, Bridg
 pub struct Orderbook {
     pub symbol: String,
     pub last_update_id: u64,
-    pub bids: HashMap<u64, f64>, // price_bits -> quantity (using float bits for fast comparison)
-    pub asks: HashMap<u64, f64>, // price_bits -> quantity
+    pub bids: HashMap<u64, f64>, // Computational view; raw decimal levels below remain authoritative for CSV.
+    pub asks: HashMap<u64, f64>,
+    pub raw_bids: HashMap<String, (String, String)>,
+    pub raw_asks: HashMap<String, (String, String)>;
     pub last_processed_time: Instant,
 }
 
@@ -536,19 +538,31 @@ impl OrderbookManager {
         .context("Snapshot fetch timeout")?
         .context("Snapshot fetch failed")?;
 
-        // Create orderbook with float storage (not String)
+        // Keep source decimal lexemes alongside the computational book.
         let mut bids = HashMap::new();
+        let mut raw_bids = HashMap::new();
         for [price_str, qty_str] in &snapshot.bids {
             let price: f64 = price_str.parse()?;
             let qty: f64 = qty_str.parse()?;
+            let price_key = normalize_plain_decimal(price_str)?;
+            let quantity_key = normalize_plain_decimal(qty_str)?;
             bids.insert(price.to_bits(), qty);
+            if quantity_key != "0" {
+                raw_bids.insert(price_key, (price_str.clone(), qty_str.clone()));
+            }
         }
 
         let mut asks = HashMap::new();
+        let mut raw_asks = HashMap::new();
         for [price_str, qty_str] in &snapshot.asks {
             let price: f64 = price_str.parse()?;
             let qty: f64 = qty_str.parse()?;
+            let price_key = normalize_plain_decimal(price_str)?;
+            let quantity_key = normalize_plain_decimal(qty_str)?;
             asks.insert(price.to_bits(), qty);
+            if quantity_key != "0" {
+                raw_asks.insert(price_key, (price_str.clone(), qty_str.clone()));
+            }
         }
 
         let orderbook = Orderbook {
@@ -556,6 +570,8 @@ impl OrderbookManager {
             last_update_id: snapshot.last_update_id,
             bids,
             asks,
+            raw_bids,
+            raw_asks,
             last_processed_time: Instant::now(),
         };
 
@@ -751,6 +767,23 @@ impl OrderbookManager {
     /// else replaces it. Uses the pre-converted floats when present, falling
     /// back to parsing the wire strings.
     fn apply_update_to_book(book: &mut Orderbook, update: &DepthUpdateWs) -> Result<()> {
+        for [price_str, quantity_str] in &update.bids {
+            let price_key = normalize_plain_decimal(price_str)?;
+            if normalize_plain_decimal(quantity_str)? == "0" {
+                book.raw_bids.remove(&price_key);
+            } else {
+                book.raw_bids.insert(price_key, (price_str.clone(), quantity_str.clone()));
+            }
+        }
+        for [price_str, quantity_str] in &update.asks {
+            let price_key = normalize_plain_decimal(price_str)?;
+            if normalize_plain_decimal(quantity_str)? == "0" {
+                book.raw_asks.remove(&price_key);
+            } else {
+                book.raw_asks.insert(price_key, (price_str.clone(), quantity_str.clone()));
+            }
+        }
+
         if let Some(b_floats) = &update.b_floats {
             for (price, qty) in b_floats {
                 if *qty == 0.0 {
@@ -822,19 +855,37 @@ impl OrderbookManager {
 
         // Trim asks: keep only top N (lowest prices)
         if book.asks.len() > depth {
-            // Convert to sorted vec (ascending by price)
             let mut ask_vec: Vec<(u64, f64)> = book.asks.iter().map(|(k, v)| (*k, *v)).collect();
-
             ask_vec.sort_by(|a, b| {
                 let price_a = f64::from_bits(a.0);
                 let price_b = f64::from_bits(b.0);
                 price_a.total_cmp(&price_b)
             });
-
             book.asks.clear();
             for (price_bits, qty) in ask_vec.into_iter().take(depth) {
                 book.asks.insert(price_bits, qty);
             }
+        }
+
+        Self::trim_raw_levels(depth, &mut book.raw_bids, true);
+        Self::trim_raw_levels(depth, &mut book.raw_asks, false);
+    }
+
+    fn trim_raw_levels(
+        depth: usize,
+        levels: &mut HashMap<String, (String, String)>,
+        highest_first: bool,
+    ) {
+        if levels.len() <= depth {
+            return;
+        }
+        let mut keys: Vec<String> = levels.keys().cloned().collect();
+        keys.sort_by(|left, right| {
+            let order = compare_normalized_decimals(left, right);
+            if highest_first { order.reverse() } else { order }
+        });
+        for key in keys.into_iter().skip(depth) {
+            levels.remove(&key);
         }
     }
 
@@ -901,16 +952,15 @@ impl OrderbookManager {
     async fn write_current_orderbook_snapshot(&self, symbol: &str, event_type: &str) -> Result<()> {
         let (last_update_id, bids, asks) = match self.orderbooks.get(symbol) {
             Some(book) => {
-                // Convert back to f64 for CSV writing
-                let bids: Vec<(f64, f64)> = book
-                    .bids
+                let bids: Vec<(String, String, String)> = book
+                    .raw_bids
                     .iter()
-                    .map(|(bits, qty)| (f64::from_bits(*bits), *qty))
+                    .map(|(key, (price, quantity))| (key.clone(), price.clone(), quantity.clone()))
                     .collect();
-                let asks: Vec<(f64, f64)> = book
-                    .asks
+                let asks: Vec<(String, String, String)> = book
+                    .raw_asks
                     .iter()
-                    .map(|(bits, qty)| (f64::from_bits(*bits), *qty))
+                    .map(|(key, (price, quantity))| (key.clone(), price.clone(), quantity.clone()))
                     .collect();
                 (book.last_update_id, bids, asks)
             }
@@ -924,9 +974,9 @@ impl OrderbookManager {
         let mut csv_rows = Vec::new();
 
         let mut bid_prices = bids;
-        bid_prices.sort_by(|a, b| b.0.total_cmp(&a.0));
+        bid_prices.sort_by(|a, b| compare_normalized_decimals(&b.0, &a.0));
 
-        for (price, qty) in bid_prices {
+        for (_, price, qty) in bid_prices {
             csv_rows.push(DepthSnapshotCsv {
                 exchange: constants::EXCHANGE.to_string(),
                 market: constants::MARKET.to_string(),
@@ -935,16 +985,16 @@ impl OrderbookManager {
                 symbol: symbol.to_lowercase(), // Convert to lowercase for CSV
                 event_type: event_type.to_string(),
                 side: constants::SIDE_BID.to_string(),
-                price: format_decimal(price),
-                quantity: format_decimal(qty),
+                price,
+                quantity: qty,
                 last_update_id,
             });
         }
 
         let mut ask_prices = asks;
-        ask_prices.sort_by(|a, b| a.0.total_cmp(&b.0));
+        ask_prices.sort_by(|a, b| compare_normalized_decimals(&a.0, &b.0));
 
-        for (price, qty) in ask_prices {
+        for (_, price, qty) in ask_prices {
             csv_rows.push(DepthSnapshotCsv {
                 exchange: constants::EXCHANGE.to_string(),
                 market: constants::MARKET.to_string(),
@@ -953,8 +1003,8 @@ impl OrderbookManager {
                 symbol: symbol.to_lowercase(), // Convert to lowercase for CSV
                 event_type: event_type.to_string(),
                 side: constants::SIDE_ASK.to_string(),
-                price: format_decimal(price),
-                quantity: format_decimal(qty),
+                price,
+                quantity: qty,
                 last_update_id,
             });
         }
@@ -978,14 +1028,14 @@ impl OrderbookManager {
         let timestamp = chrono::Utc::now().timestamp_millis();
         let mut csv_rows = Vec::new();
 
-        let mut bid_prices: Vec<_> = snapshot.bids.iter().collect();
-        bid_prices.sort_by(|a, b| {
-            b[0].parse::<f64>()
-                .unwrap_or(0.0)
-                .total_cmp(&a[0].parse::<f64>().unwrap_or(0.0))
-        });
+        let mut bid_prices: Vec<_> = snapshot
+            .bids
+            .iter()
+            .map(|[price, quantity]| Ok((normalize_plain_decimal(price)?, price, quantity)))
+            .collect::<Result<Vec<_>>>()?;
+        bid_prices.sort_by(|a, b| compare_normalized_decimals(&b.0, &a.0));
 
-        for [price, qty] in bid_prices {
+        for (_, price, qty) in bid_prices {
             csv_rows.push(DepthSnapshotCsv {
                 exchange: constants::EXCHANGE.to_string(),
                 market: constants::MARKET.to_string(),
@@ -1000,14 +1050,14 @@ impl OrderbookManager {
             });
         }
 
-        let mut ask_prices: Vec<_> = snapshot.asks.iter().collect();
-        ask_prices.sort_by(|a, b| {
-            a[0].parse::<f64>()
-                .unwrap_or(0.0)
-                .total_cmp(&b[0].parse::<f64>().unwrap_or(0.0))
-        });
+        let mut ask_prices: Vec<_> = snapshot
+            .asks
+            .iter()
+            .map(|[price, quantity]| Ok((normalize_plain_decimal(price)?, price, quantity)))
+            .collect::<Result<Vec<_>>>()?;
+        ask_prices.sort_by(|a, b| compare_normalized_decimals(&a.0, &b.0));
 
-        for [price, qty] in ask_prices {
+        for (_, price, qty) in ask_prices {
             csv_rows.push(DepthSnapshotCsv {
                 exchange: constants::EXCHANGE.to_string(),
                 market: constants::MARKET.to_string(),
@@ -1224,6 +1274,8 @@ mod tests {
             last_update_id: 0,
             bids: HashMap::new(),
             asks: HashMap::new(),
+            raw_bids: HashMap::new(),
+            raw_asks: HashMap::new(),
             last_processed_time: Instant::now(),
         }
     }
@@ -1320,6 +1372,10 @@ mod tests {
         book.bids.insert(99.5f64.to_bits(), 2.0);
         book.asks.insert(100.5f64.to_bits(), 1.5);
         book.asks.insert(101.0f64.to_bits(), 3.0);
+        book.raw_bids.insert("100".to_string(), ("100.0".to_string(), "1.0".to_string()));
+        book.raw_bids.insert("99.5".to_string(), ("99.5".to_string(), "2.0".to_string()));
+        book.raw_asks.insert("100.5".to_string(), ("100.5".to_string(), "1.5".to_string()));
+        book.raw_asks.insert("101".to_string(), ("101.0".to_string(), "3.0".to_string()));
         book
     }
 
