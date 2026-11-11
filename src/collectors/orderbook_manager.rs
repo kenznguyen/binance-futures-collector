@@ -96,7 +96,7 @@ pub struct Orderbook {
     pub bids: HashMap<u64, f64>, // Computational view; raw decimal levels below remain authoritative for CSV.
     pub asks: HashMap<u64, f64>,
     pub raw_bids: HashMap<String, (String, String)>,
-    pub raw_asks: HashMap<String, (String, String)>;
+    pub raw_asks: HashMap<String, (String, String)>,
     pub last_processed_time: Instant,
 }
 
