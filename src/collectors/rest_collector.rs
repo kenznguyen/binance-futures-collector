@@ -11,6 +11,23 @@ use crate::models::*;
 use crate::rest::RestClient;
 use crate::utils::{multiply_decimal_strings, time_utils, CsvWriter};
 
+/// Extract the timestamp and four source decimal strings from a REST kline array.
+/// Invalid/missing fields are rejected instead of being fabricated as numeric zero.
+fn extract_rest_kline(
+    data: &[serde_json::Value],
+) -> Option<(i64, &str, &str, &str, &str)> {
+    if data.len() < 5 {
+        return None;
+    }
+    Some((
+        data[0].as_i64()?,
+        data[1].as_str()?,
+        data[2].as_str()?,
+        data[3].as_str()?,
+        data[4].as_str()?,
+    ))
+}
+
 /// Buckets to fetch per `/futures/data` poll. These endpoints are limiter-paced
 /// (~20-min effective cadence for ~500 symbols on one IP); fetching 8× 5-min
 /// buckets (40 min) comfortably bridges that gap so nothing is missed. This is
@@ -543,10 +560,12 @@ impl RestCollector {
                 // Skip the final (in-progress) bucket; write each newly-closed one.
                 let closed = klines.len().saturating_sub(1);
                 for kline_data in klines.iter().take(closed) {
-                    if kline_data.len() < 5 {
+                    let Some((timestamp, open, high, low, close)) =
+                        extract_rest_kline(kline_data)
+                    else {
+                        warn!("Skipping malformed mark price kline for {}", symbol);
                         continue;
-                    }
-                    let timestamp = kline_data[0].as_i64().unwrap_or(0);
+                    };
                     if !self.is_new_bucket(&key, timestamp) {
                         continue;
                     }
@@ -556,10 +575,10 @@ impl RestCollector {
                         datatype: "mark_price_klines".to_string(),
                         timestamp_ms: timestamp,
                         symbol: symbol.clone(),
-                        open: format_decimal_str(kline_data[1].as_str().unwrap_or("0")),
-                        high: format_decimal_str(kline_data[2].as_str().unwrap_or("0")),
-                        low: format_decimal_str(kline_data[3].as_str().unwrap_or("0")),
-                        close: format_decimal_str(kline_data[4].as_str().unwrap_or("0")),
+                        open: format_decimal_str(open),
+                        high: format_decimal_str(high),
+                        low: format_decimal_str(low),
+                        close: format_decimal_str(close),
                     };
                     if let Err(e) = self.csv_writer.write_mark_price_kline(&csv).await {
                         error!("Failed to write mark price kline for {}: {}", symbol, e);
@@ -641,10 +660,12 @@ impl RestCollector {
                 let key = format!("index_price_klines:{}", symbol);
                 let closed = klines.len().saturating_sub(1);
                 for kline_data in klines.iter().take(closed) {
-                    if kline_data.len() < 5 {
+                    let Some((timestamp, open, high, low, close)) =
+                        extract_rest_kline(kline_data)
+                    else {
+                        warn!("Skipping malformed index price kline for {}", symbol);
                         continue;
-                    }
-                    let timestamp = kline_data[0].as_i64().unwrap_or(0);
+                    };
                     if !self.is_new_bucket(&key, timestamp) {
                         continue;
                     }
@@ -654,10 +675,10 @@ impl RestCollector {
                         datatype: "index_price_klines".to_string(),
                         timestamp_ms: timestamp,
                         symbol: symbol.clone(),
-                        open: format_decimal_str(kline_data[1].as_str().unwrap_or("0")),
-                        high: format_decimal_str(kline_data[2].as_str().unwrap_or("0")),
-                        low: format_decimal_str(kline_data[3].as_str().unwrap_or("0")),
-                        close: format_decimal_str(kline_data[4].as_str().unwrap_or("0")),
+                        open: format_decimal_str(open),
+                        high: format_decimal_str(high),
+                        low: format_decimal_str(low),
+                        close: format_decimal_str(close),
                     };
                     if let Err(e) = self.csv_writer.write_index_price_kline(&csv).await {
                         error!("Failed to write index price kline for {}: {}", symbol, e);
@@ -834,10 +855,12 @@ impl RestCollector {
                 let key = format!("premium_index_klines:{}", symbol);
                 let closed = klines.len().saturating_sub(1);
                 for kline_data in klines.iter().take(closed) {
-                    if kline_data.len() < 5 {
+                    let Some((timestamp, open, high, low, close)) =
+                        extract_rest_kline(kline_data)
+                    else {
+                        warn!("Skipping malformed premium index kline for {}", symbol);
                         continue;
-                    }
-                    let timestamp = kline_data[0].as_i64().unwrap_or(0);
+                    };
                     if !self.is_new_bucket(&key, timestamp) {
                         continue;
                     }
@@ -847,10 +870,10 @@ impl RestCollector {
                         datatype: "premium_index_klines".to_string(),
                         timestamp_ms: timestamp,
                         symbol: symbol.clone(),
-                        open: format_decimal_str(kline_data[1].as_str().unwrap_or("0")),
-                        high: format_decimal_str(kline_data[2].as_str().unwrap_or("0")),
-                        low: format_decimal_str(kline_data[3].as_str().unwrap_or("0")),
-                        close: format_decimal_str(kline_data[4].as_str().unwrap_or("0")),
+                        open: format_decimal_str(open),
+                        high: format_decimal_str(high),
+                        low: format_decimal_str(low),
+                        close: format_decimal_str(close),
                     };
                     if let Err(e) = self.csv_writer.write_premium_index_kline(&csv).await {
                         error!("Failed to write premium index kline for {}: {}", symbol, e);
@@ -875,3 +898,38 @@ impl Clone for RestCollector {
         }
     }
 }
+
+#[cfg(test)]
+mod rest_decimal_tests {
+    use super::extract_rest_kline;
+    use serde_json::json;
+
+    #[test]
+    fn rest_kline_extract_preserves_source_decimal_strings() {
+        let data = vec![
+            json!(1_700_000_000_000i64),
+            json!("123456789.123456789123456789"),
+            json!("123456790.000000000000000001"),
+            json!("123456788.000000000000000001"),
+            json!("123456789.500000000000000001"),
+        ];
+        let (timestamp, open, high, low, close) = extract_rest_kline(&data).unwrap();
+        assert_eq!(timestamp, 1_700_000_000_000);
+        assert_eq!(open, "123456789.123456789123456789");
+        assert_eq!(high, "123456790.000000000000000001");
+        assert_eq!(low, "123456788.000000000000000001");
+        assert_eq!(close, "123456789.500000000000000001");
+    }
+
+    #[test]
+    fn rest_kline_extract_rejects_missing_or_wrongly_typed_fields() {
+        assert!(extract_rest_kline(&[json!(1), json!("1"), json!("2")]).is_none());
+        assert!(extract_rest_kline(&[
+            json!(1), json!(1.25), json!("2"), json!("1"), json!("1.5")
+        ]).is_none());
+        assert!(extract_rest_kline(&[
+            json!("bad-ts"), json!("1"), json!("2"), json!("1"), json!("1.5")
+        ]).is_none());
+    }
+}
+
