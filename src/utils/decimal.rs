@@ -11,7 +11,7 @@ pub fn normalize_plain_decimal(value: &str) -> Result<String> {
         Some(b'+') => (false, &value[1..]),
         _ => (false, value),
     };
-    if unsigned.is_empty() || unsigned.contains(['e', 'E']) {
+    if unsigned.is_empty() || unsigned.bytes().any(|byte| byte == b'e' || byte == b'E') {
         bail!("invalid plain decimal value: {value}");
     }
 
@@ -182,6 +182,33 @@ pub fn multiply_decimal_strings(left: &str, right: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::multiply_decimal_strings;
+
+    #[test]
+    fn normalization_and_comparison_are_exact_for_order_book_prices() {
+        use super::{compare_normalized_decimals, normalize_plain_decimal};
+        use std::cmp::Ordering;
+
+        let two = normalize_plain_decimal("2.000").unwrap();
+        let ten = normalize_plain_decimal("10").unwrap();
+        let one = normalize_plain_decimal("1.00").unwrap();
+        let one_plain = normalize_plain_decimal("1").unwrap();
+        let negative_two = normalize_plain_decimal("-2.0").unwrap();
+        let negative_one = normalize_plain_decimal("-1").unwrap();
+        let tiny = normalize_plain_decimal("0.0002").unwrap();
+        let small = normalize_plain_decimal("0.001").unwrap();
+
+        assert_eq!(compare_normalized_decimals(&two, &ten), Ordering::Less);
+        assert_eq!(compare_normalized_decimals(&one, &one_plain), Ordering::Equal);
+        assert_eq!(compare_normalized_decimals(&negative_two, &negative_one), Ordering::Less);
+        assert_eq!(compare_normalized_decimals(&tiny, &small), Ordering::Less);
+    }
+
+    #[test]
+    fn order_book_normalization_rejects_malformed_and_exponent_forms() {
+        assert!(super::normalize_plain_decimal("1e-8").is_err());
+        assert!(super::normalize_plain_decimal("not-a-price").is_err());
+        assert!(super::normalize_plain_decimal("1.2.3").is_err());
+    }
 
     #[test]
     fn multiplication_preserves_all_source_precision() {
