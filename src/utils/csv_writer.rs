@@ -1342,7 +1342,10 @@ mod tests {
 
         let path = w.get_daily_file_path("trades", "btcusdt", TS);
         assert!(w.write_trade(&trade).await.is_err());
-        assert!(!path.exists(), "invalid source decimals must fail before file creation");
+        assert!(
+            !path.exists(),
+            "invalid source decimals must fail before file creation"
+        );
     }
 
     #[test]
