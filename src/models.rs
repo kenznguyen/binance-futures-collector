@@ -59,8 +59,8 @@ pub struct DepthSnapshotCsv {
     pub symbol: String,
     pub event_type: String, // depth_snapshot_initial, depth_snapshot, etc.
     pub side: String,       // "bid" or "ask"
-    pub price: String,      // 12 decimal places
-    pub quantity: String,   // 12 decimal places
+    pub price: String,      // exact exchange decimal lexeme
+    pub quantity: String,   // exact exchange decimal lexeme
     pub last_update_id: u64,
 }
 
@@ -421,11 +421,6 @@ pub struct PremiumIndexKlineCsv {
 /// Numeric syntax is validated at the CSV persistence boundary.
 pub fn format_decimal_str(value: &str) -> String {
     value.to_string()
-}
-
-/// Format decimal to 12 decimal places
-pub fn format_decimal(value: f64) -> String {
-    format!("{:.12}", value)
 }
 
 #[cfg(test)]
