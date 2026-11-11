@@ -23,11 +23,6 @@ pub struct DepthUpdateWs {
     #[serde(rename = "a")]
     pub asks: Vec<[String; 2]>, // [[price, quantity]]
 
-    // Pre-converted floats (added during processing, not from the wire)
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub b_floats: Option<Vec<(f64, f64)>>, // [(price, quantity)]
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub a_floats: Option<Vec<(f64, f64)>>, // [(price, quantity)]
 }
 
 /// CSV format for depth updates
