@@ -1294,6 +1294,59 @@ mod tests {
         assert_eq!(row[14], "999999999999.000000000000000001");
     }
 
+    #[tokio::test]
+    async fn trade_writer_preserves_exact_source_decimal_precision() {
+        let dir = tempfile::tempdir().unwrap();
+        let w = test_writer(dir.path());
+        let trade = TradeCsv {
+            exchange: "binance".to_string(),
+            market: "futures".to_string(),
+            datatype: "trades".to_string(),
+            timestamp_ms: TS,
+            symbol: "btcusdt".to_string(),
+            trade_id: 43,
+            price: "62456.601234567891234567".to_string(),
+            quantity: "0.000000000000000000123456789".to_string(),
+            side: "buy".to_string(),
+            is_buyer_maker: 0,
+            first_update_id: 102,
+            last_update_id: 103,
+        };
+
+        w.write_trade(&trade).await.unwrap();
+        w.flush_all().await.unwrap();
+
+        let path = w.get_daily_file_path("trades", "btcusdt", TS);
+        let content = std::fs::read_to_string(path).unwrap();
+        let row: Vec<&str> = content.lines().nth(1).unwrap().split(',').collect();
+        assert_eq!(row[8], "62456.601234567891234567");
+        assert_eq!(row[9], "0.000000000000000000123456789");
+    }
+
+    #[tokio::test]
+    async fn trade_writer_rejects_malformed_decimal_without_writing_zero() {
+        let dir = tempfile::tempdir().unwrap();
+        let w = test_writer(dir.path());
+        let trade = TradeCsv {
+            exchange: "binance".to_string(),
+            market: "futures".to_string(),
+            datatype: "trades".to_string(),
+            timestamp_ms: TS,
+            symbol: "btcusdt".to_string(),
+            trade_id: 44,
+            price: "not-a-number".to_string(),
+            quantity: "0.01".to_string(),
+            side: "buy".to_string(),
+            is_buyer_maker: 0,
+            first_update_id: 104,
+            last_update_id: 105,
+        };
+
+        let path = w.get_daily_file_path("trades", "btcusdt", TS);
+        assert!(w.write_trade(&trade).await.is_err());
+        assert!(!path.exists(), "invalid source decimals must fail before file creation");
+    }
+
     #[test]
     fn decimal_lexical_validation_accepts_exact_decimal_and_exponent_forms() {
         for value in ["0", "-1.2", "+0.3", "1e-8", "1.2300E+4", ".25", "5."] {
