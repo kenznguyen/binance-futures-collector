@@ -2,9 +2,82 @@ use anyhow::{bail, Result};
 
 /// Multiply two exchange decimal strings without converting through binary floating point.
 /// The result is exact for the supplied finite decimal values and retains their combined scale.
+/// Normalize a plain exchange decimal into a canonical key without changing its value.
+/// Exponent notation is rejected here because Binance order-book price/quantity levels
+/// are expected as ordinary decimal strings.
+pub fn normalize_plain_decimal(value: &str) -> Result<String> {
+    let (negative, unsigned) = match value.as_bytes().first() {
+        Some(b'-') => (true, &value[1..]),
+        Some(b'+') => (false, &value[1..]),
+        _ => (false, value),
+    };
+    if unsigned.is_empty() || unsigned.contains(['e', 'E']) {
+        bail!("invalid plain decimal value: {value}");
+    }
+
+    let mut parts = unsigned.split('.');
+    let integer = parts.next().unwrap_or_default();
+    let fraction = parts.next().unwrap_or_default();
+    if parts.next().is_some()
+        || (integer.is_empty() && fraction.is_empty())
+        || !integer.bytes().all(|byte| byte.is_ascii_digit())
+        || !fraction.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        bail!("invalid plain decimal value: {value}");
+    }
+
+    let integer = integer.trim_start_matches('0');
+    let integer = if integer.is_empty() { "0" } else { integer };
+    let fraction = fraction.trim_end_matches('0');
+    let is_zero = integer == "0" && fraction.is_empty();
+
+    let mut normalized = String::new();
+    if negative && !is_zero {
+        normalized.push('-');
+    }
+    normalized.push_str(integer);
+    if !fraction.is_empty() {
+        normalized.push('.');
+        normalized.push_str(fraction);
+    }
+    Ok(normalized)
+}
+
+/// Compare two values returned by normalize_plain_decimal.
+pub fn compare_normalized_decimals(left: &str, right: &str) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+
+    let (left_negative, left) = left.strip_prefix('-').map_or((false, left), |v| (true, v));
+    let (right_negative, right) = right.strip_prefix('-').map_or((false, right), |v| (true, v));
+    if left_negative != right_negative {
+        return if left_negative { Ordering::Less } else { Ordering::Greater };
+    }
+
+    let (left_integer, left_fraction) = left.split_once('.').unwrap_or((left, ""));
+    let (right_integer, right_fraction) = right.split_once('.').unwrap_or((right, ""));
+    let magnitude = left_integer
+        .len()
+        .cmp(&right_integer.len())
+        .then_with(|| left_integer.cmp(right_integer))
+        .then_with(|| {
+            let max_len = left_fraction.len().max(right_fraction.len());
+            for index in 0..max_len {
+                let a = left_fraction.as_bytes().get(index).copied().unwrap_or(b'0');
+                let b = right_fraction.as_bytes().get(index).copied().unwrap_or(b'0');
+                match a.cmp(&b) {
+                    Ordering::Equal => {}
+                    other => return other,
+                }
+            }
+            Ordering::Equal
+        });
+
+    if left_negative { magnitude.reverse() } else { magnitude }
+}
+
 pub fn multiply_decimal_strings(left: &str, right: &str) -> Result<String> {
     fn parse(value: &str) -> Result<(bool, Vec<u8>, usize)> {
-        let (mantissa, exponent) = match value.find(['e', 'E']) {
+        let (mantissa, exponent) = match value.find(|character| character == 'e' || character == 'E') {
             Some(index) => {
                 let exponent = value[index + 1..].parse::<i32>()?;
                 (&value[..index], exponent)
