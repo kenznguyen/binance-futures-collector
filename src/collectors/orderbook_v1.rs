@@ -632,6 +632,39 @@ mod tests {
     }
 
     #[test]
+    fn reanchor_budget_stops_after_three_attempts_and_resets_on_new_connection() {
+        let publisher = SnapshotPublisher::new();
+        publisher.begin_connection_generation();
+        assert_eq!(publisher.note_reanchor_attempt().unwrap(), 1);
+        assert_eq!(publisher.note_reanchor_attempt().unwrap(), 2);
+        assert_eq!(publisher.note_reanchor_attempt().unwrap(), 3);
+        assert!(publisher.note_reanchor_attempt().is_err());
+        assert_eq!(publisher.state(), OrderbookV1State::Broken);
+
+        publisher.begin_connection_generation();
+        assert_eq!(publisher.note_reanchor_attempt().unwrap(), 1);
+    }
+
+    #[test]
+    fn source_and_observation_exact_freshness_boundaries_are_accepted() {
+        let mut diffs = valid_updates();
+        diffs[1].event_time = NOW - MAX_BOOK_AGE_MS;
+        let candidate = build_snapshot(
+            &snapshot(),
+            &diffs,
+            1,
+            NOW - MAX_BOOK_AGE_MS,
+            NOW,
+        )
+        .unwrap();
+        assert!(candidate.freshness_fresh);
+
+        let mut future = valid_updates();
+        future[1].event_time = NOW + MAX_FUTURE_SKEW_MS;
+        assert!(build_snapshot(&snapshot(), &future, 1, NOW, NOW).is_ok());
+    }
+
+    #[test]
     fn rest_anchor_without_exchange_timestamped_bridge_is_not_publishable() {
         assert!(build_snapshot(&snapshot(), &[], 1, NOW, NOW).is_err());
     }
