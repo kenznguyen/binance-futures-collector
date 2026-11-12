@@ -46,9 +46,15 @@ pub fn compare_normalized_decimals(left: &str, right: &str) -> std::cmp::Orderin
     use std::cmp::Ordering;
 
     let (left_negative, left) = left.strip_prefix('-').map_or((false, left), |v| (true, v));
-    let (right_negative, right) = right.strip_prefix('-').map_or((false, right), |v| (true, v));
+    let (right_negative, right) = right
+        .strip_prefix('-')
+        .map_or((false, right), |v| (true, v));
     if left_negative != right_negative {
-        return if left_negative { Ordering::Less } else { Ordering::Greater };
+        return if left_negative {
+            Ordering::Less
+        } else {
+            Ordering::Greater
+        };
     }
 
     let (left_integer, left_fraction) = left.split_once('.').unwrap_or((left, ""));
@@ -61,7 +67,11 @@ pub fn compare_normalized_decimals(left: &str, right: &str) -> std::cmp::Orderin
             let max_len = left_fraction.len().max(right_fraction.len());
             for index in 0..max_len {
                 let a = left_fraction.as_bytes().get(index).copied().unwrap_or(b'0');
-                let b = right_fraction.as_bytes().get(index).copied().unwrap_or(b'0');
+                let b = right_fraction
+                    .as_bytes()
+                    .get(index)
+                    .copied()
+                    .unwrap_or(b'0');
                 match a.cmp(&b) {
                     Ordering::Equal => {}
                     other => return other,
@@ -70,20 +80,25 @@ pub fn compare_normalized_decimals(left: &str, right: &str) -> std::cmp::Orderin
             Ordering::Equal
         });
 
-    if left_negative { magnitude.reverse() } else { magnitude }
+    if left_negative {
+        magnitude.reverse()
+    } else {
+        magnitude
+    }
 }
 
 /// Multiply two exchange decimal strings without converting through binary floating point.
 /// The result is exact for the supplied finite decimal values and retains their combined scale.
 pub fn multiply_decimal_strings(left: &str, right: &str) -> Result<String> {
     fn parse(value: &str) -> Result<(bool, Vec<u8>, usize)> {
-        let (mantissa, exponent) = match value.find(|character| character == 'e' || character == 'E') {
-            Some(index) => {
-                let exponent = value[index + 1..].parse::<i32>()?;
-                (&value[..index], exponent)
-            }
-            None => (value, 0),
-        };
+        let (mantissa, exponent) =
+            match value.find(|character| character == 'e' || character == 'E') {
+                Some(index) => {
+                    let exponent = value[index + 1..].parse::<i32>()?;
+                    (&value[..index], exponent)
+                }
+                None => (value, 0),
+            };
 
         let (negative, unsigned) = match mantissa.as_bytes().first() {
             Some(b'-') => (true, &mantissa[1..]),
@@ -125,10 +140,7 @@ pub fn multiply_decimal_strings(left: &str, right: &str) -> Result<String> {
             bail!("decimal value exceeds supported precision bounds");
         }
 
-        let digits = digits
-            .bytes()
-            .map(|b| b - b'0')
-            .collect::<Vec<_>>();
+        let digits = digits.bytes().map(|b| b - b'0').collect::<Vec<_>>();
         Ok((negative, digits, scale as usize))
     }
 
@@ -198,8 +210,14 @@ mod tests {
         let small = normalize_plain_decimal("0.001").unwrap();
 
         assert_eq!(compare_normalized_decimals(&two, &ten), Ordering::Less);
-        assert_eq!(compare_normalized_decimals(&one, &one_plain), Ordering::Equal);
-        assert_eq!(compare_normalized_decimals(&negative_two, &negative_one), Ordering::Less);
+        assert_eq!(
+            compare_normalized_decimals(&one, &one_plain),
+            Ordering::Equal
+        );
+        assert_eq!(
+            compare_normalized_decimals(&negative_two, &negative_one),
+            Ordering::Less
+        );
         assert_eq!(compare_normalized_decimals(&tiny, &small), Ordering::Less);
     }
 
@@ -220,10 +238,7 @@ mod tests {
             multiply_decimal_strings("123.4500", "0.0060").unwrap(),
             "0.74070000"
         );
-        assert_eq!(
-            multiply_decimal_strings("-12.5", "2e-2").unwrap(),
-            "-0.250"
-        );
+        assert_eq!(multiply_decimal_strings("-12.5", "2e-2").unwrap(), "-0.250");
     }
 
     #[test]
