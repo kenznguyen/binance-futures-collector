@@ -132,73 +132,87 @@ impl RestCollector {
         // This makes 1 bulk request for all symbols, so start immediately
         let collector = self.clone();
         let symbols_clone = symbols.clone();
-        self.tasks.spawn(async move {
-            if let Err(e) = collector.collect_funding_rates(symbols_clone).await {
-                error!("Funding rate collector error: {}", e);
-            }
-        }).await;
+        self.tasks
+            .spawn(async move {
+                if let Err(e) = collector.collect_funding_rates(symbols_clone).await {
+                    error!("Funding rate collector error: {}", e);
+                }
+            })
+            .await;
 
         // Start mark price klines collector (90s interval) - 10s delay
         let collector = self.clone();
         let symbols_clone = symbols.clone();
-        self.tasks.spawn(async move {
-            sleep(Duration::from_secs(10)).await;
-            if let Err(e) = collector.collect_mark_price_klines(symbols_clone).await {
-                error!("Mark price klines collector error: {}", e);
-            }
-        }).await;
+        self.tasks
+            .spawn(async move {
+                sleep(Duration::from_secs(10)).await;
+                if let Err(e) = collector.collect_mark_price_klines(symbols_clone).await {
+                    error!("Mark price klines collector error: {}", e);
+                }
+            })
+            .await;
 
         // Start index price klines collector (90s interval) - 20s delay
         let collector = self.clone();
         let symbols_clone = symbols.clone();
-        self.tasks.spawn(async move {
-            sleep(Duration::from_secs(20)).await;
-            if let Err(e) = collector.collect_index_price_klines(symbols_clone).await {
-                error!("Index price klines collector error: {}", e);
-            }
-        }).await;
+        self.tasks
+            .spawn(async move {
+                sleep(Duration::from_secs(20)).await;
+                if let Err(e) = collector.collect_index_price_klines(symbols_clone).await {
+                    error!("Index price klines collector error: {}", e);
+                }
+            })
+            .await;
 
         // Start premium index klines collector (60s interval) - 30s delay
         let collector = self.clone();
         let symbols_clone = symbols.clone();
-        self.tasks.spawn(async move {
-            sleep(Duration::from_secs(30)).await;
-            if let Err(e) = collector.collect_premium_index_klines(symbols_clone).await {
-                error!("Premium index klines collector error: {}", e);
-            }
-        }).await;
+        self.tasks
+            .spawn(async move {
+                sleep(Duration::from_secs(30)).await;
+                if let Err(e) = collector.collect_premium_index_klines(symbols_clone).await {
+                    error!("Premium index klines collector error: {}", e);
+                }
+            })
+            .await;
 
         // Start open interest collector (300s interval) - 40s delay
         // Makes 2 requests per symbol (OI + premium index for price)
         let collector = self.clone();
         let symbols_clone = symbols.clone();
-        self.tasks.spawn(async move {
-            sleep(Duration::from_secs(40)).await;
-            if let Err(e) = collector.collect_open_interest(symbols_clone).await {
-                error!("Open interest collector error: {}", e);
-            }
-        }).await;
+        self.tasks
+            .spawn(async move {
+                sleep(Duration::from_secs(40)).await;
+                if let Err(e) = collector.collect_open_interest(symbols_clone).await {
+                    error!("Open interest collector error: {}", e);
+                }
+            })
+            .await;
 
         // Start taker buy/sell ratio collector (300s interval) - 50s delay
         let collector = self.clone();
         let symbols_clone = symbols.clone();
-        self.tasks.spawn(async move {
-            sleep(Duration::from_secs(50)).await;
-            if let Err(e) = collector.collect_taker_buy_sell_ratios(symbols_clone).await {
-                error!("Taker buy/sell ratio collector error: {}", e);
-            }
-        }).await;
+        self.tasks
+            .spawn(async move {
+                sleep(Duration::from_secs(50)).await;
+                if let Err(e) = collector.collect_taker_buy_sell_ratios(symbols_clone).await {
+                    error!("Taker buy/sell ratio collector error: {}", e);
+                }
+            })
+            .await;
 
         // Start long/short ratio collector (300s interval) - 60s delay
         // Makes 3 requests per symbol (global + 2 trader ratios), heaviest load
         let collector = self.clone();
         let symbols_clone = symbols.clone();
-        self.tasks.spawn(async move {
-            sleep(Duration::from_secs(60)).await;
-            if let Err(e) = collector.collect_long_short_ratios(symbols_clone).await {
-                error!("Long/short ratio collector error: {}", e);
-            }
-        }).await;
+        self.tasks
+            .spawn(async move {
+                sleep(Duration::from_secs(60)).await;
+                if let Err(e) = collector.collect_long_short_ratios(symbols_clone).await {
+                    error!("Long/short ratio collector error: {}", e);
+                }
+            })
+            .await;
 
         Ok(())
     }
