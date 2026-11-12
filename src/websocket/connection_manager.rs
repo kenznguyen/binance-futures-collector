@@ -641,7 +641,7 @@ impl WebSocketManager {
             .get(&batch_id)
             .map(|state| state.symbols.clone())
             .unwrap_or_default();
-        if batch_id % 2 == 0 {
+        if batch_id.is_multiple_of(2) {
             for symbol in disconnected_symbols {
                 let key = symbol.to_lowercase();
                 let publisher = self
