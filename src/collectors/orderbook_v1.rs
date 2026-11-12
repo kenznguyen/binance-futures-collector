@@ -664,6 +664,34 @@ mod tests {
     }
 
     #[test]
+    fn live_zero_quantity_deletes_level_without_mutating_prior_snapshot() {
+        let current = build_snapshot(&snapshot(), &valid_updates(), 4, NOW - 10, NOW).unwrap();
+        let mut event = update(104, 104, 103, NOW - 20);
+        event.bids.push(["9981".into(), "0".into()]);
+        event.bids.push(["9980".into(), "3".into()]);
+
+        let next = apply_live_diff(&current, &event, 20, NOW - 5, NOW).unwrap();
+        assert!(current.bids.iter().any(|level| level[0] == "9981"));
+        assert!(!next.bids.iter().any(|level| level[0] == "9981"));
+        assert!(next.bids.iter().any(|level| level[0] == "9980"));
+    }
+
+    #[test]
+    fn live_duplicate_normalized_prices_and_crossed_book_are_rejected() {
+        let current = build_snapshot(&snapshot(), &valid_updates(), 4, NOW - 10, NOW).unwrap();
+        let mut duplicate = update(104, 104, 103, NOW - 20);
+        duplicate.bids = vec![
+            ["9999".into(), "1".into()],
+            ["9999.0".into(), "2".into()],
+        ];
+        assert!(apply_live_diff(&current, &duplicate, 20, NOW - 5, NOW).is_err());
+
+        let mut crossed = update(104, 104, 103, NOW - 20);
+        crossed.asks.push(["9999".into(), "1".into()]);
+        assert!(apply_live_diff(&current, &crossed, 20, NOW - 5, NOW).is_err());
+    }
+
+    #[test]
     fn reanchor_budget_stops_after_three_attempts_and_resets_on_new_connection() {
         let publisher = SnapshotPublisher::new();
         publisher.begin_connection_generation();
