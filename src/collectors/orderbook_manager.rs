@@ -852,7 +852,11 @@ impl OrderbookManager {
         let mut keys: Vec<String> = levels.keys().cloned().collect();
         keys.sort_by(|left, right| {
             let order = compare_normalized_decimals(left, right);
-            if highest_first { order.reverse() } else { order }
+            if highest_first {
+                order.reverse()
+            } else {
+                order
+            }
         });
         for key in keys.into_iter().skip(depth) {
             levels.remove(&key);
@@ -1340,10 +1344,16 @@ mod tests {
         book.bids.insert(99.5f64.to_bits(), 2.0);
         book.asks.insert(100.5f64.to_bits(), 1.5);
         book.asks.insert(101.0f64.to_bits(), 3.0);
-        book.raw_bids.insert("100".to_string(), ("100.0".to_string(), "1.0".to_string()));
-        book.raw_bids.insert("99.5".to_string(), ("99.5".to_string(), "2.0".to_string()));
-        book.raw_asks.insert("100.5".to_string(), ("100.5".to_string(), "1.5".to_string()));
-        book.raw_asks.insert("101".to_string(), ("101.0".to_string(), "3.0".to_string()));
+        book.raw_bids
+            .insert("100".to_string(), ("100.0".to_string(), "1.0".to_string()));
+        book.raw_bids
+            .insert("99.5".to_string(), ("99.5".to_string(), "2.0".to_string()));
+        book.raw_asks.insert(
+            "100.5".to_string(),
+            ("100.5".to_string(), "1.5".to_string()),
+        );
+        book.raw_asks
+            .insert("101".to_string(), ("101.0".to_string(), "3.0".to_string()));
         book
     }
 
