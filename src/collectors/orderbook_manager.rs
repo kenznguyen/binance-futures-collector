@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 use tokio::task::JoinHandle;
 use tokio::time::{interval, sleep};
 
+use crate::collectors::orderbook_v1::{apply_live_diff, build_snapshot, SnapshotPublisher};
 use crate::config::Config;
 use crate::constants;
 use crate::models::*;
@@ -36,6 +37,11 @@ pub struct OrderbookManager {
 
     // Error recovery tracking
     resnapshot_backoff: Arc<DashMap<String, Duration>>,
+
+    // BTCUSDT-only V1 candidate state; only SnapshotPublisher exposes a complete snapshot.
+    btc_v1_publisher: Arc<SnapshotPublisher>,
+    btc_v1_rest_snapshot: Arc<DashMap<String, DepthSnapshotRest>>,
+    btc_v1_buffered_updates: Arc<DashMap<String, Vec<DepthUpdateWs>>>,
 
     // Symbols confirmed delisted by periodic discovery (shared with main and
     // the REST pollers). A member's manage_symbol task exits and drops state.
@@ -129,6 +135,7 @@ impl OrderbookManager {
         websocket_manager: Arc<WebSocketManager>,
         gap_registry: Arc<GapRegistry>,
         delisted: Arc<DashSet<String>>,
+        btc_v1_publisher: Arc<SnapshotPublisher>,
     ) -> Self {
         Self {
             config,
@@ -142,6 +149,9 @@ impl OrderbookManager {
             last_periodic_snapshot: Arc::new(DashMap::new()),
             sync_start_time: Arc::new(DashMap::new()),
             resnapshot_backoff: Arc::new(DashMap::new()),
+            btc_v1_publisher,
+            btc_v1_rest_snapshot: Arc::new(DashMap::new()),
+            btc_v1_buffered_updates: Arc::new(DashMap::new()),
             delisted,
             tasks: Arc::new(StdMutex::new(Vec::new())),
         }
@@ -1268,6 +1278,9 @@ impl Clone for OrderbookManager {
             last_periodic_snapshot: self.last_periodic_snapshot.clone(),
             sync_start_time: self.sync_start_time.clone(),
             resnapshot_backoff: self.resnapshot_backoff.clone(),
+            btc_v1_publisher: self.btc_v1_publisher.clone(),
+            btc_v1_rest_snapshot: self.btc_v1_rest_snapshot.clone(),
+            btc_v1_buffered_updates: self.btc_v1_buffered_updates.clone(),
             delisted: self.delisted.clone(),
             tasks: self.tasks.clone(),
         }
