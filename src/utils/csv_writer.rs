@@ -144,6 +144,82 @@ fn collect_flush_results(results: impl IntoIterator<Item = Result<()>>) -> Resul
     }
 }
 
+struct BlockingOperationState {
+    closed: bool,
+    in_flight: usize,
+}
+
+struct BlockingOperationTracker {
+    state: Mutex<BlockingOperationState>,
+    updates: watch::Sender<usize>,
+}
+
+struct BlockingOperationGuard {
+    tracker: Arc<BlockingOperationTracker>,
+}
+
+impl BlockingOperationTracker {
+    fn new() -> Self {
+        let (updates, _) = watch::channel(0);
+        Self {
+            state: Mutex::new(BlockingOperationState {
+                closed: false,
+                in_flight: 0,
+            }),
+            updates,
+        }
+    }
+
+    fn begin(self: &Arc<Self>) -> Result<BlockingOperationGuard> {
+        let mut state = self.state.lock();
+        if state.closed {
+            anyhow::bail!("CSV_BLOCKING_OPERATION_ADMISSION_CLOSED");
+        }
+        state.in_flight += 1;
+        self.updates.send_replace(state.in_flight);
+        Ok(BlockingOperationGuard {
+            tracker: self.clone(),
+        })
+    }
+
+    fn is_closed(&self) -> bool {
+        self.state.lock().closed
+    }
+
+    fn is_closed_and_drained(&self) -> bool {
+        let state = self.state.lock();
+        state.closed && state.in_flight == 0
+    }
+
+    async fn close_and_drain(&self) -> Result<()> {
+        let mut updates = self.updates.subscribe();
+        {
+            let mut state = self.state.lock();
+            state.closed = true;
+            self.updates.send_replace(state.in_flight);
+        }
+
+        loop {
+            if *updates.borrow_and_update() == 0 {
+                return Ok(());
+            }
+            updates
+                .changed()
+                .await
+                .context("CSV blocking-operation drain channel closed")?;
+        }
+    }
+}
+
+impl Drop for BlockingOperationGuard {
+    fn drop(&mut self) {
+        let mut state = self.tracker.state.lock();
+        debug_assert!(state.in_flight > 0);
+        state.in_flight -= 1;
+        self.tracker.updates.send_replace(state.in_flight);
+    }
+}
+
 /// Manages CSV file writing with buffering and atomic operations
 #[derive(Clone)]
 pub struct CsvWriter {
@@ -156,6 +232,7 @@ pub struct CsvWriter {
     max_depth_buffer_rows: usize,
     shutdown_tx: watch::Sender<bool>,
     background_tasks: Arc<AsyncMutex<Vec<tokio::task::JoinHandle<()>>>>,
+    blocking_operations: Arc<BlockingOperationTracker>,
 }
 
 impl CsvWriter {
@@ -176,6 +253,7 @@ impl CsvWriter {
             max_depth_buffer_rows: config.output.max_depth_buffer_rows,
             shutdown_tx,
             background_tasks: Arc::new(AsyncMutex::new(Vec::new())),
+            blocking_operations: Arc::new(BlockingOperationTracker::new()),
         })
     }
 
@@ -199,7 +277,9 @@ impl CsvWriter {
         let buffer_size = self.buffer_size_bytes;
         let header = self.get_header_for_file(file_path).to_string();
 
+        let operation = self.blocking_operations.begin()?;
         let buffer = tokio::task::spawn_blocking(move || -> Result<FileBuffer> {
+            let _operation = operation;
             if let Some(parent) = file_path_owned.parent() {
                 debug!("spawn_blocking: Creating parent directory {:?}", parent);
                 std::fs::create_dir_all(parent)?;
@@ -772,7 +852,9 @@ impl CsvWriter {
         let max_rows = self.max_depth_buffer_rows;
         let buffer_clone = buffer.clone();
 
+        let operation = self.blocking_operations.begin()?;
         let needs_emergency_flush = tokio::task::spawn_blocking(move || -> Result<bool> {
+            let _operation = operation;
             let mut buf = buffer_clone.lock();
 
             // Add to in-memory buffer (unsorted for O(1) append)
@@ -804,7 +886,11 @@ impl CsvWriter {
 
     /// Flush a single buffer (extracted for reuse)
     async fn flush_buffer(&self, buffer: Arc<Mutex<FileBuffer>>) -> Result<()> {
-        tokio::task::spawn_blocking(move || -> Result<()> { buffer.lock().flush_locked() })
+        let operation = self.blocking_operations.begin()?;
+        tokio::task::spawn_blocking(move || -> Result<()> {
+            let _operation = operation;
+            buffer.lock().flush_locked()
+        })
             .await??;
 
         Ok(())
@@ -814,8 +900,10 @@ impl CsvWriter {
     async fn write_row(&self, buffer: Arc<Mutex<FileBuffer>>, row: &str) -> Result<()> {
         let row_owned = row.to_string();
         let flush_interval = self.flush_interval;
+        let operation = self.blocking_operations.begin()?;
 
         tokio::task::spawn_blocking(move || -> Result<()> {
+            let _operation = operation;
             let mut buf = buffer.lock();
             writeln!(buf.writer, "{}", row_owned)?;
             buf.row_count += 1;
@@ -843,6 +931,24 @@ impl CsvWriter {
         let mut results = Vec::with_capacity(buffers.len());
         for buffer in buffers {
             results.push(self.flush_buffer(buffer).await);
+        }
+        collect_flush_results(results)
+    }
+
+    /// Final flush after shutdown has closed admission and drained all blocking operations.
+    /// This is the only post-barrier path allowed to start new filesystem work.
+    pub async fn flush_all_after_shutdown(&self) -> Result<()> {
+        if !self.blocking_operations.is_closed_and_drained() {
+            anyhow::bail!("CSV_BLOCKING_OPERATIONS_NOT_DRAINED");
+        }
+
+        let buffers: Vec<_> = self.buffers.iter().map(|entry| entry.value().clone()).collect();
+        let mut results = Vec::with_capacity(buffers.len());
+        for buffer in buffers {
+            let result =
+                tokio::task::spawn_blocking(move || -> Result<()> { buffer.lock().flush_locked() })
+                    .await?;
+            results.push(result);
         }
         collect_flush_results(results)
     }
@@ -974,6 +1080,8 @@ impl CsvWriter {
                 join_errors.push(error.to_string());
             }
         }
+
+        self.blocking_operations.close_and_drain().await?;
 
         if !join_errors.is_empty() {
             anyhow::bail!(
@@ -1532,6 +1640,8 @@ mod blocking_operation_barrier_tests {
     async fn shutdown_closes_admission_waits_for_in_flight_and_gates_final_flush() {
         let dir = tempfile::tempdir().unwrap();
         let writer = test_writer(dir.path());
+        let file_path = writer.get_daily_file_path("trades", "btcusdt", 1_800_000_000_000);
+        let buffer = writer.get_or_create_buffer(&file_path).await.unwrap();
         let in_flight = writer.blocking_operations.begin().unwrap();
 
         let shutdown_writer = writer.clone();
@@ -1557,6 +1667,10 @@ mod blocking_operation_barrier_tests {
 
         drop(in_flight);
         shutdown.await.unwrap().unwrap();
+        assert!(
+            writer.write_row(buffer, "late row").await.is_err(),
+            "writes must be rejected after shutdown closes blocking-operation admission"
+        );
         writer.flush_all_after_shutdown().await.unwrap();
     }
 }
