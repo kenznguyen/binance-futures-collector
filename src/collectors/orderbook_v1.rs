@@ -325,6 +325,79 @@ pub fn build_snapshot(
     })
 }
 
+/// Apply one live WS diff to an immutable published snapshot. The previous snapshot
+/// remains untouched; callers publish the returned candidate only if its generation is current.
+pub fn apply_live_diff(
+    current: &OrderbookSnapshotV1,
+    update: &DepthUpdateWs,
+    observed_at_ms: i64,
+    decision_time_ms: i64,
+) -> Result<OrderbookSnapshotV1> {
+    validate_update_header(update)?;
+    if update.prev_update_id != current.last_applied_u
+        || update.final_update_id <= current.last_applied_u
+    {
+        bail!("live WS diff does not continue the published watermark");
+    }
+
+    let mut bids: Levels = current
+        .bids
+        .iter()
+        .map(|level| {
+            let key = crate::utils::normalize_plain_decimal(&level.price)?;
+            Ok((key, level.clone()))
+        })
+        .collect::<Result<_>>()?;
+    let mut asks: Levels = current
+        .asks
+        .iter()
+        .map(|level| {
+            let key = crate::utils::normalize_plain_decimal(&level.price)?;
+            Ok((key, level.clone()))
+        })
+        .collect::<Result<_>>()?;
+
+    insert_levels(&mut bids, &update.bids, "bid", true)?;
+    insert_levels(&mut asks, &update.asks, "ask", true)?;
+    if bids.len() < REQUIRED_DEPTH || asks.len() < REQUIRED_DEPTH {
+        bail!("live candidate book does not meet the minimum depth on both sides");
+    }
+
+    let best_bid = bids
+        .keys()
+        .max_by(|left, right| compare_normalized_decimals(left, right))
+        .context("empty bid side")?;
+    let best_ask = asks
+        .keys()
+        .min_by(|left, right| compare_normalized_decimals(left, right))
+        .context("empty ask side")?;
+    if compare_normalized_decimals(best_bid, best_ask).is_ge() {
+        bail!("live candidate order book is locked or crossed");
+    }
+
+    validate_timestamp(update.event_time, decision_time_ms, "source")?;
+    validate_timestamp(observed_at_ms, decision_time_ms, "observation")?;
+
+    let bid_levels = sorted_levels(bids, true);
+    let ask_levels = sorted_levels(asks, false);
+    let mut next = current.clone();
+    next.bids = bid_levels;
+    next.asks = ask_levels;
+    next.bid_depth = next.bids.len();
+    next.ask_depth = next.asks.len();
+    next.last_applied_u = update.final_update_id;
+    next.decision_watermark = update.final_update_id;
+    next.source_timestamp_ms = update.event_time;
+    next.observed_at_ms = observed_at_ms;
+    next.snapshot_id = format!(
+        "btcusdt-{}-{}-{}",
+        next.generation, next.last_applied_u, next.source_timestamp_ms
+    );
+    next.freshness_fresh = true;
+    next.complete = true;
+    Ok(next)
+}
+
 fn validate_update_header(update: &DepthUpdateWs) -> Result<()> {
     if update.symbol != "BTCUSDT" || update.event_type != "depthUpdate" {
         bail!("V1 accepts only BTCUSDT depthUpdate events");
@@ -491,6 +564,21 @@ mod tests {
             build_snapshot(&snapshot(), &valid_updates(), next_generation, NOW, NOW).unwrap();
         publisher.publish_if_current(next).unwrap();
         assert_eq!(publisher.state(), OrderbookV1State::Ready);
+    }
+
+    #[test]
+    fn live_diff_requires_exact_pu_and_publishes_a_new_immutable_watermark() {
+        let current = build_snapshot(&snapshot(), &valid_updates(), 4, NOW - 10, NOW).unwrap();
+        let mut next_event = update(104, 104, 103, NOW - 20);
+        next_event.bids.push(["9999".into(), "3".into()]);
+        let next = apply_live_diff(&current, &next_event, NOW - 5, NOW).unwrap();
+        assert_eq!(current.last_applied_u, 103);
+        assert_eq!(next.last_applied_u, 104);
+        assert_eq!(next.decision_watermark, 104);
+        assert_ne!(current.snapshot_id, next.snapshot_id);
+
+        next_event.prev_update_id = 102;
+        assert!(apply_live_diff(&current, &next_event, NOW - 5, NOW).is_err());
     }
 
     #[test]
