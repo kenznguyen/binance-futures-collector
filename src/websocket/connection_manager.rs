@@ -616,7 +616,7 @@ impl WebSocketManager {
         &self,
         batch_id: usize,
         _stream_name: &str,
-        mut data: Value,
+        data: Value,
         received_at: std::time::Instant,
     ) -> Result<()> {
         // Handle liquidation array from !forceOrder@arr stream
