@@ -1,5 +1,4 @@
 pub mod orderbook_manager;
-pub mod orderbook_v1;
 pub mod rest_collector;
 pub mod symbol_discovery;
 
