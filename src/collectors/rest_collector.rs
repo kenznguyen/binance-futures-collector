@@ -37,6 +37,42 @@ const DATA_BUCKET_LIMIT: u32 = 8;
 const KLINE_BUCKET_LIMIT: u32 = 4;
 
 /// Collects REST-based data (funding rates, OI, ratios, etc.)
+#[derive(Clone, Default)]
+struct RestTaskGroup {
+    handles: Arc<tokio::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>>,
+}
+
+impl RestTaskGroup {
+    async fn spawn<F>(&self, future: F)
+    where
+        F: std::future::Future<Output = ()> + Send + 'static,
+    {
+        let handle = tokio::spawn(future);
+        self.handles.lock().await.push(handle);
+    }
+
+    async fn shutdown(&self) {
+        let handles = {
+            let mut guard = self.handles.lock().await;
+            std::mem::take(&mut *guard)
+        };
+        for handle in &handles {
+            handle.abort();
+        }
+        for handle in handles {
+            if let Err(error) = handle.await {
+                if !error.is_cancelled() {
+                    log::error!("REST collector task join failed: {}", error);
+                }
+            }
+        }
+    }
+
+    async fn len(&self) -> usize {
+        self.handles.lock().await.len()
+    }
+}
+
 pub struct RestCollector {
     config: Arc<Config>,
     rest_client: Arc<RestClient>,
@@ -93,7 +129,7 @@ impl RestCollector {
         // This makes 1 bulk request for all symbols, so start immediately
         let collector = self.clone();
         let symbols_clone = symbols.clone();
-        tokio::spawn(async move {
+        self.tasks.spawn(async move {
             if let Err(e) = collector.collect_funding_rates(symbols_clone).await {
                 error!("Funding rate collector error: {}", e);
             }
@@ -102,7 +138,7 @@ impl RestCollector {
         // Start mark price klines collector (90s interval) - 10s delay
         let collector = self.clone();
         let symbols_clone = symbols.clone();
-        tokio::spawn(async move {
+        self.tasks.spawn(async move {
             sleep(Duration::from_secs(10)).await;
             if let Err(e) = collector.collect_mark_price_klines(symbols_clone).await {
                 error!("Mark price klines collector error: {}", e);
@@ -112,7 +148,7 @@ impl RestCollector {
         // Start index price klines collector (90s interval) - 20s delay
         let collector = self.clone();
         let symbols_clone = symbols.clone();
-        tokio::spawn(async move {
+        self.tasks.spawn(async move {
             sleep(Duration::from_secs(20)).await;
             if let Err(e) = collector.collect_index_price_klines(symbols_clone).await {
                 error!("Index price klines collector error: {}", e);
@@ -122,7 +158,7 @@ impl RestCollector {
         // Start premium index klines collector (60s interval) - 30s delay
         let collector = self.clone();
         let symbols_clone = symbols.clone();
-        tokio::spawn(async move {
+        self.tasks.spawn(async move {
             sleep(Duration::from_secs(30)).await;
             if let Err(e) = collector.collect_premium_index_klines(symbols_clone).await {
                 error!("Premium index klines collector error: {}", e);
@@ -133,7 +169,7 @@ impl RestCollector {
         // Makes 2 requests per symbol (OI + premium index for price)
         let collector = self.clone();
         let symbols_clone = symbols.clone();
-        tokio::spawn(async move {
+        self.tasks.spawn(async move {
             sleep(Duration::from_secs(40)).await;
             if let Err(e) = collector.collect_open_interest(symbols_clone).await {
                 error!("Open interest collector error: {}", e);
@@ -143,7 +179,7 @@ impl RestCollector {
         // Start taker buy/sell ratio collector (300s interval) - 50s delay
         let collector = self.clone();
         let symbols_clone = symbols.clone();
-        tokio::spawn(async move {
+        self.tasks.spawn(async move {
             sleep(Duration::from_secs(50)).await;
             if let Err(e) = collector.collect_taker_buy_sell_ratios(symbols_clone).await {
                 error!("Taker buy/sell ratio collector error: {}", e);
@@ -154,7 +190,7 @@ impl RestCollector {
         // Makes 3 requests per symbol (global + 2 trader ratios), heaviest load
         let collector = self.clone();
         let symbols_clone = symbols.clone();
-        tokio::spawn(async move {
+        self.tasks.spawn(async move {
             sleep(Duration::from_secs(60)).await;
             if let Err(e) = collector.collect_long_short_ratios(symbols_clone).await {
                 error!("Long/short ratio collector error: {}", e);
@@ -162,6 +198,11 @@ impl RestCollector {
         });
 
         Ok(())
+    }
+
+    /// Stop every background REST collector and wait until no task can write.
+    pub async fn shutdown(&self) {
+        self.tasks.shutdown().await;
     }
 
     /// Collect funding rates (includes mark/index prices)
