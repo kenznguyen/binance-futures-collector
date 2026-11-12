@@ -41,6 +41,7 @@ pub struct OrderbookManager {
     // BTCUSDT-only V1 candidate state; only SnapshotPublisher exposes a complete snapshot.
     btc_v1_publisher: Arc<SnapshotPublisher>,
     btc_v1_rest_snapshot: Arc<DashMap<String, DepthSnapshotRest>>,
+    btc_v1_anchor_generation: Arc<DashMap<String, u64>>,
     btc_v1_buffered_updates: Arc<DashMap<String, Vec<DepthUpdateWs>>>,
 
     // Symbols confirmed delisted by periodic discovery (shared with main and
@@ -151,6 +152,7 @@ impl OrderbookManager {
             resnapshot_backoff: Arc::new(DashMap::new()),
             btc_v1_publisher,
             btc_v1_rest_snapshot: Arc::new(DashMap::new()),
+            btc_v1_anchor_generation: Arc::new(DashMap::new()),
             btc_v1_buffered_updates: Arc::new(DashMap::new()),
             delisted,
             tasks: Arc::new(StdMutex::new(Vec::new())),
@@ -558,6 +560,7 @@ impl OrderbookManager {
                     {
                         self.orderbooks.remove(&symbol);
                         self.btc_v1_rest_snapshot.remove(&symbol);
+                        self.btc_v1_anchor_generation.remove(&symbol);
                         self.btc_v1_buffered_updates.remove(&symbol);
                         self.symbol_states
                             .insert(symbol.clone(), OrderbookState::Initializing);
@@ -575,6 +578,12 @@ impl OrderbookManager {
         self.symbol_states
             .insert(symbol.to_string(), OrderbookState::FetchingSnapshot);
 
+        let v1_generation_at_request = if symbol.eq_ignore_ascii_case("btcusdt") {
+            Some(self.btc_v1_publisher.generation())
+        } else {
+            None
+        };
+
         let snapshot = tokio::time::timeout(
             Duration::from_secs(self.config.orderbook.snapshot_http_timeout_seconds),
             self.rest_client
@@ -584,9 +593,14 @@ impl OrderbookManager {
         .context("Snapshot fetch timeout")?
         .context("Snapshot fetch failed")?;
 
-        if symbol.eq_ignore_ascii_case("btcusdt") {
+        if let Some(generation) = v1_generation_at_request {
+            if self.btc_v1_publisher.generation() != generation {
+                anyhow::bail!("discarding stale BTCUSDT REST snapshot from an old generation");
+            }
             self.btc_v1_rest_snapshot
                 .insert(symbol.to_string(), snapshot.clone());
+            self.btc_v1_anchor_generation
+                .insert(symbol.to_string(), generation);
             self.btc_v1_buffered_updates.remove(symbol);
         }
 
@@ -763,6 +777,17 @@ impl OrderbookManager {
             .get(symbol)
             .map(|snapshot| snapshot.value().clone())
             .context("BTCUSDT V1 REST anchor is unavailable")?;
+        let anchor_generation = self
+            .btc_v1_anchor_generation
+            .get(symbol)
+            .map(|generation| *generation)
+            .context("BTCUSDT V1 REST anchor generation is unavailable")?;
+        if anchor_generation != self.btc_v1_publisher.generation() {
+            self.trigger_resnapshot("btcusdt", "v1_anchor_generation_mismatch")
+                .await?;
+            return Ok(false);
+        }
+
         let updates = self
             .btc_v1_buffered_updates
             .get(symbol)
@@ -1033,6 +1058,7 @@ impl OrderbookManager {
         if symbol.eq_ignore_ascii_case("btcusdt") {
             self.btc_v1_publisher.mark_stopped();
             self.btc_v1_rest_snapshot.remove(symbol);
+            self.btc_v1_anchor_generation.remove(symbol);
             self.btc_v1_buffered_updates.remove(symbol);
         }
         self.orderbooks.remove(symbol);
@@ -1448,6 +1474,7 @@ impl Clone for OrderbookManager {
             resnapshot_backoff: self.resnapshot_backoff.clone(),
             btc_v1_publisher: self.btc_v1_publisher.clone(),
             btc_v1_rest_snapshot: self.btc_v1_rest_snapshot.clone(),
+            btc_v1_anchor_generation: self.btc_v1_anchor_generation.clone(),
             btc_v1_buffered_updates: self.btc_v1_buffered_updates.clone(),
             delisted: self.delisted.clone(),
             tasks: self.tasks.clone(),
