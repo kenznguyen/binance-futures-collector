@@ -933,3 +933,42 @@ mod rest_decimal_tests {
         .is_none());
     }
 }
+
+#[cfg(test)]
+mod rest_task_group_tests {
+    use super::RestTaskGroup;
+    use std::time::Duration;
+    use tokio::sync::oneshot;
+
+    #[tokio::test]
+    async fn shutdown_aborts_and_joins_every_registered_task() {
+        let tasks = RestTaskGroup::default();
+        let (started_tx, started_rx) = oneshot::channel();
+        tasks.spawn(async move {
+            let _ = started_tx.send(());
+            std::future::pending::<()>().await;
+        }).await;
+
+        tokio::time::timeout(Duration::from_secs(1), started_rx)
+            .await
+            .expect("task should start")
+            .expect("start signal should be delivered");
+
+        tasks.shutdown().await;
+        assert_eq!(tasks.len().await, 0);
+    }
+
+    #[tokio::test]
+    async fn shutdown_waits_for_task_cancellation_to_finish() {
+        let tasks = RestTaskGroup::default();
+        let (started_tx, started_rx) = oneshot::channel();
+        tasks.spawn(async move {
+            let _ = started_tx.send(());
+            std::future::pending::<()>().await;
+        }).await;
+
+        started_rx.await.expect("task should start");
+        tasks.shutdown().await;
+        assert_eq!(tasks.len().await, 0);
+    }
+}
