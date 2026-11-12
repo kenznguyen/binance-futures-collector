@@ -1514,3 +1514,51 @@ mod flush_all_error_tests {
         assert!(tasks.is_empty(), "shutdown must take and join every task");
     }
 }
+
+
+#[cfg(test)]
+mod blocking_operation_barrier_tests {
+    use super::CsvWriter;
+    use crate::config::Config;
+    use std::path::Path;
+    use std::sync::Arc;
+
+    fn test_writer(dir: &Path) -> CsvWriter {
+        let mut config = Config::from_file("config.example.toml").unwrap();
+        config.output.base_dir = dir.to_string_lossy().into_owned();
+        CsvWriter::new(Arc::new(config)).unwrap()
+    }
+
+    #[tokio::test]
+    async fn shutdown_closes_admission_waits_for_in_flight_and_gates_final_flush() {
+        let dir = tempfile::tempdir().unwrap();
+        let writer = test_writer(dir.path());
+        let in_flight = writer.blocking_operations.begin().unwrap();
+
+        let shutdown_writer = writer.clone();
+        let shutdown = tokio::spawn(async move {
+            shutdown_writer.shutdown_background_tasks().await
+        });
+
+        while !writer.blocking_operations.is_closed() {
+            tokio::task::yield_now().await;
+        }
+
+        assert!(
+            writer.blocking_operations.begin().is_err(),
+            "shutdown must reject new blocking operations"
+        );
+        assert!(
+            !shutdown.is_finished(),
+            "shutdown must wait for an already-admitted blocking operation"
+        );
+        assert!(
+            writer.flush_all_after_shutdown().await.is_err(),
+            "final flush must not begin before the in-flight barrier drains"
+        );
+
+        drop(in_flight);
+        shutdown.await.unwrap().unwrap();
+        writer.flush_all_after_shutdown().await.unwrap();
+    }
+}
