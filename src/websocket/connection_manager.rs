@@ -885,7 +885,7 @@ impl Clone for WebSocketManager {
 
 #[cfg(test)]
 mod tests {
-    use super::backoff_for;
+    use super::{backoff_for, join_websocket_tasks};
     use std::time::Duration;
 
     #[test]
