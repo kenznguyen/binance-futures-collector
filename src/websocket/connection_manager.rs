@@ -993,7 +993,10 @@ mod tests {
 
         let join = tokio::spawn(join_websocket_tasks(vec![first_task, second_task]));
         tokio::task::yield_now().await;
-        assert!(!join.is_finished(), "shutdown must wait for every connection task");
+        assert!(
+            !join.is_finished(),
+            "shutdown must wait for every connection task"
+        );
 
         first_release_tx.send(()).unwrap();
         second_release_tx.send(()).unwrap();
