@@ -8,10 +8,10 @@ use std::time::{Duration, Instant};
 use tokio::task::JoinHandle;
 use tokio::time::{interval, sleep};
 
-use crate::orderbook_v1::{apply_live_diff, build_snapshot, OrderbookV1State, SnapshotPublisher};
 use crate::config::Config;
 use crate::constants;
 use crate::models::*;
+use crate::orderbook_v1::{apply_live_diff, build_snapshot, OrderbookV1State, SnapshotPublisher};
 use crate::rest::RestClient;
 use crate::utils::{compare_normalized_decimals, normalize_plain_decimal, CsvWriter, GapRegistry};
 use crate::websocket::connection_manager::WebSocketManager;
