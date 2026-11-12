@@ -1394,18 +1394,26 @@ impl OrderbookManager {
                                 };
                                 if let Some(error) = legacy_apply_error {
                                     warn!("[BTCUSDT] V1 legacy mirror update rejected: {error}");
-                                    self.trigger_resnapshot("btcusdt", "v1_live_apply_rejected")
-                                        .await?;
+                                    if let Err(resync_error) = self
+                                        .trigger_resnapshot("btcusdt", "v1_live_apply_rejected")
+                                        .await
+                                    {
+                                        error!("[BTCUSDT] Failed to schedule V1 re-anchor: {resync_error:#}");
+                                    }
                                     break;
                                 }
                             }
                             Err(error) => {
                                 warn!("[BTCUSDT] V1 live diff rejected; re-anchoring: {error:#}");
-                                self.trigger_resnapshot(
-                                    "btcusdt",
-                                    "v1_live_sequence_or_shape_failure",
-                                )
-                                .await?;
+                                if let Err(resync_error) = self
+                                    .trigger_resnapshot(
+                                        "btcusdt",
+                                        "v1_live_sequence_or_shape_failure",
+                                    )
+                                    .await
+                                {
+                                    error!("[BTCUSDT] Failed to schedule V1 re-anchor: {resync_error:#}");
+                                }
                                 break;
                             }
                         }
