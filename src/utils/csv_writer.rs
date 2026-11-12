@@ -891,7 +891,7 @@ impl CsvWriter {
             let _operation = operation;
             buffer.lock().flush_locked()
         })
-            .await??;
+        .await??;
 
         Ok(())
     }
@@ -942,7 +942,11 @@ impl CsvWriter {
             anyhow::bail!("CSV_BLOCKING_OPERATIONS_NOT_DRAINED");
         }
 
-        let buffers: Vec<_> = self.buffers.iter().map(|entry| entry.value().clone()).collect();
+        let buffers: Vec<_> = self
+            .buffers
+            .iter()
+            .map(|entry| entry.value().clone())
+            .collect();
         let mut results = Vec::with_capacity(buffers.len());
         for buffer in buffers {
             let result =
