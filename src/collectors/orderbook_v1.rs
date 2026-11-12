@@ -414,7 +414,7 @@ pub fn apply_live_diff(
         .asks
         .iter()
         .map(|level| {
-            let key = crate::utils::normalize_plain_decimal(&level.price)?;
+            let key = crate::utils::normalize_plain_decimal(&level[0])?;
             Ok((key, level.clone()))
         })
         .collect::<Result<_>>()?;
