@@ -48,8 +48,24 @@ pub fn validate_orderbook_level(price: &str, quantity: &str) -> Result<(String, 
     const MAX_DECIMAL_BYTES: usize = 128;
 
     for (field, value) in [("price", price), ("quantity", quantity)] {
-        if value.is_empty() || value.len() > MAX_DECIMAL_BYTES || value.starts_with('+') {
+        if value.is_empty()
+            || value.len() > MAX_DECIMAL_BYTES
+            || value.starts_with('-')
+            || value.starts_with('+')
+        {
             bail!("invalid order-book {field} decimal length or sign");
+        }
+        let mut parts = value.split('.');
+        let integer = parts.next().unwrap_or_default();
+        let fraction = parts.next();
+        if integer.is_empty()
+            || !integer.bytes().all(|byte| byte.is_ascii_digit())
+            || fraction.is_some_and(|digits| {
+                digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit())
+            })
+            || parts.next().is_some()
+        {
+            bail!("invalid order-book {field} plain decimal");
         }
     }
 
