@@ -646,6 +646,7 @@ mod tests {
     fn publisher_invalidates_old_snapshot_and_fences_late_generation() {
         let publisher = SnapshotPublisher::new();
         let generation = publisher.begin_reanchor();
+        publisher.note_reanchor_attempt().unwrap();
         let candidate =
             build_snapshot(&snapshot(), &valid_updates(), generation, NOW, NOW).unwrap();
         publisher.publish_if_current(candidate.clone()).unwrap();
