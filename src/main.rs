@@ -604,7 +604,10 @@ mod tests {
 
         let result = await_handler_drain(handler, std::time::Duration::from_millis(10)).await;
 
-        assert!(result.is_err(), "a handler that did not drain must block final persistence");
+        assert!(
+            result.is_err(),
+            "a handler that did not drain must block final persistence"
+        );
     }
 
     #[tokio::test]
