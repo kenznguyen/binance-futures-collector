@@ -1,6 +1,7 @@
 use anyhow::{bail, Context, Result};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
+use serde::Serialize;
 
 use crate::models::{DepthSnapshotRest, DepthUpdateWs};
 use crate::utils::{compare_normalized_decimals, validate_orderbook_level};
@@ -22,13 +23,10 @@ pub enum OrderbookV1State {
     Stopped,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DepthLevel {
-    pub price: String,
-    pub quantity: String,
-}
+pub type DepthLevel = [String; 2];
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct OrderbookSnapshotV1 {
     pub contract_version: String,
     pub symbol: String,
@@ -43,8 +41,8 @@ pub struct OrderbookSnapshotV1 {
     pub observed_at_ms: i64,
     pub generation: u64,
     pub snapshot_id: String,
-    pub continuity_verified: bool,
-    pub freshness_fresh: bool,
+    pub continuity: String,
+    pub freshness: String,
     pub complete: bool,
     pub bid_depth: usize,
     pub ask_depth: usize,
@@ -154,7 +152,10 @@ impl SnapshotPublisher {
         ) {
             bail!("order-book publisher is not in a publishable lifecycle state");
         }
-        if !snapshot.complete || !snapshot.continuity_verified || !snapshot.freshness_fresh {
+        if !snapshot.complete
+            || snapshot.continuity != "VERIFIED"
+            || snapshot.freshness != "FRESH"
+        {
             bail!("refusing to publish an incomplete or unverified snapshot");
         }
         inner.snapshot = Some(Arc::new(snapshot));
@@ -217,13 +218,7 @@ fn insert_levels(
         if quantity_key == "0" {
             target.remove(&price_key);
         } else {
-            target.insert(
-                price_key,
-                DepthLevel {
-                    price: price.clone(),
-                    quantity: quantity.clone(),
-                },
-            );
+            target.insert(price_key, [price.clone(), quantity.clone()]);
         }
     }
     Ok(())
@@ -385,8 +380,8 @@ pub fn build_snapshot(
         observed_at_ms,
         generation,
         snapshot_id: format!("btcusdt-{generation}-{last_applied_u}-{last_event_timestamp_ms}"),
-        continuity_verified: true,
-        freshness_fresh: true,
+        continuity: "VERIFIED".to_string(),
+        freshness: "FRESH".to_string(),
         complete: true,
     })
 }
@@ -411,7 +406,7 @@ pub fn apply_live_diff(
         .bids
         .iter()
         .map(|level| {
-            let key = crate::utils::normalize_plain_decimal(&level.price)?;
+            let key = crate::utils::normalize_plain_decimal(&level[0])?;
             Ok((key, level.clone()))
         })
         .collect::<Result<_>>()?;
@@ -462,7 +457,7 @@ pub fn apply_live_diff(
         "btcusdt-{}-{}-{}",
         next.generation, next.last_applied_u, next.source_timestamp_ms
     );
-    next.freshness_fresh = true;
+    next.freshness = "FRESH".to_string();
     next.complete = true;
     Ok(next)
 }
@@ -542,7 +537,9 @@ mod tests {
         assert_eq!(result.source_timestamp_ms, NOW - 50);
         assert_eq!(result.bid_depth, 20);
         assert_eq!(result.ask_depth, 20);
-        assert!(result.complete && result.continuity_verified && result.freshness_fresh);
+        assert!(result.complete);
+        assert_eq!(result.continuity, "VERIFIED");
+        assert_eq!(result.freshness, "FRESH");
     }
 
     #[test]
@@ -677,7 +674,7 @@ mod tests {
             NOW,
         )
         .unwrap();
-        assert!(candidate.freshness_fresh);
+        assert_eq!(candidate.freshness, "FRESH");
 
         let mut future = valid_updates();
         future[1].event_time = NOW + MAX_FUTURE_SKEW_MS;
