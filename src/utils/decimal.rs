@@ -92,7 +92,7 @@ pub fn compare_normalized_decimals(left: &str, right: &str) -> std::cmp::Orderin
 pub fn multiply_decimal_strings(left: &str, right: &str) -> Result<String> {
     fn parse(value: &str) -> Result<(bool, Vec<u8>, usize)> {
         let (mantissa, exponent) =
-            match value.find(|character| character == 'e' || character == 'E') {
+            match value.find(['e', 'E']) {
                 Some(index) => {
                     let exponent = value[index + 1..].parse::<i32>()?;
                     (&value[..index], exponent)
