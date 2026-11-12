@@ -6,10 +6,11 @@ use rustc_hash::FxHashMap;
 use serde_json::Value;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 use tokio::net::TcpStream;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{mpsc, watch, Mutex};
+use tokio::task::JoinHandle;
 use tokio::time::{interval, sleep, timeout};
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::tungstenite::{Bytes, Error as WsError, Message};
@@ -28,6 +29,8 @@ pub struct WebSocketManager {
     // Set on shutdown to stop ingest: read loops close and the reconnect loop
     // exits instead of retrying, so the message channel can drain before flush.
     shutdown: Arc<AtomicBool>,
+    shutdown_tx: watch::Sender<bool>,
+    tasks: Arc<StdMutex<Vec<JoinHandle<()>>>>,
     reconnect_attempts: Arc<DashMap<usize, u32>>,
     batch_shutdown_flags: Arc<DashMap<usize, Arc<AtomicBool>>>,
 
@@ -116,11 +119,15 @@ impl WebSocketManager {
             );
         }
 
+        let (shutdown_tx, _) = watch::channel(false);
+
         Self {
             config,
             connections: Arc::new(DashMap::new()),
             message_tx,
             shutdown: Arc::new(AtomicBool::new(false)),
+            shutdown_tx,
+            tasks: Arc::new(StdMutex::new(Vec::new())),
             reconnect_attempts: Arc::new(DashMap::new()),
             batch_shutdown_flags: Arc::new(DashMap::new()),
             symbol_buffers,
@@ -131,16 +138,51 @@ impl WebSocketManager {
     /// Signal all connections to stop. Read loops close and the reconnect loop
     /// exits rather than retrying, letting the message channel drain before the
     /// caller flushes buffers to disk.
-    pub fn shutdown(&self) {
+    fn track_task(&self, task: JoinHandle<()>) {
+        self.tasks
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(task);
+    }
+
+    pub async fn shutdown(&self) -> Result<()> {
         self.shutdown.store(true, Ordering::Relaxed);
+        self.shutdown_tx.send_replace(true);
         for flag in self.batch_shutdown_flags.iter() {
             flag.value().store(true, Ordering::Relaxed);
         }
+
+        let tasks = {
+            let mut tasks = self
+                .tasks
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            std::mem::take(&mut *tasks)
+        };
+
+        let mut join_errors = Vec::new();
+        for task in tasks {
+            if let Err(error) = task.await {
+                if !error.is_cancelled() {
+                    join_errors.push(error.to_string());
+                }
+            }
+        }
+        if !join_errors.is_empty() {
+            anyhow::bail!(
+                "one or more websocket tasks failed to join: {}",
+                join_errors.join("; ")
+            );
+        }
+        Ok(())
     }
 
     /// Start WebSocket connections for a specific batch (COORDINATED STARTUP)
     /// This is called by the orderbook manager to coordinate staged startup.
     pub async fn start_batch(&self, symbols_batch: Vec<String>, batch_id: usize) -> Result<()> {
+        if self.shutdown.load(Ordering::Relaxed) {
+            anyhow::bail!("websocket manager is shutting down");
+        }
         if symbols_batch.is_empty() {
             warn!("Batch {}: No symbols to start.", batch_id);
             return Ok(());
@@ -164,7 +206,7 @@ impl WebSocketManager {
 
         let public = manager.clone();
         let public_syms = symbols.clone();
-        tokio::spawn(async move {
+        let public_task = tokio::spawn(async move {
             if let Err(e) = public
                 .run_connection(batch_id, public_syms, Route::Public)
                 .await
@@ -172,7 +214,9 @@ impl WebSocketManager {
                 error!("Batch {} [public] connection error: {}", batch_id, e);
             }
         });
-        tokio::spawn(async move {
+        self.track_task(public_task);
+
+        let market_task = tokio::spawn(async move {
             if let Err(e) = manager
                 .run_connection(batch_id, symbols, Route::Market)
                 .await
@@ -180,6 +224,7 @@ impl WebSocketManager {
                 error!("Batch {} [market] connection error: {}", batch_id, e);
             }
         });
+        self.track_task(market_task);
 
         // Brief delay to ensure connection starts before returning
         sleep(Duration::from_millis(100)).await;
@@ -228,25 +273,33 @@ impl WebSocketManager {
         // resets the backoff instead of compounding an old attempt count.
         let stable_connection = Duration::from_secs(60);
 
+        let mut shutdown_rx = self.shutdown_tx.subscribe();
         loop {
             if self.shutdown.load(Ordering::Relaxed) {
                 info!("Batch {} [{}] stopping (shutdown)", batch_id, route.path());
                 return Ok(());
             }
             let run_started = Instant::now();
-            match self.connect_and_run(batch_id, &symbols, route).await {
+            let connection_result = tokio::select! {
+                _ = shutdown_rx.changed() => return Ok(()),
+                result = self.connect_and_run(batch_id, &symbols, route) => result,
+            };
+
+            match connection_result {
                 Ok(_) => {
                     if self.shutdown.load(Ordering::Relaxed) {
                         return Ok(());
                     }
-                    // Graceful end (e.g. scheduled stream rotation): reconnect at once.
                     info!(
                         "Batch {} [{}] connection ended, reconnecting",
                         batch_id,
                         route.path()
                     );
                     self.reconnect_attempts.insert(cid, 0);
-                    sleep(Duration::from_millis(500)).await;
+                    tokio::select! {
+                        _ = shutdown_rx.changed() => return Ok(()),
+                        _ = sleep(Duration::from_millis(500)) => {}
+                    }
                 }
                 Err(e) => {
                     if self.shutdown.load(Ordering::Relaxed) {
@@ -259,9 +312,6 @@ impl WebSocketManager {
                         e
                     );
 
-                    // A link that stayed up past the stable window is a fresh failure,
-                    // not part of a tight loop — clear the count so a healthy connection
-                    // that blips doesn't inherit an old backoff.
                     if run_started.elapsed() >= stable_connection {
                         self.reconnect_attempts.insert(cid, 0);
                     }
@@ -271,9 +321,6 @@ impl WebSocketManager {
                         .and_modify(|a| *a += 1)
                         .or_insert(1);
 
-                    // Escalate the log past the configured threshold, but never give up:
-                    // an unattended collector must ride out outages longer than any fixed
-                    // budget, or it silently drops this batch's symbols until a restart.
                     if attempts == self.config.websocket.max_reconnect_attempts {
                         error!(
                             "Batch {} [{}] still down after {} attempts; continuing to retry",
@@ -283,7 +330,6 @@ impl WebSocketManager {
                         );
                     }
 
-                    // Exponential backoff, capped (see backoff_for).
                     let backoff = backoff_for(attempts, initial_backoff, max_backoff);
                     let jitter = Duration::from_millis((rand::random::<f64>() * 1000.0) as u64);
                     warn!(
@@ -293,7 +339,10 @@ impl WebSocketManager {
                         backoff + jitter,
                         attempts
                     );
-                    sleep(backoff + jitter).await;
+                    tokio::select! {
+                        _ = shutdown_rx.changed() => return Ok(()),
+                        _ = sleep(backoff + jitter) => {}
+                    }
                 }
             }
         }
@@ -572,6 +621,7 @@ impl WebSocketManager {
         }
 
         ping_timer.abort();
+        let _ = ping_timer.await;
 
         if had_error {
             warn!("Batch {} disconnected with error: {}", batch_id, error_msg);
@@ -736,12 +786,16 @@ impl WebSocketManager {
         let shutdown_flags = self.batch_shutdown_flags.clone();
         let heartbeat_interval = Duration::from_secs(self.config.websocket.ping_interval_seconds);
         let miss_threshold = self.config.websocket.heartbeat_miss_reconnect;
+        let mut shutdown_rx = self.shutdown_tx.subscribe();
 
-        tokio::spawn(async move {
+        let task = tokio::spawn(async move {
             let mut interval = interval(heartbeat_interval);
 
             loop {
-                interval.tick().await;
+                tokio::select! {
+                    _ = shutdown_rx.changed() => break,
+                    _ = interval.tick() => {}
+                }
 
                 for entry in connections.iter() {
                     let batch_id = *entry.key();
@@ -764,6 +818,7 @@ impl WebSocketManager {
                 }
             }
         });
+        self.track_task(task);
     }
 
     /// Get connection statistics
@@ -813,6 +868,8 @@ impl Clone for WebSocketManager {
             connections: self.connections.clone(),
             message_tx: self.message_tx.clone(),
             shutdown: self.shutdown.clone(),
+            shutdown_tx: self.shutdown_tx.clone(),
+            tasks: self.tasks.clone(),
             reconnect_attempts: self.reconnect_attempts.clone(),
             batch_shutdown_flags: self.batch_shutdown_flags.clone(),
             symbol_buffers: self.symbol_buffers.clone(),
