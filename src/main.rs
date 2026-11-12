@@ -548,11 +548,7 @@ async fn main() -> Result<()> {
     ws_manager.shutdown().await?;
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     handler_shutdown.notify_one();
-    match tokio::time::timeout(std::time::Duration::from_secs(5), handler_join).await {
-        Ok(Ok(())) => {}
-        Ok(Err(e)) => warn!("Message handler task ended abnormally: {}", e),
-        Err(_) => warn!("Message handler did not drain within 5s; flushing anyway"),
-    }
+    await_handler_drain(handler_join, std::time::Duration::from_secs(5)).await?;
 
     info!("  • Stopping REST collectors...");
     rest_collector.shutdown().await;
@@ -571,6 +567,23 @@ async fn main() -> Result<()> {
 
     info!("Shutdown complete");
     Ok(())
+}
+
+async fn await_handler_drain(
+    mut handler: tokio::task::JoinHandle<()>,
+    timeout_after: std::time::Duration,
+) -> anyhow::Result<()> {
+    match tokio::time::timeout(timeout_after, &mut handler).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(error)) => Err(anyhow::anyhow!("message handler task failed: {error}")),
+        Err(_) => {
+            handler.abort();
+            let _ = handler.await;
+            Err(anyhow::anyhow!(
+                "message handler did not drain before timeout; final persistence is blocked"
+            ))
+        }
+    }
 }
 
 #[cfg(test)]
