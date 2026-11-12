@@ -446,9 +446,7 @@ impl WebSocketManager {
             },
         );
 
-        if route == Route::Public
-            && symbols.iter().any(|symbol| symbol.eq_ignore_ascii_case("btcusdt"))
-        {
+        if route == Route::Public {
             for symbol in symbols {
                 let key = symbol.to_lowercase();
                 if let Some(publisher) = self.orderbook_v1_publishers.get(&key) {
