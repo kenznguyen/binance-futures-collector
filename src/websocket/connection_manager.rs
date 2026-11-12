@@ -924,6 +924,4 @@ mod tests {
 
         join_websocket_tasks(vec![task]).await.unwrap();
     }
-
-
 }
