@@ -91,14 +91,13 @@ pub fn compare_normalized_decimals(left: &str, right: &str) -> std::cmp::Orderin
 /// The result is exact for the supplied finite decimal values and retains their combined scale.
 pub fn multiply_decimal_strings(left: &str, right: &str) -> Result<String> {
     fn parse(value: &str) -> Result<(bool, Vec<u8>, usize)> {
-        let (mantissa, exponent) =
-            match value.find(['e', 'E']) {
-                Some(index) => {
-                    let exponent = value[index + 1..].parse::<i32>()?;
-                    (&value[..index], exponent)
-                }
-                None => (value, 0),
-            };
+        let (mantissa, exponent) = match value.find(['e', 'E']) {
+            Some(index) => {
+                let exponent = value[index + 1..].parse::<i32>()?;
+                (&value[..index], exponent)
+            }
+            None => (value, 0),
+        };
 
         let (negative, unsigned) = match mantissa.as_bytes().first() {
             Some(b'-') => (true, &mantissa[1..]),
