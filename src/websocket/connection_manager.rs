@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use dashmap::DashMap;
+use dashmap::{DashMap, DashSet};
 use futures_util::{SinkExt, StreamExt};
 use log::{debug, error, info, warn};
 use rustc_hash::FxHashMap;
@@ -41,6 +41,8 @@ pub struct WebSocketManager {
 
     // Track message counts for stability checks
     symbol_message_counts: Arc<DashMap<String, usize>>,
+    // A ring-buffer eviction makes BTCUSDT continuity unprovable until a fresh anchor.
+    buffer_overflow_symbols: Arc<DashSet<String>>,
 }
 
 /// State of a single WebSocket connection
@@ -136,6 +138,7 @@ impl WebSocketManager {
             batch_shutdown_flags: Arc::new(DashMap::new()),
             symbol_buffers,
             symbol_message_counts: Arc::new(DashMap::new()),
+            buffer_overflow_symbols: Arc::new(DashSet::new()),
         }
     }
 
@@ -232,6 +235,10 @@ impl WebSocketManager {
         } else {
             Vec::new()
         }
+    }
+
+    pub fn take_buffer_overflow(&self, symbol: &str) -> bool {
+        self.buffer_overflow_symbols.remove(symbol).is_some()
     }
 
     /// Get the number of messages processed for a symbol (for stability checks)
@@ -443,6 +450,7 @@ impl WebSocketManager {
             && symbols.iter().any(|symbol| symbol.eq_ignore_ascii_case("btcusdt"))
         {
             self.btc_orderbook_publisher.begin_reanchor();
+            self.buffer_overflow_symbols.remove("btcusdt");
         }
 
         let _ = self.message_tx.send(WebSocketMessage::Connected(cid)).await;
@@ -643,6 +651,7 @@ impl WebSocketManager {
             if let Some(buffer) = btc_buffer {
                 buffer.lock().await.clear();
             }
+            self.buffer_overflow_symbols.remove("btcusdt");
         }
 
         self.connections.remove(&batch_id);
@@ -772,13 +781,14 @@ impl WebSocketManager {
             let capacity = self.config.websocket.ring_buffer_capacity;
             let max_seconds = self.config.websocket.ring_buffer_seconds;
 
-            // Enforce capacity limit (evict oldest when over limit)
+            // Eviction is a continuity failure for the BTCUSDT decision book.
+            let mut evicted = false;
             while buffer.len() > capacity {
                 buffer.pop_front();
+                evicted = true;
             }
 
-            // Enforce time limit (evict messages older than max_seconds)
-            // Uses real time instead of message timestamps (robust against timestamp skew)
+            // Enforce time limit using local wall time, not exchange timestamps.
             if buffer.len() > 1 {
                 let now = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -789,10 +799,16 @@ impl WebSocketManager {
                     let first_ts = buffer.front().unwrap().event_time;
                     if (now - first_ts) > (max_seconds * 1000) as i64 {
                         buffer.pop_front();
+                        evicted = true;
                     } else {
                         break;
                     }
                 }
+            }
+            drop(buffer);
+            if evicted && symbol == "btcusdt" {
+                self.buffer_overflow_symbols.insert(symbol);
+                self.btc_orderbook_publisher.mark_broken();
             }
         }
     }
@@ -910,6 +926,7 @@ impl Clone for WebSocketManager {
             batch_shutdown_flags: self.batch_shutdown_flags.clone(),
             symbol_buffers: self.symbol_buffers.clone(),
             symbol_message_counts: self.symbol_message_counts.clone(),
+            buffer_overflow_symbols: self.buffer_overflow_symbols.clone(),
         }
     }
 }
