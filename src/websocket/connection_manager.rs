@@ -981,10 +981,27 @@ mod tests {
 
     #[tokio::test]
     async fn websocket_shutdown_joins_every_connection_task() {
-        let task = tokio::spawn(async {
-            std::future::pending::<()>().await;
+        let (first_release_tx, first_release_rx) = tokio::sync::oneshot::channel();
+        let (second_release_tx, second_release_rx) = tokio::sync::oneshot::channel();
+
+        let first_task = tokio::spawn(async move {
+            let _ = first_release_rx.await;
+        });
+        let second_task = tokio::spawn(async move {
+            let _ = second_release_rx.await;
         });
 
-        join_websocket_tasks(vec![task]).await.unwrap();
+        let join = tokio::spawn(join_websocket_tasks(vec![first_task, second_task]));
+        tokio::task::yield_now().await;
+        assert!(!join.is_finished(), "shutdown must wait for every connection task");
+
+        first_release_tx.send(()).unwrap();
+        second_release_tx.send(()).unwrap();
+
+        tokio::time::timeout(Duration::from_secs(1), join)
+            .await
+            .expect("connection tasks should be joined promptly")
+            .unwrap()
+            .unwrap();
     }
 }
