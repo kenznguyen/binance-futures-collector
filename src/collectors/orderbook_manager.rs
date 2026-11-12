@@ -8,7 +8,9 @@ use std::time::{Duration, Instant};
 use tokio::task::JoinHandle;
 use tokio::time::{interval, sleep};
 
-use crate::collectors::orderbook_v1::{apply_live_diff, build_snapshot, SnapshotPublisher};
+use crate::collectors::orderbook_v1::{
+    apply_live_diff, build_snapshot, OrderbookV1State, SnapshotPublisher,
+};
 use crate::config::Config;
 use crate::constants;
 use crate::models::*;
@@ -56,6 +58,7 @@ pub enum OrderbookState {
     FetchingSnapshot,
     Syncing,
     Live,
+    Broken,
 }
 
 /// Which rule matched when bridging buffered diffs onto a REST snapshot.
@@ -482,6 +485,13 @@ impl OrderbookManager {
                                 "[{}] Failed to fetch snapshot: {}. Retrying with backoff.",
                                 symbol, e
                             );
+                            if symbol.eq_ignore_ascii_case("btcusdt")
+                                && self.btc_v1_publisher.state() == OrderbookV1State::Broken
+                            {
+                                self.symbol_states
+                                    .insert(symbol.clone(), OrderbookState::Broken);
+                                continue;
+                            }
 
                             let current_backoff =
                                 self.resnapshot_backoff.get(&symbol).map(|b| *b).unwrap_or(
@@ -554,6 +564,17 @@ impl OrderbookManager {
                     }
                 }
 
+                OrderbookState::Broken => {
+                    if symbol.eq_ignore_ascii_case("btcusdt")
+                        && self.btc_v1_publisher.state() == OrderbookV1State::Reanchoring
+                    {
+                        self.symbol_states
+                            .insert(symbol.clone(), OrderbookState::Initializing);
+                    } else {
+                        sleep(Duration::from_secs(1)).await;
+                    }
+                }
+
                 OrderbookState::Live => {
                     if symbol.eq_ignore_ascii_case("btcusdt")
                         && self.btc_v1_publisher.read().is_none()
@@ -578,6 +599,9 @@ impl OrderbookManager {
         self.symbol_states
             .insert(symbol.to_string(), OrderbookState::FetchingSnapshot);
 
+        if symbol.eq_ignore_ascii_case("btcusdt") {
+            self.btc_v1_publisher.note_reanchor_attempt()?;
+        }
         let v1_generation_at_request = if symbol.eq_ignore_ascii_case("btcusdt") {
             Some(self.btc_v1_publisher.generation())
         } else {
