@@ -128,6 +128,21 @@ impl Drop for FileBuffer {
     }
 }
 
+fn collect_flush_results(results: impl IntoIterator<Item = Result<()>>) -> Result<()> {
+    let mut first_error = None;
+    for result in results {
+        if let Err(error) = result {
+            if first_error.is_none() {
+                first_error = Some(error);
+            }
+        }
+    }
+    match first_error {
+        Some(error) => Err(error.context("one or more CSV buffers failed to flush")),
+        None => Ok(()),
+    }
+}
+
 /// Manages CSV file writing with buffering and atomic operations
 #[derive(Clone)]
 pub struct CsvWriter {
@@ -815,15 +830,14 @@ impl CsvWriter {
     pub async fn flush_all(&self) -> Result<()> {
         let buffers: Vec<_> = self.buffers.iter().map(|e| e.value().clone()).collect();
 
-        // Log-and-continue: one bad file (ENOSPC/EIO) must not skip every buffer
-        // ordered after it; that would strand their in-memory rows until a crash.
+        // Attempt every buffer, but fail closed if any flush failed. This is a
+        // publication/sealing prerequisite: callers must never infer durability
+        // from a successful return while one file still has buffered rows.
+        let mut results = Vec::with_capacity(buffers.len());
         for buffer in buffers {
-            if let Err(e) = self.flush_buffer(buffer).await {
-                error!("flush_all: a buffer failed to flush (continuing): {}", e);
-            }
+            results.push(self.flush_buffer(buffer).await);
         }
-
-        Ok(())
+        collect_flush_results(results)
     }
 
     /// Flush specific symbol's buffers (uses spawn_blocking)
