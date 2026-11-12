@@ -1475,6 +1475,29 @@ mod tests {
     }
 
     #[test]
+    fn distinct_decimal_price_levels_do_not_collide_in_the_computational_book() {
+        let mut book = empty_book();
+        let mut insert = update(5, &[], &[]);
+        insert.bids = vec![
+            ["1.00000000000000001".to_string(), "2.0".to_string()],
+            ["1.00000000000000002".to_string(), "3.0".to_string()],
+        ];
+
+        OrderbookManager::apply_update_to_book(&mut book, &insert).unwrap();
+
+        assert_eq!(book.bids.len(), 2, "distinct decimal prices must remain distinct");
+        assert_eq!(book.raw_bids.len(), 2);
+
+        let mut delete = update(6, &[], &[]);
+        delete.bids = vec![["1.00000000000000001".to_string(), "0".to_string()]];
+        OrderbookManager::apply_update_to_book(&mut book, &delete).unwrap();
+
+        assert_eq!(book.bids.len(), 1, "deleting one exact price must not delete its neighbor");
+        assert_eq!(book.raw_bids.len(), 1);
+        assert!(book.raw_bids.contains_key("1.00000000000000002"));
+    }
+
+    #[test]
     fn diff_rejects_unparseable_levels() {
         let mut book = empty_book();
         let mut u = update(5, &[], &[]);
