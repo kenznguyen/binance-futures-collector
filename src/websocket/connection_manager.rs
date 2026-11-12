@@ -449,7 +449,7 @@ impl WebSocketManager {
         if route == Route::Public
             && symbols.iter().any(|symbol| symbol.eq_ignore_ascii_case("btcusdt"))
         {
-            self.btc_orderbook_publisher.begin_reanchor();
+            self.btc_orderbook_publisher.begin_connection_generation();
             self.buffer_overflow_symbols.remove("btcusdt");
         }
 
