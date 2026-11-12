@@ -41,6 +41,35 @@ pub fn normalize_plain_decimal(value: &str) -> Result<String> {
     Ok(normalized)
 }
 
+
+/// Validate one Binance order-book price/quantity pair without floating-point conversion.
+/// The returned keys are normalized exact decimals; callers retain the input lexemes
+/// separately for publication. The V1 wire contract caps each lexeme at 128 bytes.
+pub fn validate_orderbook_level(price: &str, quantity: &str) -> Result<(String, String)> {
+    const MAX_DECIMAL_BYTES: usize = 128;
+
+    for (field, value) in [("price", price), ("quantity", quantity)] {
+        if value.is_empty()
+            || value.len() > MAX_DECIMAL_BYTES
+            || value.starts_with('+')
+        {
+            bail!("invalid order-book {field} decimal length or sign");
+        }
+    }
+
+    let price_key = normalize_plain_decimal(price)?;
+    let quantity_key = normalize_plain_decimal(quantity)?;
+
+    if price_key.starts_with('-') || price_key == "0" {
+        bail!("order-book price must be strictly positive");
+    }
+    if quantity_key.starts_with('-') {
+        bail!("order-book quantity must be non-negative");
+    }
+
+    Ok((price_key, quantity_key))
+}
+
 /// Compare two values returned by normalize_plain_decimal.
 pub fn compare_normalized_decimals(left: &str, right: &str) -> std::cmp::Ordering {
     use std::cmp::Ordering;
