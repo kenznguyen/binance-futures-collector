@@ -1504,5 +1504,4 @@ mod flush_all_error_tests {
         let tasks = writer.background_tasks.lock().await;
         assert!(tasks.is_empty(), "shutdown must take and join every task");
     }
-
 }
