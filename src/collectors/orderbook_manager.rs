@@ -553,8 +553,17 @@ impl OrderbookManager {
                 }
 
                 OrderbookState::Live => {
-                    // In LIVE state, just monitor (updates are processed in background)
-                    sleep(Duration::from_secs(1)).await;
+                    if symbol.eq_ignore_ascii_case("btcusdt")
+                        && self.btc_v1_publisher.read().is_none()
+                    {
+                        self.orderbooks.remove(&symbol);
+                        self.btc_v1_rest_snapshot.remove(&symbol);
+                        self.btc_v1_buffered_updates.remove(&symbol);
+                        self.symbol_states
+                            .insert(symbol.clone(), OrderbookState::Initializing);
+                    } else {
+                        sleep(Duration::from_secs(1)).await;
+                    }
                 }
             }
         }
@@ -574,6 +583,12 @@ impl OrderbookManager {
         .await
         .context("Snapshot fetch timeout")?
         .context("Snapshot fetch failed")?;
+
+        if symbol.eq_ignore_ascii_case("btcusdt") {
+            self.btc_v1_rest_snapshot
+                .insert(symbol.to_string(), snapshot.clone());
+            self.btc_v1_buffered_updates.remove(symbol);
+        }
 
         // Keep source decimal lexemes alongside the computational book.
         let mut bids = HashMap::new();
@@ -616,8 +631,12 @@ impl OrderbookManager {
         Ok(())
     }
 
-    /// Try to attach to live stream after snapshot
+    /// Try to attach to live stream after snapshot.
     async fn try_attach_to_stream(&self, symbol: &str) -> Result<bool> {
+        if symbol.eq_ignore_ascii_case("btcusdt") {
+            return self.try_attach_btcusdt_v1(symbol).await;
+        }
+
         let buffered = self.websocket_manager.drain_buffer(symbol).await;
 
         if buffered.is_empty() {
@@ -722,6 +741,86 @@ impl OrderbookManager {
         }
 
         Ok(false)
+    }
+
+    async fn try_attach_btcusdt_v1(&self, symbol: &str) -> Result<bool> {
+        let drained = self.websocket_manager.drain_buffer(symbol).await;
+        if !drained.is_empty() {
+            self.btc_v1_buffered_updates
+                .entry(symbol.to_string())
+                .or_default()
+                .extend(drained);
+        }
+
+        let anchor = self
+            .btc_v1_rest_snapshot
+            .get(symbol)
+            .map(|snapshot| snapshot.clone())
+            .context("BTCUSDT V1 REST anchor is unavailable")?;
+        let updates = self
+            .btc_v1_buffered_updates
+            .get(symbol)
+            .map(|buffer| buffer.clone())
+            .unwrap_or_default();
+
+        if updates.is_empty()
+            || updates
+                .iter()
+                .all(|update| update.final_update_id <= anchor.last_update_id)
+        {
+            return Ok(false);
+        }
+
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let candidate = match build_snapshot(
+            &anchor,
+            &updates,
+            self.btc_v1_publisher.generation(),
+            now_ms,
+            now_ms,
+        ) {
+            Ok(candidate) => candidate,
+            Err(error) => {
+                warn!("[BTCUSDT] V1 attach rejected; re-anchoring: {error:#}");
+                self.trigger_resnapshot("btcusdt", "v1_attach_rejected")
+                    .await?;
+                return Ok(false);
+            }
+        };
+
+        self.btc_v1_publisher
+            .publish_if_current(candidate.clone())?;
+
+        let mut bids = HashMap::new();
+        let mut raw_bids = HashMap::new();
+        for level in &candidate.bids {
+            let key = normalize_plain_decimal(&level.price)?;
+            bids.insert(key.clone(), level.quantity.clone());
+            raw_bids.insert(key, (level.price.clone(), level.quantity.clone()));
+        }
+
+        let mut asks = HashMap::new();
+        let mut raw_asks = HashMap::new();
+        for level in &candidate.asks {
+            let key = normalize_plain_decimal(&level.price)?;
+            asks.insert(key.clone(), level.quantity.clone());
+            raw_asks.insert(key, (level.price.clone(), level.quantity.clone()));
+        }
+
+        self.orderbooks.insert(
+            symbol.to_string(),
+            Orderbook {
+                symbol: symbol.to_string(),
+                last_update_id: candidate.last_applied_u,
+                bids,
+                asks,
+                raw_bids,
+                raw_asks,
+                last_processed_time: Instant::now(),
+            },
+        );
+        self.btc_v1_buffered_updates.remove(symbol);
+        Ok(true)
     }
 
     fn normalize_messages_for_attach(msgs: Vec<DepthUpdateWs>) -> Vec<DepthUpdateWs> {
@@ -925,6 +1024,11 @@ impl OrderbookManager {
     /// Drop every piece of per-symbol state this manager holds. Used by the
     /// stale-symbol sweep and by a symbol's own task when it exits on delist.
     fn remove_symbol_state(&self, symbol: &str) {
+        if symbol.eq_ignore_ascii_case("btcusdt") {
+            self.btc_v1_publisher.mark_stopped();
+            self.btc_v1_rest_snapshot.remove(symbol);
+            self.btc_v1_buffered_updates.remove(symbol);
+        }
         self.orderbooks.remove(symbol);
         self.symbol_states.remove(symbol);
         self.last_snapshot_time.remove(symbol);
@@ -939,6 +1043,13 @@ impl OrderbookManager {
         self.gap_registry
             .record_resnapshot(symbol, reason.to_string())
             .await;
+
+        if symbol.eq_ignore_ascii_case("btcusdt") {
+            self.btc_v1_publisher.begin_reanchor();
+            self.btc_v1_rest_snapshot.remove(symbol);
+            self.btc_v1_buffered_updates.remove(symbol);
+            self.orderbooks.remove(symbol);
+        }
 
         // Reset to INITIALIZING (will refetch snapshot)
         self.symbol_states
@@ -1174,6 +1285,12 @@ impl OrderbookManager {
 
             // Apply updates for each live symbol
             for symbol in live_symbols {
+                if symbol.eq_ignore_ascii_case("btcusdt")
+                    && self.btc_v1_publisher.read().is_none()
+                {
+                    continue;
+                }
+
                 // Drain new updates from WebSocket ring buffer
                 let updates = self.websocket_manager.drain_buffer(&symbol).await;
 
@@ -1181,7 +1298,47 @@ impl OrderbookManager {
                     continue;
                 }
 
-                // Deliberately no pu==last_update_id continuity guard or resnapshot
+                if symbol.eq_ignore_ascii_case("btcusdt") {
+                    for update in &updates {
+                        let Some(current) = self.btc_v1_publisher.read() else {
+                            break;
+                        };
+                        let now_ms = chrono::Utc::now().timestamp_millis();
+                        match apply_live_diff(&current, update, now_ms, now_ms) {
+                            Ok(candidate) => {
+                                if let Err(error) =
+                                    self.btc_v1_publisher.publish_if_current(candidate)
+                                {
+                                    warn!("[BTCUSDT] V1 publish fenced: {error:#}");
+                                    break;
+                                }
+                                if let Some(mut book) = self.orderbooks.get_mut(&symbol) {
+                                    if let Err(error) = Self::apply_update_to_book(&mut book, update) {
+                                        warn!("[BTCUSDT] V1 live book update rejected: {error:#}");
+                                        self.trigger_resnapshot("btcusdt", "v1_live_apply_rejected")
+                                            .await
+                                            .ok();
+                                        break;
+                                    }
+                                    Self::trim_book_to_depth(
+                                        self.config.orderbook.depth_limit as usize,
+                                        &mut book,
+                                    );
+                                }
+                            }
+                            Err(error) => {
+                                warn!("[BTCUSDT] V1 live diff rejected; re-anchoring: {error:#}");
+                                self.trigger_resnapshot("btcusdt", "v1_live_sequence_or_shape_failure")
+                                    .await
+                                    .ok();
+                                break;
+                            }
+                        }
+                    }
+                    continue;
+                }
+
+                // Legacy path remains unchanged for non-BTCUSDT symbols.
                 // here. A WS reconnect drops a whole batch of symbols at once, so
                 // resnapshotting on each gap would fire hundreds of REST snapshots in
                 // a burst, blowing the weight budget and cascading into a resync
