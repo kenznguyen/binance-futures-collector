@@ -914,7 +914,9 @@ mod tests {
         // keep 2^attempt from overflowing u32 — this must not panic and stays capped.
         assert_eq!(backoff_for(1_000_000, init, max), max);
         assert_eq!(backoff_for(u32::MAX, init, max), max);
-    }    #[tokio::test]
+    }
+
+    #[tokio::test]
     async fn websocket_shutdown_joins_every_connection_task() {
         let task = tokio::spawn(async {
             std::future::pending::<()>().await;
