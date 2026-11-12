@@ -3,8 +3,9 @@ use dashmap::{DashMap, DashSet};
 use log::{debug, error, info, warn};
 use rustc_hash::FxHashMap;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
+use tokio::task::JoinHandle;
 use tokio::time::{interval, sleep};
 
 use crate::config::Config;
@@ -39,6 +40,7 @@ pub struct OrderbookManager {
     // Symbols confirmed delisted by periodic discovery (shared with main and
     // the REST pollers). A member's manage_symbol task exits and drops state.
     delisted: Arc<DashSet<String>>,
+    tasks: Arc<StdMutex<Vec<JoinHandle<()>>>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -102,6 +104,24 @@ pub struct Orderbook {
 }
 
 impl OrderbookManager {
+    fn track_task(&self, task: JoinHandle<()>) {
+        self.tasks
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(task);
+    }
+
+    pub async fn shutdown(&self) -> Result<()> {
+        let tasks = {
+            let mut tasks = self
+                .tasks
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            std::mem::take(&mut *tasks)
+        };
+        abort_and_join_tasks(tasks).await
+    }
+
     pub fn new(
         config: Arc<Config>,
         rest_client: Arc<RestClient>,
@@ -123,6 +143,7 @@ impl OrderbookManager {
             sync_start_time: Arc::new(DashMap::new()),
             resnapshot_backoff: Arc::new(DashMap::new()),
             delisted,
+            tasks: Arc::new(StdMutex::new(Vec::new())),
         }
     }
 
@@ -181,11 +202,12 @@ impl OrderbookManager {
             info!("Batch 0: Initializing orderbook for {}...", priority_sym);
             let symbol_clone = priority_sym.clone();
             let manager = self.clone();
-            tokio::spawn(async move {
+            let task = tokio::spawn(async move {
                 if let Err(e) = manager.manage_symbol(symbol_clone.clone()).await {
                     error!("[{}] Symbol management task failed: {}", symbol_clone, e);
                 }
             });
+            self.track_task(task);
 
             // Block until it is Live: the remaining batches are paced off the
             // assumption that the priority symbol is already settled.
@@ -261,26 +283,29 @@ impl OrderbookManager {
 
         let manager_clone = self.clone();
         let symbols_clone = symbols.clone();
-        tokio::spawn(async move {
+        let task = tokio::spawn(async move {
             manager_clone.periodic_snapshot_task(symbols_clone).await;
         });
+        self.track_task(task);
 
         // Start live depth update loop (applies WebSocket updates to in-memory orderbooks)
         let manager_live = self.clone();
-        tokio::spawn(async move {
+        let task = tokio::spawn(async move {
             manager_live.run_live_depth_update_loop().await;
         });
+        self.track_task(task);
         info!("Live depth update loop started (500ms interval)");
 
         // Start periodic cleanup task (every 5 minutes)
         let manager_cleanup = self.clone();
-        tokio::spawn(async move {
+        let task = tokio::spawn(async move {
             let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(300)); // 5 min
             loop {
                 interval.tick().await;
                 manager_cleanup.cleanup_stale_symbols(std::time::Instant::now());
             }
         });
+        self.track_task(task);
         info!("Stale symbol cleanup task started (5min interval)");
 
         for (batch_idx, batch) in symbol_batches.iter().enumerate() {
@@ -318,11 +343,12 @@ impl OrderbookManager {
 
                 let symbol_clone = symbol.clone();
                 let manager = self.clone();
-                tokio::spawn(async move {
+                let task = tokio::spawn(async move {
                     if let Err(e) = manager.manage_symbol(symbol_clone.clone()).await {
                         error!("[{}] Symbol management task failed: {}", symbol_clone, e);
                     }
                 });
+                self.track_task(task);
             }
 
             // Let the batch settle before opening the next one, so a slow batch
@@ -1208,6 +1234,26 @@ pub struct OrderbookStats {
     pub ask_levels: usize,
 }
 
+async fn abort_and_join_tasks(tasks: Vec<JoinHandle<()>>) -> Result<()> {
+    let mut join_errors = Vec::new();
+    for task in tasks {
+        task.abort();
+        if let Err(error) = task.await {
+            if !error.is_cancelled() {
+                join_errors.push(error.to_string());
+            }
+        }
+    }
+
+    if !join_errors.is_empty() {
+        anyhow::bail!(
+            "one or more orderbook tasks failed to join: {}",
+            join_errors.join("; ")
+        );
+    }
+    Ok(())
+}
+
 impl Clone for OrderbookManager {
     fn clone(&self) -> Self {
         Self {
@@ -1223,6 +1269,7 @@ impl Clone for OrderbookManager {
             sync_start_time: self.sync_start_time.clone(),
             resnapshot_backoff: self.resnapshot_backoff.clone(),
             delisted: self.delisted.clone(),
+            tasks: self.tasks.clone(),
         }
     }
 }
@@ -1579,5 +1626,14 @@ mod tests {
     #[test]
     fn normalize_empty_is_empty() {
         assert!(OrderbookManager::normalize_messages_for_attach(Vec::new()).is_empty());
+    }    #[tokio::test]
+    async fn abort_and_join_waits_for_every_orderbook_task() {
+        let task = tokio::spawn(async {
+            std::future::pending::<()>().await;
+        });
+
+        abort_and_join_tasks(vec![task]).await.unwrap();
     }
+
+
 }
