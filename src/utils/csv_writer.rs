@@ -1437,4 +1437,18 @@ mod flush_all_error_tests {
     fn flush_results_succeeds_for_no_buffers() {
         assert!(collect_flush_results(Vec::<anyhow::Result<()>>::new()).is_ok());
     }
+
+    #[tokio::test]
+    async fn background_writer_tasks_are_joined_on_shutdown() {
+        let dir = tempfile::tempdir().unwrap();
+        let writer = test_writer(dir.path());
+
+        writer.start_periodic_flush().await.unwrap();
+        writer.start_hourly_rotation().await.unwrap();
+        writer.shutdown_background_tasks().await.unwrap();
+
+        let tasks = writer.background_tasks.lock().await;
+        assert!(tasks.is_empty(), "shutdown must take and join every task");
+    }
+
 }
