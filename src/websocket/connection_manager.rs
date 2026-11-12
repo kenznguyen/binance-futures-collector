@@ -18,6 +18,7 @@ use tokio_tungstenite::{connect_async_with_config, MaybeTlsStream, WebSocketStre
 
 use crate::config::Config;
 use crate::models::*;
+use crate::collectors::orderbook_v1::SnapshotPublisher;
 
 type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
@@ -26,6 +27,7 @@ pub struct WebSocketManager {
     config: Arc<Config>,
     connections: Arc<DashMap<usize, ConnectionState>>,
     message_tx: mpsc::Sender<WebSocketMessage>,
+    btc_orderbook_publisher: Arc<SnapshotPublisher>,
     // Set on shutdown to stop ingest: read loops close and the reconnect loop
     // exits instead of retrying, so the message channel can drain before flush.
     shutdown: Arc<AtomicBool>,
@@ -108,6 +110,7 @@ impl WebSocketManager {
         config: Arc<Config>,
         message_tx: mpsc::Sender<WebSocketMessage>,
         symbols: &[String],
+        btc_orderbook_publisher: Arc<SnapshotPublisher>,
     ) -> Self {
         let symbol_buffers = Arc::new(DashMap::new());
         for symbol in symbols {
@@ -125,6 +128,7 @@ impl WebSocketManager {
             config,
             connections: Arc::new(DashMap::new()),
             message_tx,
+            btc_orderbook_publisher,
             shutdown: Arc::new(AtomicBool::new(false)),
             shutdown_tx,
             tasks: Arc::new(StdMutex::new(Vec::new())),
@@ -435,6 +439,12 @@ impl WebSocketManager {
             },
         );
 
+        if route == Route::Public
+            && symbols.iter().any(|symbol| symbol.eq_ignore_ascii_case("btcusdt"))
+        {
+            self.btc_orderbook_publisher.begin_reanchor();
+        }
+
         let _ = self.message_tx.send(WebSocketMessage::Connected(cid)).await;
 
         let result = self.run_message_loop(cid, ws_stream, shutdown_flag).await;
@@ -613,6 +623,21 @@ impl WebSocketManager {
             warn!("Batch {} disconnected with error: {}", batch_id, error_msg);
         } else {
             info!("Batch {} disconnected gracefully", batch_id);
+        }
+
+        let invalidates_btc = batch_id % 2 == 0
+            && self
+                .connections
+                .get(&batch_id)
+                .map(|state| {
+                    state
+                        .symbols
+                        .iter()
+                        .any(|symbol| symbol.eq_ignore_ascii_case("btcusdt"))
+                })
+                .unwrap_or(false);
+        if invalidates_btc {
+            self.btc_orderbook_publisher.mark_broken();
         }
 
         self.connections.remove(&batch_id);
@@ -872,6 +897,7 @@ impl Clone for WebSocketManager {
             config: self.config.clone(),
             connections: self.connections.clone(),
             message_tx: self.message_tx.clone(),
+            btc_orderbook_publisher: self.btc_orderbook_publisher.clone(),
             shutdown: self.shutdown.clone(),
             shutdown_tx: self.shutdown_tx.clone(),
             tasks: self.tasks.clone(),
