@@ -490,7 +490,7 @@ async fn main() -> Result<()> {
                     }
                 }
             }
-        }))
+        })
     } else {
         None
     };
