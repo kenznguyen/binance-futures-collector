@@ -625,18 +625,19 @@ impl WebSocketManager {
             info!("Batch {} disconnected gracefully", batch_id);
         }
 
+        let disconnected_symbols = self
+            .connections
+            .get(&batch_id)
+            .map(|state| state.symbols.clone())
+            .unwrap_or_default();
         let invalidates_btc = batch_id % 2 == 0
-            && self
-                .connections
-                .get(&batch_id)
-                .map(|state| {
-                    state
-                        .symbols
-                        .iter()
-                        .any(|symbol| symbol.eq_ignore_ascii_case("btcusdt"))
-                })
-                .unwrap_or(false);
+            && disconnected_symbols
+                .iter()
+                .any(|symbol| symbol.eq_ignore_ascii_case("btcusdt"));
         if invalidates_btc {
+            if let Some(buffer) = self.symbol_buffers.get("btcusdt") {
+                buffer.lock().await.clear();
+            }
             self.btc_orderbook_publisher.mark_broken();
         }
 
