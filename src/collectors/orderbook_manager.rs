@@ -8,9 +8,7 @@ use std::time::{Duration, Instant};
 use tokio::task::JoinHandle;
 use tokio::time::{interval, sleep};
 
-use crate::orderbook_v1::{
-    apply_live_diff, build_snapshot, OrderbookV1State, SnapshotPublisher,
-};
+use crate::orderbook_v1::{apply_live_diff, build_snapshot, OrderbookV1State, SnapshotPublisher};
 use crate::config::Config;
 use crate::constants;
 use crate::models::*;
@@ -831,13 +829,7 @@ impl OrderbookManager {
         }
 
         let now_ms = chrono::Utc::now().timestamp_millis();
-        let candidate = match build_snapshot(
-            &anchor,
-            &updates,
-            anchor_generation,
-            now_ms,
-            now_ms,
-        ) {
+        let candidate = match build_snapshot(&anchor, &updates, anchor_generation, now_ms, now_ms) {
             Ok(candidate) => candidate,
             Err(error) => {
                 warn!("[BTCUSDT] V1 attach rejected; re-anchoring: {error:#}");
@@ -1347,8 +1339,7 @@ impl OrderbookManager {
 
             // Apply updates for each live symbol
             for symbol in live_symbols {
-                if symbol.eq_ignore_ascii_case("btcusdt")
-                    && self.btc_v1_publisher.read().is_none()
+                if symbol.eq_ignore_ascii_case("btcusdt") && self.btc_v1_publisher.read().is_none()
                 {
                     continue;
                 }
