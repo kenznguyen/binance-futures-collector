@@ -302,6 +302,7 @@ async fn main() -> Result<()> {
         ws_manager.clone(),
         gap_registry.clone(),
         delisted.clone(),
+        btc_orderbook_publisher.clone(),
     ));
 
     // Extract BTCUSDT as priority symbol (will initialize first)
