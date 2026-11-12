@@ -313,7 +313,7 @@ async fn main() -> Result<()> {
     }
     let manager_clone = orderbook_manager.clone();
     let symbols_clone = symbols.clone();
-    tokio::spawn(async move {
+    let manager_start_join = tokio::spawn(async move {
         if let Err(e) = manager_clone.start(symbols_clone, priority_symbol).await {
             error!("Orderbook manager initialization error: {}", e);
         } else {
@@ -512,6 +512,14 @@ async fn main() -> Result<()> {
     // drain rather than a fixed sleep. The brief grace lets connection tasks'
     // final sends reach the channel; the timeout is a safety cap so shutdown can
     // never hang (the manager keeps a sender, so the channel won't close itself).
+    info!("  • Stopping orderbook startup orchestration...");
+    manager_start_join.abort();
+    if let Err(error) = manager_start_join.await {
+        if !error.is_cancelled() {
+            return Err(anyhow::anyhow!("orderbook startup task failed: {error}"));
+        }
+    }
+
     info!("  • Stopping websocket ingest...");
     ws_manager.shutdown();
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -524,6 +532,9 @@ async fn main() -> Result<()> {
 
     info!("  • Stopping REST collectors...");
     rest_collector.shutdown().await;
+
+    info!("  • Stopping orderbook manager tasks...");
+    orderbook_manager.shutdown().await?;
 
     info!("  • Stopping CSV background tasks...");
     csv_writer.shutdown_background_tasks().await?;
