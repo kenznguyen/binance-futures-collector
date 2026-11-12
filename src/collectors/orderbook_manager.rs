@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use tokio::task::JoinHandle;
 use tokio::time::{interval, sleep};
 
-use crate::collectors::orderbook_v1::{
+use crate::orderbook_v1::{
     apply_live_diff, build_snapshot, OrderbookV1State, SnapshotPublisher,
 };
 use crate::config::Config;
