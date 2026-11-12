@@ -50,7 +50,6 @@ pub struct OrderbookSnapshotV1 {
     pub ask_depth: usize,
 }
 
-#[derive(Default)]
 struct PublicationState {
     generation: u64,
     state: OrderbookV1State,
