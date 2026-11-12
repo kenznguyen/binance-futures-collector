@@ -1473,7 +1473,16 @@ mod tests {
 
 #[cfg(test)]
 mod flush_all_error_tests {
-    use super::collect_flush_results;
+    use super::{collect_flush_results, CsvWriter};
+    use crate::config::Config;
+    use std::path::Path;
+    use std::sync::Arc;
+
+    fn test_writer(dir: &Path) -> CsvWriter {
+        let mut config = Config::from_file("config.example.toml").unwrap();
+        config.output.base_dir = dir.to_string_lossy().into_owned();
+        CsvWriter::new(Arc::new(config)).unwrap()
+    }
 
     #[test]
     fn flush_results_propagates_an_error_after_checking_all_buffers() {
