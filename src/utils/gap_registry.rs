@@ -252,4 +252,23 @@ mod tests {
         assert!(failed_symbols.is_empty());
         assert!(error.is_none());
     }
+
+    #[tokio::test]
+    async fn shutdown_joins_periodic_saver_and_persists_remaining_dirty_events() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = GapRegistry::new(dir.path().to_path_buf()).await.unwrap();
+
+        registry
+            .record_resnapshot("btcusdt", "test shutdown".to_string())
+            .await;
+        registry.start_periodic_save().await.unwrap();
+        registry.shutdown().await.unwrap();
+
+        let path = dir.path().join("btcusdt_gaps.json");
+        let content = tokio::fs::read_to_string(path).await.unwrap();
+        let events: Vec<GapEvent> = serde_json::from_str(&content).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_type, "resnapshot");
+    }
+
 }
