@@ -521,7 +521,7 @@ async fn main() -> Result<()> {
     }
 
     info!("  • Stopping websocket ingest...");
-    ws_manager.shutdown();
+    ws_manager.shutdown().await?;
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     handler_shutdown.notify_one();
     match tokio::time::timeout(std::time::Duration::from_secs(5), handler_join).await {
