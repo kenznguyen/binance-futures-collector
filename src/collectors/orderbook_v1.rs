@@ -3,7 +3,9 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 
 use crate::models::{DepthSnapshotRest, DepthUpdateWs};
-use crate::utils::{compare_normalized_decimals, normalize_plain_decimal, validate_orderbook_level};
+use crate::utils::{
+    compare_normalized_decimals, normalize_plain_decimal, validate_orderbook_level,
+};
 
 pub const CONTRACT_VERSION: &str = "T1_BTCUSDT_ORDERBOOK_V1";
 pub const REQUIRED_DEPTH: usize = 20;
@@ -80,7 +82,10 @@ impl SnapshotPublisher {
     }
 
     pub fn begin_reanchor(&self) -> u64 {
-        let mut inner = self.inner.write().expect("snapshot publisher lock poisoned");
+        let mut inner = self
+            .inner
+            .write()
+            .expect("snapshot publisher lock poisoned");
         inner.generation = inner.generation.saturating_add(1);
         inner.snapshot = None;
         inner.state = OrderbookV1State::Reanchoring;
@@ -88,19 +93,28 @@ impl SnapshotPublisher {
     }
 
     pub fn mark_broken(&self) {
-        let mut inner = self.inner.write().expect("snapshot publisher lock poisoned");
+        let mut inner = self
+            .inner
+            .write()
+            .expect("snapshot publisher lock poisoned");
         inner.snapshot = None;
         inner.state = OrderbookV1State::Broken;
     }
 
     pub fn mark_stopped(&self) {
-        let mut inner = self.inner.write().expect("snapshot publisher lock poisoned");
+        let mut inner = self
+            .inner
+            .write()
+            .expect("snapshot publisher lock poisoned");
         inner.snapshot = None;
         inner.state = OrderbookV1State::Stopped;
     }
 
     pub fn publish_if_current(&self, snapshot: OrderbookSnapshotV1) -> Result<()> {
-        let mut inner = self.inner.write().expect("snapshot publisher lock poisoned");
+        let mut inner = self
+            .inner
+            .write()
+            .expect("snapshot publisher lock poisoned");
         if snapshot.generation != inner.generation {
             bail!("stale order-book generation");
         }
@@ -189,7 +203,11 @@ fn sorted_levels(levels: Levels, descending: bool) -> Vec<DepthLevel> {
     let mut result: Vec<(String, DepthLevel)> = levels.into_iter().collect();
     result.sort_by(|left, right| {
         let order = compare_normalized_decimals(&left.0, &right.0);
-        if descending { order.reverse() } else { order }
+        if descending {
+            order.reverse()
+        } else {
+            order
+        }
     });
     result.into_iter().map(|(_, level)| level).collect()
 }
@@ -440,7 +458,14 @@ mod tests {
         let mut stale_source = valid_updates();
         stale_source[1].event_time = NOW - MAX_BOOK_AGE_MS - 1;
         assert!(build_snapshot(&snapshot(), &stale_source, 1, NOW, NOW).is_err());
-        assert!(build_snapshot(&snapshot(), &valid_updates(), 1, NOW - MAX_BOOK_AGE_MS - 1, NOW).is_err());
+        assert!(build_snapshot(
+            &snapshot(),
+            &valid_updates(),
+            1,
+            NOW - MAX_BOOK_AGE_MS - 1,
+            NOW
+        )
+        .is_err());
 
         let mut future_source = valid_updates();
         future_source[1].event_time = NOW + MAX_FUTURE_SKEW_MS + 1;
@@ -451,7 +476,8 @@ mod tests {
     fn publisher_invalidates_old_snapshot_and_fences_late_generation() {
         let publisher = SnapshotPublisher::new();
         let generation = publisher.begin_reanchor();
-        let candidate = build_snapshot(&snapshot(), &valid_updates(), generation, NOW, NOW).unwrap();
+        let candidate =
+            build_snapshot(&snapshot(), &valid_updates(), generation, NOW, NOW).unwrap();
         publisher.publish_if_current(candidate.clone()).unwrap();
         assert!(publisher.read().is_some());
 
@@ -459,7 +485,8 @@ mod tests {
         assert!(publisher.read().is_none());
         assert!(publisher.publish_if_current(candidate).is_err());
 
-        let next = build_snapshot(&snapshot(), &valid_updates(), next_generation, NOW, NOW).unwrap();
+        let next =
+            build_snapshot(&snapshot(), &valid_updates(), next_generation, NOW, NOW).unwrap();
         publisher.publish_if_current(next).unwrap();
         assert_eq!(publisher.state(), OrderbookV1State::Ready);
     }
