@@ -1,7 +1,7 @@
 use anyhow::{bail, Context, Result};
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, RwLock};
 use serde::Serialize;
+use std::sync::{Arc, RwLock};
 
 use crate::models::{DepthSnapshotRest, DepthUpdateWs};
 use crate::utils::{compare_normalized_decimals, validate_orderbook_level};
@@ -166,9 +166,7 @@ impl SnapshotPublisher {
         ) {
             bail!("order-book publisher is not in a publishable lifecycle state");
         }
-        if !snapshot.complete
-            || snapshot.continuity != "VERIFIED"
-            || snapshot.freshness != "FRESH"
+        if !snapshot.complete || snapshot.continuity != "VERIFIED" || snapshot.freshness != "FRESH"
         {
             bail!("refusing to publish an incomplete or unverified snapshot");
         }
@@ -253,7 +251,7 @@ fn validate_snapshot_order(raw_levels: &[[String; 2]], side: &str, descending: b
                 bail!("{side} snapshot levels must be strictly price-sorted");
             }
         }
-        previous = Some(key);
+        previous = Some(key.to_owned());
     }
     Ok(())
 }
@@ -696,10 +694,7 @@ mod tests {
     fn live_duplicate_normalized_prices_and_crossed_book_are_rejected() {
         let current = build_snapshot(&snapshot(), &valid_updates(), 4, NOW - 10, NOW).unwrap();
         let mut duplicate = update(104, 104, 103, NOW - 20);
-        duplicate.bids = vec![
-            ["9999".into(), "1".into()],
-            ["9999.0".into(), "2".into()],
-        ];
+        duplicate.bids = vec![["9999".into(), "1".into()], ["9999.0".into(), "2".into()]];
         assert!(apply_live_diff(&current, &duplicate, 20, NOW - 5, NOW).is_err());
 
         let mut crossed = update(104, 104, 103, NOW - 20);
@@ -725,14 +720,7 @@ mod tests {
     fn source_and_observation_exact_freshness_boundaries_are_accepted() {
         let mut diffs = valid_updates();
         diffs[1].event_time = NOW - MAX_BOOK_AGE_MS;
-        let candidate = build_snapshot(
-            &snapshot(),
-            &diffs,
-            1,
-            NOW - MAX_BOOK_AGE_MS,
-            NOW,
-        )
-        .unwrap();
+        let candidate = build_snapshot(&snapshot(), &diffs, 1, NOW - MAX_BOOK_AGE_MS, NOW).unwrap();
         assert_eq!(candidate.freshness, "FRESH");
 
         let mut future = valid_updates();
