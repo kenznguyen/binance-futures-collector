@@ -163,6 +163,19 @@ impl SnapshotPublisher {
         Ok(())
     }
 
+    pub fn read_fresh(&self, decision_time_ms: i64) -> Result<Arc<OrderbookSnapshotV1>> {
+        let snapshot = self
+            .inner
+            .read()
+            .expect("snapshot publisher lock poisoned")
+            .snapshot
+            .clone()
+            .context("BTCUSDT V1 snapshot is unavailable")?;
+        validate_timestamp(snapshot.source_timestamp_ms, decision_time_ms, "source")?;
+        validate_timestamp(snapshot.observed_at_ms, decision_time_ms, "observation")?;
+        Ok(snapshot)
+    }
+
     pub fn read(&self) -> Option<Arc<OrderbookSnapshotV1>> {
         self.inner
             .read()
