@@ -522,6 +522,9 @@ async fn main() -> Result<()> {
         Err(_) => warn!("Message handler did not drain within 5s; flushing anyway"),
     }
 
+    info!("  • Stopping REST collectors...");
+    rest_collector.shutdown().await;
+
     info!("  • Flushing CSV buffers...");
     csv_writer.flush_all().await?;
 
