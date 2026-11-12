@@ -295,6 +295,7 @@ mod tests {
         assert!(validate_orderbook_level("0", "1").is_err());
         assert!(validate_orderbook_level("-1", "1").is_err());
         assert!(validate_orderbook_level("1", "-0.1").is_err());
+        assert!(validate_orderbook_level("1", "-0").is_err());
         assert!(validate_orderbook_level("1", "0").is_ok());
         assert!(validate_orderbook_level("1.000", "0.2500").is_ok());
     }
@@ -307,6 +308,10 @@ mod tests {
             ("1e3", "1"),
             ("NaN", "1"),
             ("1", "Infinity"),
+            (".5", "1"),
+            ("1.", "1"),
+            ("1", ".5"),
+            ("1", "1."),
             (&"1".repeat(129), "1"),
             ("1", &"0".repeat(129)),
         ] {
