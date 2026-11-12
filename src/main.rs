@@ -522,17 +522,15 @@ async fn main() -> Result<()> {
     info!("  • Stopping symbol discovery and stats tasks...");
     if let Some(task) = symbol_discovery_join {
         task.abort();
-        if let Err(error) = task.await {
-            if !error.is_cancelled() {
-                return Err(anyhow::anyhow!("symbol discovery task failed: {error}"));
-            }
+        let error = task.await;
+        if !error.is_cancelled() {
+            return Err(anyhow::anyhow!("symbol discovery task failed: {error}"));
         }
     }
     stats_report_join.abort();
-    if let Err(error) = stats_report_join.await {
-        if !error.is_cancelled() {
-            return Err(anyhow::anyhow!("stats report task failed: {error}"));
-        }
+    let error = stats_report_join.await;
+    if !error.is_cancelled() {
+        return Err(anyhow::anyhow!("stats report task failed: {error}"));
     }
     stats_exporter_join.abort();
     if let Err(error) = stats_exporter_join.await {
