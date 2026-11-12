@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::SystemTime;
 use tokio::fs;
-use tokio::sync::Mutex;
+use tokio::sync::{watch, Mutex};
 use tokio::time::interval;
 
 /// Resnapshot event, recorded when a detected gap/staleness triggers a fresh
@@ -51,37 +51,72 @@ pub struct GapRegistry {
     gaps_dir: PathBuf,
     registry: Arc<DashMap<String, Vec<GapEvent>>>,
     dirty_symbols: Arc<Mutex<HashSet<String>>>,
+    shutdown_tx: watch::Sender<bool>,
+    periodic_save_task: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
 }
 
 impl GapRegistry {
     pub async fn new(gaps_dir: PathBuf) -> Result<Self> {
         tokio::fs::create_dir_all(&gaps_dir).await?;
 
+        let (shutdown_tx, _) = watch::channel(false);
+
         Ok(Self {
             gaps_dir,
             registry: Arc::new(DashMap::new()),
             dirty_symbols: Arc::new(Mutex::new(HashSet::new())),
+            shutdown_tx,
+            periodic_save_task: Arc::new(Mutex::new(None)),
         })
     }
 
-    /// Start periodic save task (every 60 seconds)
+    /// Start periodic save task (every 60 seconds).
+    /// The task is retained so shutdown can stop and join it before final persistence.
     pub async fn start_periodic_save(&self) -> Result<()> {
-        let registry = self.clone();
+        let mut task_slot = self.periodic_save_task.lock().await;
+        if task_slot.is_some() {
+            return Ok(());
+        }
+        if *self.shutdown_tx.borrow() {
+            anyhow::bail!("gap registry has already been shut down");
+        }
 
-        tokio::spawn(async move {
+        let registry = self.clone();
+        let mut shutdown_rx = self.shutdown_tx.subscribe();
+        *task_slot = Some(tokio::spawn(async move {
             let mut interval_timer = interval(std::time::Duration::from_secs(60));
 
             loop {
-                interval_timer.tick().await;
-
-                if let Err(e) = registry.save_all_dirty().await {
-                    error!("Failed to save dirty gap data: {}", e);
+                tokio::select! {
+                    changed = shutdown_rx.changed() => {
+                        if changed.is_err() || *shutdown_rx.borrow() {
+                            break;
+                        }
+                    }
+                    _ = interval_timer.tick() => {
+                        if let Err(e) = registry.save_all_dirty().await {
+                            error!("Failed to save dirty gap data: {}", e);
+                        }
+                    }
                 }
             }
-        });
+        }));
 
         info!("Gap registry periodic save task started");
         Ok(())
+    }
+
+    /// Stop and join the periodic saver, then persist every remaining dirty symbol.
+    pub async fn shutdown(&self) -> Result<()> {
+        self.shutdown_tx.send_replace(true);
+
+        let task = self.periodic_save_task.lock().await.take();
+        if let Some(task) = task {
+            task.await
+                .map_err(|error| anyhow::anyhow!("gap saver task join failed: {error}"))?;
+        }
+
+        self.save_all_dirty().await
     }
 
     pub async fn record_resnapshot(&self, symbol: &str, reason: String) {
@@ -216,6 +251,8 @@ impl Clone for GapRegistry {
             gaps_dir: self.gaps_dir.clone(),
             registry: self.registry.clone(),
             dirty_symbols: self.dirty_symbols.clone(),
+            shutdown_tx: self.shutdown_tx.clone(),
+            periodic_save_task: self.periodic_save_task.clone(),
         }
     }
 }
