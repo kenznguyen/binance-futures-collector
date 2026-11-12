@@ -41,7 +41,7 @@ pub struct WebSocketManager {
 
     // Track message counts for stability checks
     symbol_message_counts: Arc<DashMap<String, usize>>,
-    // A ring-buffer eviction makes BTCUSDT continuity unprovable until a fresh anchor.
+    // A ring-buffer eviction invalidates the registered order-book decision snapshot.
     buffer_overflow_symbols: Arc<DashSet<String>>,
 }
 
@@ -797,7 +797,7 @@ impl WebSocketManager {
             }
 
             // The legacy buffer's time pruning compares exchange E to local time.
-            // BTCUSDT V1 instead checks source/observation freshness at publication.
+            // Registered V1 books instead check source/observation freshness at publication.
             if !self.orderbook_v1_publishers.contains_key(&symbol) && buffer.len() > 1 {
                 let now = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
