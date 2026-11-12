@@ -86,6 +86,7 @@ pub struct RestCollector {
     /// the order-book manager); every per-symbol poll skips members so a dead
     /// market stops consuming retries and rate-limit budget.
     delisted: Arc<DashSet<String>>,
+    tasks: RestTaskGroup,
 }
 
 impl RestCollector {
@@ -101,6 +102,7 @@ impl RestCollector {
             csv_writer,
             last_bucket: Arc::new(DashMap::new()),
             delisted,
+            tasks: RestTaskGroup::default(),
         }
     }
 
@@ -133,7 +135,7 @@ impl RestCollector {
             if let Err(e) = collector.collect_funding_rates(symbols_clone).await {
                 error!("Funding rate collector error: {}", e);
             }
-        });
+        }).await;
 
         // Start mark price klines collector (90s interval) - 10s delay
         let collector = self.clone();
@@ -143,7 +145,7 @@ impl RestCollector {
             if let Err(e) = collector.collect_mark_price_klines(symbols_clone).await {
                 error!("Mark price klines collector error: {}", e);
             }
-        });
+        }).await;
 
         // Start index price klines collector (90s interval) - 20s delay
         let collector = self.clone();
@@ -153,7 +155,7 @@ impl RestCollector {
             if let Err(e) = collector.collect_index_price_klines(symbols_clone).await {
                 error!("Index price klines collector error: {}", e);
             }
-        });
+        }).await;
 
         // Start premium index klines collector (60s interval) - 30s delay
         let collector = self.clone();
@@ -163,7 +165,7 @@ impl RestCollector {
             if let Err(e) = collector.collect_premium_index_klines(symbols_clone).await {
                 error!("Premium index klines collector error: {}", e);
             }
-        });
+        }).await;
 
         // Start open interest collector (300s interval) - 40s delay
         // Makes 2 requests per symbol (OI + premium index for price)
@@ -174,7 +176,7 @@ impl RestCollector {
             if let Err(e) = collector.collect_open_interest(symbols_clone).await {
                 error!("Open interest collector error: {}", e);
             }
-        });
+        }).await;
 
         // Start taker buy/sell ratio collector (300s interval) - 50s delay
         let collector = self.clone();
@@ -184,7 +186,7 @@ impl RestCollector {
             if let Err(e) = collector.collect_taker_buy_sell_ratios(symbols_clone).await {
                 error!("Taker buy/sell ratio collector error: {}", e);
             }
-        });
+        }).await;
 
         // Start long/short ratio collector (300s interval) - 60s delay
         // Makes 3 requests per symbol (global + 2 trader ratios), heaviest load
@@ -195,7 +197,7 @@ impl RestCollector {
             if let Err(e) = collector.collect_long_short_ratios(symbols_clone).await {
                 error!("Long/short ratio collector error: {}", e);
             }
-        });
+        }).await;
 
         Ok(())
     }
@@ -931,6 +933,7 @@ impl Clone for RestCollector {
             csv_writer: self.csv_writer.clone(),
             last_bucket: self.last_bucket.clone(),
             delisted: self.delisted.clone(),
+            tasks: self.tasks.clone(),
         }
     }
 }
