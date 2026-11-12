@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Timelike, Utc};
 use dashmap::DashMap;
-use log::{debug, error};
+use log::debug;
 use parking_lot::Mutex;
 use std::collections::HashMap; // Keep HashMap for CSV file grouping
 use std::fs::{File, OpenOptions};
