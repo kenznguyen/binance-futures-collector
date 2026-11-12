@@ -1343,9 +1343,11 @@ impl OrderbookManager {
                             }
                             Err(error) => {
                                 warn!("[BTCUSDT] V1 live diff rejected; re-anchoring: {error:#}");
-                                self.trigger_resnapshot("btcusdt", "v1_live_sequence_or_shape_failure")
-                                    .await
-                                    .ok();
+                                self.trigger_resnapshot(
+                                    "btcusdt",
+                                    "v1_live_sequence_or_shape_failure",
+                                )
+                                .await?;
                                 break;
                             }
                         }
@@ -1353,19 +1355,7 @@ impl OrderbookManager {
                     continue;
                 }
 
-                // Legacy path remains unchanged for non-BTCUSDT symbols.
-                // here. A WS reconnect drops a whole batch of symbols at once, so
-                // resnapshotting on each gap would fire hundreds of REST snapshots in
-                // a burst, blowing the weight budget and cascading into a resync
-                // storm. Instead the design absorbs a reconnect three ways:
-                //   • the raw depth_updates CSV stays lossless, so a reconnect gap is
-                //     a recorded pu-break the offline validator surfaces (the
-                //     dashboard's `continuity_breaks`). It is detected, not silent;
-                //   • the in-memory book self-heals: Binance diffs carry ABSOLUTE
-                //     quantities, so every level is corrected on its next update;
-                //   • reconstruction re-anchors on the newest snapshot, not this live
-                //     book. Resync stays confined to init/bridge, rate-limited by
-                //     cooldown + backoff.
+                // Non-BTCUSDT symbols retain the legacy collector path.
                 for update in &updates {
                     if let Err(e) = self.apply_diff(&symbol, update).await {
                         error!("[{}] Failed to apply live depth update: {}", symbol, e);
