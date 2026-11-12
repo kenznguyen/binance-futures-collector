@@ -848,18 +848,18 @@ impl OrderbookManager {
 
         let mut bids = HashMap::new();
         let mut raw_bids = HashMap::new();
-        for level in &candidate.bids {
-            let key = normalize_plain_decimal(&level.price)?;
-            bids.insert(key.clone(), level.quantity.clone());
-            raw_bids.insert(key, (level.price.clone(), level.quantity.clone()));
+        for [price, quantity] in &candidate.bids {
+            let key = normalize_plain_decimal(price)?;
+            bids.insert(key.clone(), quantity.clone());
+            raw_bids.insert(key, (price.clone(), quantity.clone()));
         }
 
         let mut asks = HashMap::new();
         let mut raw_asks = HashMap::new();
-        for level in &candidate.asks {
-            let key = normalize_plain_decimal(&level.price)?;
-            asks.insert(key.clone(), level.quantity.clone());
-            raw_asks.insert(key, (level.price.clone(), level.quantity.clone()));
+        for [price, quantity] in &candidate.asks {
+            let key = normalize_plain_decimal(price)?;
+            asks.insert(key.clone(), quantity.clone());
+            raw_asks.insert(key, (price.clone(), quantity.clone()));
         }
 
         self.orderbooks.insert(
