@@ -18,7 +18,7 @@ use tokio_tungstenite::{connect_async_with_config, MaybeTlsStream, WebSocketStre
 
 use crate::config::Config;
 use crate::models::*;
-use crate::collectors::orderbook_v1::SnapshotPublisher;
+use crate::orderbook_v1::SnapshotPublisher;
 
 type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
@@ -27,7 +27,7 @@ pub struct WebSocketManager {
     config: Arc<Config>,
     connections: Arc<DashMap<usize, ConnectionState>>,
     message_tx: mpsc::Sender<WebSocketMessage>,
-    btc_orderbook_publisher: Arc<SnapshotPublisher>,
+    orderbook_v1_publishers: Arc<DashMap<String, Arc<SnapshotPublisher>>>,
     // Set on shutdown to stop ingest: read loops close and the reconnect loop
     // exits instead of retrying, so the message channel can drain before flush.
     shutdown: Arc<AtomicBool>,
@@ -112,7 +112,7 @@ impl WebSocketManager {
         config: Arc<Config>,
         message_tx: mpsc::Sender<WebSocketMessage>,
         symbols: &[String],
-        btc_orderbook_publisher: Arc<SnapshotPublisher>,
+        orderbook_v1_publishers: Arc<DashMap<String, Arc<SnapshotPublisher>>>,
     ) -> Self {
         let symbol_buffers = Arc::new(DashMap::new());
         for symbol in symbols {
@@ -130,7 +130,7 @@ impl WebSocketManager {
             config,
             connections: Arc::new(DashMap::new()),
             message_tx,
-            btc_orderbook_publisher,
+            orderbook_v1_publishers,
             shutdown: Arc::new(AtomicBool::new(false)),
             shutdown_tx,
             tasks: Arc::new(StdMutex::new(Vec::new())),
@@ -449,8 +449,13 @@ impl WebSocketManager {
         if route == Route::Public
             && symbols.iter().any(|symbol| symbol.eq_ignore_ascii_case("btcusdt"))
         {
-            self.btc_orderbook_publisher.begin_connection_generation();
-            self.buffer_overflow_symbols.remove("btcusdt");
+            for symbol in symbols {
+                let key = symbol.to_lowercase();
+                if let Some(publisher) = self.orderbook_v1_publishers.get(&key) {
+                    publisher.begin_connection_generation();
+                    self.buffer_overflow_symbols.remove(&key);
+                }
+            }
         }
 
         let _ = self.message_tx.send(WebSocketMessage::Connected(cid)).await;
@@ -638,20 +643,25 @@ impl WebSocketManager {
             .get(&batch_id)
             .map(|state| state.symbols.clone())
             .unwrap_or_default();
-        let invalidates_btc = batch_id % 2 == 0
-            && disconnected_symbols
-                .iter()
-                .any(|symbol| symbol.eq_ignore_ascii_case("btcusdt"));
-        if invalidates_btc {
-            self.btc_orderbook_publisher.mark_broken();
-            let btc_buffer = self
-                .symbol_buffers
-                .get("btcusdt")
-                .map(|entry| entry.value().clone());
-            if let Some(buffer) = btc_buffer {
-                buffer.lock().await.clear();
+        if batch_id % 2 == 0 {
+            for symbol in disconnected_symbols {
+                let key = symbol.to_lowercase();
+                let publisher = self
+                    .orderbook_v1_publishers
+                    .get(&key)
+                    .map(|entry| entry.value().clone());
+                if let Some(publisher) = publisher {
+                    publisher.mark_broken();
+                    let buffer = self
+                        .symbol_buffers
+                        .get(&key)
+                        .map(|entry| entry.value().clone());
+                    if let Some(buffer) = buffer {
+                        buffer.lock().await.clear();
+                    }
+                    self.buffer_overflow_symbols.remove(&key);
+                }
             }
-            self.buffer_overflow_symbols.remove("btcusdt");
         }
 
         self.connections.remove(&batch_id);
@@ -790,7 +800,7 @@ impl WebSocketManager {
 
             // The legacy buffer's time pruning compares exchange E to local time.
             // BTCUSDT V1 instead checks source/observation freshness at publication.
-            if symbol != "btcusdt" && buffer.len() > 1 {
+            if !self.orderbook_v1_publishers.contains_key(&symbol) && buffer.len() > 1 {
                 let now = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()
@@ -807,8 +817,14 @@ impl WebSocketManager {
                 }
             }
             drop(buffer);
-            if evicted && symbol == "btcusdt" {
-                self.btc_orderbook_publisher.mark_broken();
+            if evicted && self.orderbook_v1_publishers.contains_key(&symbol) {
+                if let Some(publisher) = self
+                    .orderbook_v1_publishers
+                    .get(&symbol)
+                    .map(|entry| entry.value().clone())
+                {
+                    publisher.mark_broken();
+                }
                 self.buffer_overflow_symbols.insert(symbol);
             }
         }
@@ -919,7 +935,7 @@ impl Clone for WebSocketManager {
             config: self.config.clone(),
             connections: self.connections.clone(),
             message_tx: self.message_tx.clone(),
-            btc_orderbook_publisher: self.btc_orderbook_publisher.clone(),
+            orderbook_v1_publishers: self.orderbook_v1_publishers.clone(),
             shutdown: self.shutdown.clone(),
             shutdown_tx: self.shutdown_tx.clone(),
             tasks: self.tasks.clone(),
