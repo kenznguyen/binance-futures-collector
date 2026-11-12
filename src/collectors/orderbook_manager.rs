@@ -1626,7 +1626,9 @@ mod tests {
     #[test]
     fn normalize_empty_is_empty() {
         assert!(OrderbookManager::normalize_messages_for_attach(Vec::new()).is_empty());
-    }    #[tokio::test]
+    }
+
+    #[tokio::test]
     async fn abort_and_join_waits_for_every_orderbook_task() {
         let task = tokio::spawn(async {
             std::future::pending::<()>().await;
@@ -1634,6 +1636,4 @@ mod tests {
 
         abort_and_join_tasks(vec![task]).await.unwrap();
     }
-
-
 }
