@@ -1368,7 +1368,7 @@ mod tests {
         // plus the accepted absolute-quantity diff.
         let mut expected = snapshot_book(100);
         expected.bids.insert("100".to_string(), "0.7".to_string());
-        expected.bids.insert("98".to_string(), "4.0".to_string());
+        expected.bids.insert("98".to_string(), "4".to_string());
         expected.asks.remove("100.5");
         expected.last_update_id = 105;
 
@@ -1410,7 +1410,7 @@ mod tests {
 
         OrderbookManager::apply_update_to_book(&mut book, &reconnect_diff).unwrap();
         assert_eq!(book.bids["100"], "0.4");
-        assert_eq!(book.asks["100.5"], "2.0");
+        assert_eq!(book.asks["100.5"], "2");
 
         // A quiet level changed during the outage is absent from this diff and
         // therefore remains stale in memory until a later absolute update or
