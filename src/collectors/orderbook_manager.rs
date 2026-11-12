@@ -744,6 +744,12 @@ impl OrderbookManager {
     }
 
     async fn try_attach_btcusdt_v1(&self, symbol: &str) -> Result<bool> {
+        if self.websocket_manager.take_buffer_overflow(symbol) {
+            self.trigger_resnapshot("btcusdt", "v1_websocket_buffer_eviction")
+                .await?;
+            return Ok(false);
+        }
+
         let drained = self.websocket_manager.drain_buffer(symbol).await;
         if !drained.is_empty() {
             self.btc_v1_buffered_updates
