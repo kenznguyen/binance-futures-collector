@@ -53,6 +53,7 @@ pub struct OrderbookSnapshotV1 {
 struct PublicationState {
     generation: u64,
     state: OrderbookV1State,
+    reanchor_attempts: u8,
     snapshot: Option<Arc<OrderbookSnapshotV1>>,
 }
 
@@ -74,9 +75,38 @@ impl SnapshotPublisher {
             inner: RwLock::new(PublicationState {
                 generation: 0,
                 state: OrderbookV1State::Initializing,
+                reanchor_attempts: 0,
                 snapshot: None,
             }),
         }
+    }
+
+    pub fn begin_connection_generation(&self) -> u64 {
+        let mut inner = self
+            .inner
+            .write()
+            .expect("snapshot publisher lock poisoned");
+        inner.generation = inner.generation.saturating_add(1);
+        inner.reanchor_attempts = 0;
+        inner.snapshot = None;
+        inner.state = OrderbookV1State::Reanchoring;
+        inner.generation
+    }
+
+    pub fn note_reanchor_attempt(&self) -> Result<u8> {
+        let mut inner = self
+            .inner
+            .write()
+            .expect("snapshot publisher lock poisoned");
+        if inner.reanchor_attempts >= 3 {
+            inner.generation = inner.generation.saturating_add(1);
+            inner.snapshot = None;
+            inner.state = OrderbookV1State::Broken;
+            bail!("BTCUSDT V1 exhausted three re-anchor attempts");
+        }
+        inner.reanchor_attempts += 1;
+        inner.state = OrderbookV1State::FetchingSnapshot;
+        Ok(inner.reanchor_attempts)
     }
 
     pub fn begin_reanchor(&self) -> u64 {
@@ -122,6 +152,7 @@ impl SnapshotPublisher {
             bail!("refusing to publish an incomplete or unverified snapshot");
         }
         inner.snapshot = Some(Arc::new(snapshot));
+        inner.reanchor_attempts = 0;
         inner.state = OrderbookV1State::Ready;
         Ok(())
     }
