@@ -543,6 +543,21 @@ mod tests {
     }
 
     #[test]
+    fn serialized_snapshot_matches_t2_v1_wire_field_names_and_string_levels() {
+        let result = build_snapshot(&snapshot(), &valid_updates(), 7, NOW - 10, NOW).unwrap();
+        let value = serde_json::to_value(result).unwrap();
+        assert_eq!(value["contractVersion"], CONTRACT_VERSION);
+        assert_eq!(value["symbol"], "BTCUSDT");
+        assert_eq!(value["market"], "BINANCE_USDM_PERPETUAL");
+        assert_eq!(value["continuity"], "VERIFIED");
+        assert_eq!(value["freshness"], "FRESH");
+        assert_eq!(value["decisionWatermark"], 103);
+        assert!(value["bids"][0].is_array());
+        assert!(value["bids"][0][0].is_string());
+        assert!(value["bids"][0][1].is_string());
+    }
+
+    #[test]
     fn legacy_pu_attach_bridge_is_rejected() {
         let mut diffs = vec![update(110, 120, 100, NOW - 100)];
         diffs[0].bids.push(["9999".into(), "1".into()]);
