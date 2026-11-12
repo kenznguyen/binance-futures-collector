@@ -93,9 +93,9 @@ fn find_bridge(snapshot_u: u64, diffs: &[DepthUpdateWs]) -> Option<(usize, Bridg
 pub struct Orderbook {
     pub symbol: String,
     pub last_update_id: u64,
-    // Normalized exact decimal price keys; quantities remain f64 for calculations.
-    pub bids: HashMap<String, f64>,
-    pub asks: HashMap<String, f64>,
+    // Normalized exact decimal price keys and exact source quantity decimals.
+    pub bids: HashMap<String, String>,
+    pub asks: HashMap<String, String>,
     pub raw_bids: HashMap<String, (String, String)>,
     pub raw_asks: HashMap<String, (String, String)>,
     pub last_processed_time: Instant,
@@ -543,10 +543,9 @@ impl OrderbookManager {
         let mut bids = HashMap::new();
         let mut raw_bids = HashMap::new();
         for [price_str, qty_str] in &snapshot.bids {
-            let qty: f64 = qty_str.parse()?;
             let price_key = normalize_plain_decimal(price_str)?;
             let quantity_key = normalize_plain_decimal(qty_str)?;
-            bids.insert(price_key.clone(), qty);
+            bids.insert(price_key.clone(), qty_str.clone());
             if quantity_key != "0" {
                 raw_bids.insert(price_key, (price_str.clone(), qty_str.clone()));
             }
@@ -555,10 +554,9 @@ impl OrderbookManager {
         let mut asks = HashMap::new();
         let mut raw_asks = HashMap::new();
         for [price_str, qty_str] in &snapshot.asks {
-            let qty: f64 = qty_str.parse()?;
             let price_key = normalize_plain_decimal(price_str)?;
             let quantity_key = normalize_plain_decimal(qty_str)?;
-            asks.insert(price_key.clone(), qty);
+            asks.insert(price_key.clone(), qty_str.clone());
             if quantity_key != "0" {
                 raw_asks.insert(price_key, (price_str.clone(), qty_str.clone()));
             }
@@ -762,32 +760,29 @@ impl OrderbookManager {
         Ok((applied > 0).then_some(applied))
     }
 
-    /// Apply one diff update to a book. Source decimal strings are retained
-    /// verbatim for snapshots; f64 values are only an internal computational view.
+    /// Apply one diff update to a book while preserving exact exchange decimal strings.
     fn apply_update_to_book(book: &mut Orderbook, update: &DepthUpdateWs) -> Result<()> {
         for [price_str, quantity_str] in &update.bids {
-            let quantity: f64 = quantity_str.parse()?;
             let price_key = normalize_plain_decimal(price_str)?;
             let quantity_key = normalize_plain_decimal(quantity_str)?;
             if quantity_key == "0" {
                 book.bids.remove(&price_key);
                 book.raw_bids.remove(&price_key);
             } else {
-                book.bids.insert(price_key.clone(), quantity);
+                book.bids.insert(price_key.clone(), quantity_str.clone());
                 book.raw_bids
                     .insert(price_key, (price_str.clone(), quantity_str.clone()));
             }
         }
 
         for [price_str, quantity_str] in &update.asks {
-            let quantity: f64 = quantity_str.parse()?;
             let price_key = normalize_plain_decimal(price_str)?;
             let quantity_key = normalize_plain_decimal(quantity_str)?;
             if quantity_key == "0" {
                 book.asks.remove(&price_key);
                 book.raw_asks.remove(&price_key);
             } else {
-                book.asks.insert(price_key.clone(), quantity);
+                book.asks.insert(price_key.clone(), quantity_str.clone());
                 book.raw_asks
                     .insert(price_key, (price_str.clone(), quantity_str.clone()));
             }
@@ -815,7 +810,7 @@ impl OrderbookManager {
 
     fn trim_computational_levels(
         depth: usize,
-        levels: &mut HashMap<String, f64>,
+        levels: &mut HashMap<String, String>,
         highest_first: bool,
     ) {
         if levels.len() <= depth {
@@ -1334,10 +1329,10 @@ mod tests {
     fn snapshot_book(last_update_id: u64) -> Orderbook {
         let mut book = empty_book();
         book.last_update_id = last_update_id;
-        book.bids.insert("100".to_string(), 1.0);
-        book.bids.insert("99.5".to_string(), 2.0);
-        book.asks.insert("100.5".to_string(), 1.5);
-        book.asks.insert("101".to_string(), 3.0);
+        book.bids.insert("100".to_string(), "1.0".to_string());
+        book.bids.insert("99.5".to_string(), "2.0".to_string());
+        book.asks.insert("100.5".to_string(), "1.5".to_string());
+        book.asks.insert("101".to_string(), "3.0".to_string());
         book.raw_bids
             .insert("100".to_string(), ("100.0".to_string(), "1.0".to_string()));
         book.raw_bids
@@ -1372,8 +1367,8 @@ mod tests {
         // Independently reconstruct the expected state from the REST snapshot
         // plus the accepted absolute-quantity diff.
         let mut expected = snapshot_book(100);
-        expected.bids.insert("100".to_string(), 0.7);
-        expected.bids.insert("98".to_string(), 4.0);
+        expected.bids.insert("100".to_string(), "0.7".to_string());
+        expected.bids.insert("98".to_string(), "4.0".to_string());
         expected.asks.remove("100.5");
         expected.last_update_id = 105;
 
@@ -1414,13 +1409,13 @@ mod tests {
         reconnect_diff.prev_update_id = 120;
 
         OrderbookManager::apply_update_to_book(&mut book, &reconnect_diff).unwrap();
-        assert_eq!(book.bids["100"], 0.4);
-        assert_eq!(book.asks["100.5"], 2.0);
+        assert_eq!(book.bids["100"], "0.4");
+        assert_eq!(book.asks["100.5"], "2.0");
 
         // A quiet level changed during the outage is absent from this diff and
         // therefore remains stale in memory until a later absolute update or
         // snapshot reconstruction.
-        assert_eq!(book.bids["99.5"], 2.0);
+        assert_eq!(book.bids["99.5"], "2.0");
         assert_eq!(reconnect_diff.prev_update_id, 120);
         assert_eq!(book.last_update_id, 125);
     }
@@ -1446,7 +1441,7 @@ mod tests {
         let u2 = update(11, &[(100.0, 0.7), (99.5, 0.0)], &[]);
         OrderbookManager::apply_update_to_book(&mut book, &u2).unwrap();
         assert_eq!(book.bids.len(), 1);
-        assert_eq!(book.bids["100"], 0.7);
+        assert_eq!(book.bids["100"], "0.7");
         assert_eq!(book.last_update_id, 11);
     }
 
@@ -1478,7 +1473,7 @@ mod tests {
         OrderbookManager::apply_update_to_book(&mut book, &insert).unwrap();
 
         assert_eq!(
-            book.bids.get("100").map(ToString::to_string).as_deref(),
+            book.bids.get("100").map(String::as_str),
             Some(quantity),
             "computational orderbook must not round exchange quantity decimals"
         );
@@ -1528,8 +1523,8 @@ mod tests {
         let mut book = empty_book();
         // 10 bids at 90..99 and 10 asks at 101..110.
         for i in 0..10 {
-            book.bids.insert((90 + i).to_string(), 1.0);
-            book.asks.insert((101 + i).to_string(), 1.0);
+            book.bids.insert((90 + i).to_string(), "1.0".to_string());
+            book.asks.insert((101 + i).to_string(), "1.0".to_string());
         }
 
         OrderbookManager::trim_book_to_depth(3, &mut book);
@@ -1550,8 +1545,8 @@ mod tests {
     #[test]
     fn trim_is_noop_within_depth() {
         let mut book = empty_book();
-        book.bids.insert("100".to_string(), 1.0);
-        book.asks.insert("101".to_string(), 1.0);
+        book.bids.insert("100".to_string(), "1.0".to_string());
+        book.asks.insert("101".to_string(), "1.0".to_string());
         OrderbookManager::trim_book_to_depth(50, &mut book);
         assert_eq!(book.bids.len(), 1);
         assert_eq!(book.asks.len(), 1);
