@@ -87,8 +87,20 @@ impl SnapshotPublisher {
         inner.generation = inner.generation.saturating_add(1);
         inner.reanchor_attempts = 0;
         inner.snapshot = None;
-        inner.state = OrderbookV1State::Reanchoring;
+        inner.state = OrderbookV1State::Buffering;
         inner.generation
+    }
+
+    pub fn mark_validating(&self, generation: u64) -> Result<()> {
+        let mut inner = self
+            .inner
+            .write()
+            .expect("snapshot publisher lock poisoned");
+        if inner.generation != generation || inner.state != OrderbookV1State::FetchingSnapshot {
+            bail!("stale BTCUSDT anchor cannot enter validation");
+        }
+        inner.state = OrderbookV1State::Validating;
+        Ok(())
     }
 
     pub fn note_reanchor_attempt(&self) -> Result<u8> {
@@ -148,7 +160,9 @@ impl SnapshotPublisher {
         }
         if !matches!(
             inner.state,
-            OrderbookV1State::FetchingSnapshot | OrderbookV1State::Ready
+            OrderbookV1State::FetchingSnapshot
+                | OrderbookV1State::Validating
+                | OrderbookV1State::Ready
         ) {
             bail!("order-book publisher is not in a publishable lifecycle state");
         }
