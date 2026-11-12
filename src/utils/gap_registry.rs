@@ -183,3 +183,38 @@ impl Clone for GapRegistry {
         }
     }
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn failed_gap_saves_are_reported_and_remain_retryable() {
+        let results = vec![
+            ("btcusdt".to_string(), Ok(())),
+            (
+                "ethusdt".to_string(),
+                Err(anyhow::anyhow!("simulated disk write failure")),
+            ),
+        ];
+
+        let (failed_symbols, error) = collect_failed_gap_saves(results);
+
+        assert_eq!(failed_symbols, vec!["ethusdt".to_string()]);
+        assert!(error.is_some(), "a failed gap save must not report success");
+    }
+
+    #[test]
+    fn all_successful_gap_saves_return_no_failures() {
+        let results = vec![
+            ("btcusdt".to_string(), Ok(())),
+            ("ethusdt".to_string(), Ok(())),
+        ];
+
+        let (failed_symbols, error) = collect_failed_gap_saves(results);
+
+        assert!(failed_symbols.is_empty());
+        assert!(error.is_none());
+    }
+}
