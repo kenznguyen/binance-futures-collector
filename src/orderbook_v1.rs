@@ -1,6 +1,6 @@
 use anyhow::{bail, Context, Result};
-use std::collections::{HashMap, HashSet};
 use serde::Serialize;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 
 use crate::models::{DepthSnapshotRest, DepthUpdateWs};
