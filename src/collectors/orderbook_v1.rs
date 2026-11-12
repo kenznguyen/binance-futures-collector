@@ -613,6 +613,7 @@ mod tests {
         assert!(publisher.read().is_some());
 
         let next_generation = publisher.begin_reanchor();
+        publisher.note_reanchor_attempt().unwrap();
         assert!(publisher.read().is_none());
         assert!(publisher.publish_if_current(candidate).is_err());
 
