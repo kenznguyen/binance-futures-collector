@@ -59,7 +59,7 @@ pub fn validate_orderbook_level(price: &str, quantity: &str) -> Result<(String, 
     if price_key.starts_with('-') || price_key == "0" {
         bail!("order-book price must be strictly positive");
     }
-    if quantity_key.starts_with('-') {
+    if quantity.starts_with('-') || quantity_key.starts_with('-') {
         bail!("order-book quantity must be non-negative");
     }
 
