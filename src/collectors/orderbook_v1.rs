@@ -148,6 +148,12 @@ impl SnapshotPublisher {
         if snapshot.generation != inner.generation {
             bail!("stale order-book generation");
         }
+        if !matches!(
+            inner.state,
+            OrderbookV1State::FetchingSnapshot | OrderbookV1State::Ready
+        ) {
+            bail!("order-book publisher is not in a publishable lifecycle state");
+        }
         if !snapshot.complete || !snapshot.continuity_verified || !snapshot.freshness_fresh {
             bail!("refusing to publish an incomplete or unverified snapshot");
         }
