@@ -1126,8 +1126,8 @@ mod tests {
         );
         assert_eq!(row[6], "42"); // trade_id
         assert_eq!(row[7], "sell"); // side sits BEFORE price/quantity
-        assert!((row[8].parse::<f64>().unwrap() - 62456.60).abs() < 1e-9);
-        assert!((row[9].parse::<f64>().unwrap() - 0.017).abs() < 1e-9);
+        assert_eq!(row[8], "62456.60");
+        assert_eq!(row[9], "0.017");
     }
 
     #[tokio::test]
@@ -1162,8 +1162,8 @@ mod tests {
         assert_eq!(row.len(), constants::HEADER_KLINES.split(',').count());
         assert_eq!(row[4], "2023-11-14T22:13:20.000Z");
         // OHLC land in header order.
-        assert!((row[6].parse::<f64>().unwrap() - 3000.1).abs() < 1e-9);
-        assert!((row[9].parse::<f64>().unwrap() - 3000.4).abs() < 1e-9);
+        assert_eq!(row[6], "3000.1");
+        assert_eq!(row[9], "3000.4");
     }
 
     #[tokio::test]
@@ -1194,10 +1194,9 @@ mod tests {
         assert!(header.contains(",mark_price,"));
 
         let row: Vec<&str> = lines.next().unwrap().split(',').collect();
-        let mark: f64 = row[6].parse().unwrap();
-        let qty: f64 = row[7].parse().unwrap();
-        let value: f64 = row[8].parse().unwrap();
-        assert!((mark * qty - value).abs() < 1e-6);
+        assert_eq!(row[6], "150.0");
+        assert_eq!(row[7], "1000.0");
+        assert_eq!(row[8], "150000.0");
     }
 
     #[tokio::test]
