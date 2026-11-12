@@ -220,7 +220,6 @@ impl Clone for GapRegistry {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
