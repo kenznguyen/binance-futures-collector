@@ -566,7 +566,10 @@ impl OrderbookManager {
 
                 OrderbookState::Broken => {
                     if symbol.eq_ignore_ascii_case("btcusdt")
-                        && self.btc_v1_publisher.state() == OrderbookV1State::Reanchoring
+                        && matches!(
+                            self.btc_v1_publisher.state(),
+                            OrderbookV1State::Buffering | OrderbookV1State::Reanchoring
+                        )
                     {
                         self.symbol_states
                             .insert(symbol.clone(), OrderbookState::Initializing);
@@ -625,6 +628,7 @@ impl OrderbookManager {
                 .insert(symbol.to_string(), snapshot.clone());
             self.btc_v1_anchor_generation
                 .insert(symbol.to_string(), generation);
+            self.btc_v1_publisher.mark_validating(generation)?;
             self.btc_v1_buffered_updates.remove(symbol);
         }
 
