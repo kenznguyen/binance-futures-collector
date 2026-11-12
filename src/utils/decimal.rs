@@ -246,4 +246,31 @@ mod tests {
         assert!(multiply_decimal_strings("1.0.0", "2").is_err());
         assert!(multiply_decimal_strings("1", "NaN").is_err());
     }
+
+    #[test]
+    fn orderbook_level_semantics_reject_nonpositive_prices_and_negative_quantities() {
+        use super::validate_orderbook_level;
+
+        assert!(validate_orderbook_level("0", "1").is_err());
+        assert!(validate_orderbook_level("-1", "1").is_err());
+        assert!(validate_orderbook_level("1", "-0.1").is_err());
+        assert!(validate_orderbook_level("1", "0").is_ok());
+        assert!(validate_orderbook_level("1.000", "0.2500").is_ok());
+    }
+
+    #[test]
+    fn orderbook_level_semantics_reject_exponents_nonfinite_and_overlong_values() {
+        use super::validate_orderbook_level;
+
+        for (price, quantity) in [
+            ("1e3", "1"),
+            ("NaN", "1"),
+            ("1", "Infinity"),
+            (&"1".repeat(129), "1"),
+            ("1", &"0".repeat(129)),
+        ] {
+            assert!(validate_orderbook_level(price, quantity).is_err());
+        }
+    }
+
 }
