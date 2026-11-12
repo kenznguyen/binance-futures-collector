@@ -1304,7 +1304,13 @@ impl OrderbookManager {
                             break;
                         };
                         let now_ms = chrono::Utc::now().timestamp_millis();
-                        match apply_live_diff(&current, update, now_ms, now_ms) {
+                        match apply_live_diff(
+                            &current,
+                            update,
+                            self.config.orderbook.depth_limit as usize,
+                            now_ms,
+                            now_ms,
+                        ) {
                             Ok(candidate) => {
                                 if let Err(error) =
                                     self.btc_v1_publisher.publish_if_current(candidate)
