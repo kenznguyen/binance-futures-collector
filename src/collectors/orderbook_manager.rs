@@ -830,7 +830,7 @@ impl OrderbookManager {
         let candidate = match build_snapshot(
             &anchor,
             &updates,
-            self.btc_v1_publisher.generation(),
+            anchor_generation,
             now_ms,
             now_ms,
         ) {
