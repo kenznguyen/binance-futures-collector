@@ -1096,16 +1096,18 @@ impl OrderbookManager {
     async fn trigger_resnapshot(&self, symbol: &str, reason: &str) -> Result<()> {
         warn!("[{}] Triggering resnapshot: {}", symbol, reason);
 
-        self.gap_registry
-            .record_resnapshot(symbol, reason.to_string())
-            .await;
-
         if symbol.eq_ignore_ascii_case("btcusdt") {
+            // Invalidate the published decision snapshot before any async persistence.
             self.btc_v1_publisher.begin_reanchor();
             self.btc_v1_rest_snapshot.remove(symbol);
+            self.btc_v1_anchor_generation.remove(symbol);
             self.btc_v1_buffered_updates.remove(symbol);
             self.orderbooks.remove(symbol);
         }
+
+        self.gap_registry
+            .record_resnapshot(symbol, reason.to_string())
+            .await;
 
         // Reset to INITIALIZING (will refetch snapshot)
         self.symbol_states
