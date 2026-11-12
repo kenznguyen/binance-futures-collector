@@ -1,11 +1,6 @@
 name: T1 bounded Binance public runtime smoke
 
 on:
-  push:
-    branches:
-      - feature/t1-connection-sidecar-integration-20261107
-    paths:
-      - .github/workflows/t1-runtime-smoke.yml
   workflow_dispatch:
 
 permissions:
@@ -138,6 +133,11 @@ jobs:
           grep -F "System started." runtime-smoke.log
           grep -F "Shutdown complete" runtime-smoke.log
           grep -E "Batch [0-9]+ connected" runtime-smoke.log
+          if grep -F "HTTP 451 Unavailable For Legal Reasons" runtime-smoke.log; then
+            echo "::error::Binance REST access is restricted from this runner location; runtime acceptance is BLOCKED."
+            exit 1
+          fi
+          grep -F "Orderbooks Live: 1/1" runtime-smoke.log
           test -d runtime-data/futures/orderbooks/btcusdt
           find runtime-data/futures/orderbooks/btcusdt -type f -name '*.csv' -size +0c | grep .
           test -d runtime-data/futures/trades/btcusdt
