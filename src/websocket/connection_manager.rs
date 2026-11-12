@@ -808,8 +808,8 @@ impl WebSocketManager {
             }
             drop(buffer);
             if evicted && symbol == "btcusdt" {
-                self.buffer_overflow_symbols.insert(symbol);
                 self.btc_orderbook_publisher.mark_broken();
+                self.buffer_overflow_symbols.insert(symbol);
             }
         }
     }
