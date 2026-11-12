@@ -25,7 +25,7 @@ pub struct OrderbookManager {
     // All symbol keys are lowercase
     symbol_states: Arc<DashMap<String, OrderbookState>>,
 
-    // Uses f64 for prices/quantities, not String
+    // Orderbook levels store normalized exact decimal strings for prices and quantities.
     orderbooks: Arc<DashMap<String, Orderbook>>,
 
     // Snapshot scheduling
