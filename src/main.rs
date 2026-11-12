@@ -528,8 +528,8 @@ async fn main() -> Result<()> {
     info!("  • Flushing CSV buffers...");
     csv_writer.flush_all().await?;
 
-    info!("  • Saving gap registry...");
-    gap_registry.save_all_dirty().await?;
+    info!("  • Stopping gap registry saver and saving remaining events...");
+    gap_registry.shutdown().await?;
 
     info!("Shutdown complete");
     Ok(())
