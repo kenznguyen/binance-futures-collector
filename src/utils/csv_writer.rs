@@ -8,6 +8,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use tokio::sync::{watch, Mutex as AsyncMutex};
 use tokio::time::{interval, Duration};
 
 use crate::config::Config;
@@ -153,6 +154,8 @@ pub struct CsvWriter {
     flush_interval: std::time::Duration,
     buffer_size_bytes: usize,
     max_depth_buffer_rows: usize,
+    shutdown_tx: watch::Sender<bool>,
+    background_tasks: Arc<AsyncMutex<Vec<tokio::task::JoinHandle<()>>>>,
 }
 
 impl CsvWriter {
@@ -162,6 +165,8 @@ impl CsvWriter {
         // Create base directory if it doesn't exist
         std::fs::create_dir_all(&base_dir)?;
 
+        let (shutdown_tx, _) = watch::channel(false);
+
         Ok(Self {
             config: config.clone(),
             base_dir,
@@ -169,6 +174,8 @@ impl CsvWriter {
             flush_interval: std::time::Duration::from_secs(config.output.flush_interval_seconds),
             buffer_size_bytes: config.output.buffer_size_kb * 1024,
             max_depth_buffer_rows: config.output.max_depth_buffer_rows,
+            shutdown_tx,
+            background_tasks: Arc::new(AsyncMutex::new(Vec::new())),
         })
     }
 
@@ -948,43 +955,85 @@ impl CsvWriter {
         Ok(())
     }
 
+    async fn retain_background_task(&self, task: tokio::task::JoinHandle<()>) {
+        self.background_tasks.lock().await.push(task);
+    }
+
+    /// Stop and join every periodic writer/rotation task before final flush or sealing.
+    pub async fn shutdown_background_tasks(&self) -> Result<()> {
+        self.shutdown_tx.send_replace(true);
+
+        let tasks = {
+            let mut tasks = self.background_tasks.lock().await;
+            std::mem::take(&mut *tasks)
+        };
+
+        let mut join_errors = Vec::new();
+        for task in tasks {
+            if let Err(error) = task.await {
+                join_errors.push(error.to_string());
+            }
+        }
+
+        if !join_errors.is_empty() {
+            anyhow::bail!(
+                "one or more CSV background tasks failed to join: {}",
+                join_errors.join("; ")
+            );
+        }
+
+        Ok(())
+    }
+
     pub async fn start_periodic_flush(&self) -> Result<()> {
+        if *self.shutdown_tx.borrow() {
+            anyhow::bail!("CSV writer background tasks have already been shut down");
+        }
+
         let writer = self.clone();
         let flush_interval = self.flush_interval;
+        let mut shutdown_rx = self.shutdown_tx.subscribe();
 
-        tokio::spawn(async move {
+        let task = tokio::spawn(async move {
             let mut interval_timer = interval(flush_interval);
 
             loop {
-                interval_timer.tick().await;
-
-                if let Err(e) = writer.flush_all().await {
-                    log::error!("Periodic flush failed: {}", e);
+                tokio::select! {
+                    _ = shutdown_rx.changed() => break,
+                    _ = interval_timer.tick() => {
+                        if let Err(e) = writer.flush_all().await {
+                            log::error!("Periodic flush failed: {}", e);
+                        }
+                    }
                 }
             }
         });
+        self.retain_background_task(task).await;
 
         // Periodic cleanup task (every 2 minutes)
         let writer_cleanup = self.clone();
-        tokio::spawn(async move {
-            let mut cleanup_interval = tokio::time::interval(tokio::time::Duration::from_secs(120)); // 2 min
+        let mut shutdown_rx = self.shutdown_tx.subscribe();
+        let cleanup_task = tokio::spawn(async move {
+            let mut cleanup_interval =
+                tokio::time::interval(tokio::time::Duration::from_secs(120));
 
             loop {
-                cleanup_interval.tick().await;
-
-                if let Err(e) = writer_cleanup.cleanup_stale_buffers().await {
-                    log::error!("CSV buffer cleanup failed: {:?}", e);
+                tokio::select! {
+                    _ = shutdown_rx.changed() => break,
+                    _ = cleanup_interval.tick() => {
+                        if let Err(e) = writer_cleanup.cleanup_stale_buffers().await {
+                            log::error!("CSV buffer cleanup failed: {:?}", e);
+                        }
+                    }
                 }
             }
         });
+        self.retain_background_task(cleanup_task).await;
 
-        // Rotation-aware cleanup: the 2-minute tick can leave the whole old
-        // day's buffer set (thousands of 64 KB writers) resident for up to two
-        // minutes past midnight while the new day's set is already being
-        // created: a double-residency burst that ratchets peak RSS. Run a
-        // cleanup seconds after each UTC midnight instead of waiting.
+        // Rotation-aware cleanup runs seconds after each UTC midnight.
         let writer_midnight = self.clone();
-        tokio::spawn(async move {
+        let mut shutdown_rx = self.shutdown_tx.subscribe();
+        let midnight_task = tokio::spawn(async move {
             loop {
                 let now = Utc::now();
                 let next = (now + chrono::Duration::days(1))
@@ -993,23 +1042,32 @@ impl CsvWriter {
                     .expect("valid time")
                     .and_utc();
                 let wait = (next - now).to_std().unwrap_or(Duration::from_secs(86_400));
-                tokio::time::sleep(wait).await;
 
-                log::info!("Midnight rotation: running immediate stale-buffer cleanup");
-                if let Err(e) = writer_midnight.cleanup_stale_buffers().await {
-                    log::error!("Midnight buffer cleanup failed: {:?}", e);
+                tokio::select! {
+                    _ = shutdown_rx.changed() => break,
+                    _ = tokio::time::sleep(wait) => {
+                        log::info!("Midnight rotation: running immediate stale-buffer cleanup");
+                        if let Err(e) = writer_midnight.cleanup_stale_buffers().await {
+                            log::error!("Midnight buffer cleanup failed: {:?}", e);
+                        }
+                    }
                 }
             }
         });
+        self.retain_background_task(midnight_task).await;
 
         Ok(())
     }
 
-    /// Start hourly rotation task for depth update files
+    /// Start hourly rotation task for depth update files.
     pub async fn start_hourly_rotation(&self) -> Result<()> {
-        let writer = self.clone();
+        if *self.shutdown_tx.borrow() {
+            anyhow::bail!("CSV writer background tasks have already been shut down");
+        }
 
-        tokio::spawn(async move {
+        let writer = self.clone();
+        let mut shutdown_rx = self.shutdown_tx.subscribe();
+        let task = tokio::spawn(async move {
             let now = Utc::now();
             let next_hour = (now + chrono::Duration::hours(1))
                 .with_minute(0)
@@ -1023,46 +1081,43 @@ impl CsvWriter {
                 .to_std()
                 .unwrap_or(Duration::from_secs(3600));
 
-            tokio::time::sleep(until_next_hour).await;
+            tokio::select! {
+                _ = shutdown_rx.changed() => return,
+                _ = tokio::time::sleep(until_next_hour) => {}
+            }
 
             let mut interval = interval(Duration::from_secs(3600));
 
             loop {
-                interval.tick().await;
+                tokio::select! {
+                    _ = shutdown_rx.changed() => break,
+                    _ = interval.tick() => {
+                        let current_hour = Utc::now().hour();
+                        let prev_hour = if current_hour == 0 { 23 } else { current_hour - 1 };
 
-                // Find all depth update files for the previous hour
-                let current_hour = Utc::now().hour();
-                let prev_hour = if current_hour == 0 {
-                    23
-                } else {
-                    current_hour - 1
-                };
+                        let mut files_to_finalize = Vec::new();
+                        for entry in writer.buffers.iter() {
+                            let path_str = entry.key();
+                            if path_str.contains("depth_updates")
+                                && path_str.contains(&format!("{:02}00-to-{:02}00", prev_hour, current_hour))
+                            {
+                                files_to_finalize.push(PathBuf::from(path_str.clone()));
+                            }
+                        }
 
-                let mut files_to_finalize = Vec::new();
-
-                for entry in writer.buffers.iter() {
-                    let path_str = entry.key();
-                    // Check if it's a depth update file from previous hour
-                    if path_str.contains("depth_updates")
-                        && path_str
-                            .contains(&format!("{:02}00-to-{:02}00", prev_hour, current_hour))
-                    {
-                        files_to_finalize.push(PathBuf::from(path_str.clone()));
+                        for file_path in files_to_finalize {
+                            if let Err(e) = writer.finalize_file(&file_path).await {
+                                log::error!("Failed to finalize file {:?}: {}", file_path, e);
+                            } else {
+                                log::info!("Finalized hourly file: {:?}", file_path);
+                            }
+                        }
                     }
                 }
-
-                for file_path in files_to_finalize {
-                    if let Err(e) = writer.finalize_file(&file_path).await {
-                        log::error!("Failed to finalize file {:?}: {}", file_path, e);
-                    } else {
-                        log::info!("Finalized hourly file: {:?}", file_path);
-                    }
-                }
-                // The hour's freed buffer pages return to the OS via jemalloc's
-                // background purge (see main.rs / .cargo/config.toml).
             }
         });
 
+        self.retain_background_task(task).await;
         Ok(())
     }
 }
