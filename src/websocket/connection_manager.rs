@@ -788,8 +788,9 @@ impl WebSocketManager {
                 evicted = true;
             }
 
-            // Enforce time limit using local wall time, not exchange timestamps.
-            if buffer.len() > 1 {
+            // The legacy buffer's time pruning compares exchange E to local time.
+            // BTCUSDT V1 instead checks source/observation freshness at publication.
+            if symbol != "btcusdt" && buffer.len() > 1 {
                 let now = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()
