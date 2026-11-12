@@ -3,9 +3,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 
 use crate::models::{DepthSnapshotRest, DepthUpdateWs};
-use crate::utils::{
-    compare_normalized_decimals, validate_orderbook_level,
-};
+use crate::utils::{compare_normalized_decimals, validate_orderbook_level};
 
 pub const CONTRACT_VERSION: &str = "T1_BTCUSDT_ORDERBOOK_V1";
 pub const REQUIRED_DEPTH: usize = 20;
