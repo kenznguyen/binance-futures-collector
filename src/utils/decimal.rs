@@ -41,7 +41,6 @@ pub fn normalize_plain_decimal(value: &str) -> Result<String> {
     Ok(normalized)
 }
 
-
 /// Validate one Binance order-book price/quantity pair without floating-point conversion.
 /// The returned keys are normalized exact decimals; callers retain the input lexemes
 /// separately for publication. The V1 wire contract caps each lexeme at 128 bytes.
@@ -49,10 +48,7 @@ pub fn validate_orderbook_level(price: &str, quantity: &str) -> Result<(String, 
     const MAX_DECIMAL_BYTES: usize = 128;
 
     for (field, value) in [("price", price), ("quantity", quantity)] {
-        if value.is_empty()
-            || value.len() > MAX_DECIMAL_BYTES
-            || value.starts_with('+')
-        {
+        if value.is_empty() || value.len() > MAX_DECIMAL_BYTES || value.starts_with('+') {
             bail!("invalid order-book {field} decimal length or sign");
         }
     }
@@ -301,5 +297,4 @@ mod tests {
             assert!(validate_orderbook_level(price, quantity).is_err());
         }
     }
-
 }
