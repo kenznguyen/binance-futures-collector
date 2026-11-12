@@ -9,8 +9,8 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
-use tokio::task::JoinHandle;
 use tokio::fs;
+use tokio::task::JoinHandle;
 use tokio::time::interval;
 
 use crate::rest::{ProxyUsageRecord, RestClient};
