@@ -379,7 +379,9 @@ pub fn build_snapshot(
         source_timestamp_ms: last_event_timestamp_ms,
         observed_at_ms,
         generation,
-        snapshot_id: format!("btcusdt-{generation}-{last_applied_u}-{last_event_timestamp_ms}"),
+        snapshot_id: format!(
+            "btcusdt-{generation}-{last_applied_u}-{last_event_timestamp_ms}-{observed_at_ms}"
+        ),
         continuity: "VERIFIED".to_string(),
         freshness: "FRESH".to_string(),
         complete: true,
@@ -454,8 +456,8 @@ pub fn apply_live_diff(
     next.source_timestamp_ms = update.event_time;
     next.observed_at_ms = observed_at_ms;
     next.snapshot_id = format!(
-        "btcusdt-{}-{}-{}",
-        next.generation, next.last_applied_u, next.source_timestamp_ms
+        "btcusdt-{}-{}-{}-{}",
+        next.generation, next.last_applied_u, next.source_timestamp_ms, next.observed_at_ms
     );
     next.freshness = "FRESH".to_string();
     next.complete = true;
