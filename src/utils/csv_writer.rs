@@ -1515,7 +1515,6 @@ mod flush_all_error_tests {
     }
 }
 
-
 #[cfg(test)]
 mod blocking_operation_barrier_tests {
     use super::CsvWriter;
@@ -1536,9 +1535,8 @@ mod blocking_operation_barrier_tests {
         let in_flight = writer.blocking_operations.begin().unwrap();
 
         let shutdown_writer = writer.clone();
-        let shutdown = tokio::spawn(async move {
-            shutdown_writer.shutdown_background_tasks().await
-        });
+        let shutdown =
+            tokio::spawn(async move { shutdown_writer.shutdown_background_tasks().await });
 
         while !writer.blocking_operations.is_closed() {
             tokio::task::yield_now().await;
