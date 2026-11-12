@@ -22,7 +22,6 @@ pub struct DepthUpdateWs {
     pub bids: Vec<[String; 2]>, // [[price, quantity]]
     #[serde(rename = "a")]
     pub asks: Vec<[String; 2]>, // [[price, quantity]]
-
 }
 
 /// CSV format for depth updates
