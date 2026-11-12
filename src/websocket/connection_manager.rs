@@ -635,7 +635,11 @@ impl WebSocketManager {
                 .iter()
                 .any(|symbol| symbol.eq_ignore_ascii_case("btcusdt"));
         if invalidates_btc {
-            if let Some(buffer) = self.symbol_buffers.get("btcusdt") {
+            let btc_buffer = self
+                .symbol_buffers
+                .get("btcusdt")
+                .map(|entry| entry.value().clone());
+            if let Some(buffer) = btc_buffer {
                 buffer.lock().await.clear();
             }
             self.btc_orderbook_publisher.mark_broken();
