@@ -17,7 +17,7 @@ use tokio::signal::unix::{signal as unix_signal, SignalKind};
 use tokio::sync::{mpsc, Notify};
 
 use binance_futures_collector::{
-    collectors::{OrderbookManager, RestCollector, SymbolDiscovery, SymbolSetTracker},
+    collectors::{orderbook_v1::SnapshotPublisher, OrderbookManager, RestCollector, SymbolDiscovery, SymbolSetTracker},
     rest::{ProxyManager, RestClient},
     utils::{CsvWriter, GapRegistry, StatsExporter},
     websocket::{MessageHandler, WebSocketManager},
@@ -275,7 +275,13 @@ async fn main() -> Result<()> {
 
     // Initialize WebSocket manager FIRST (must buffer messages before snapshots)
     // Use full symbol list (BTCUSDT filtered at message handler level)
-    let ws_manager = Arc::new(WebSocketManager::new(config.clone(), message_tx, &symbols));
+    let btc_orderbook_publisher = Arc::new(SnapshotPublisher::new());
+    let ws_manager = Arc::new(WebSocketManager::new(
+        config.clone(),
+        message_tx,
+        &symbols,
+        btc_orderbook_publisher.clone(),
+    ));
 
     // Symbols confirmed delisted by periodic discovery (absent from two
     // consecutive exchangeInfo results). Discovery writes it; the order-book
