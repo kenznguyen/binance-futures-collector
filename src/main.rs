@@ -345,7 +345,7 @@ async fn main() -> Result<()> {
         new_listings.clone(),
         stats_dir.clone(),
     ));
-    stats_exporter.clone().start().await;
+    let stats_exporter_join = stats_exporter.clone().start().await?;
     info!(
         "Stats exporter started (writing to {})",
         stats_dir.join("stats.json").display()
@@ -360,7 +360,7 @@ async fn main() -> Result<()> {
     let orderbook_manager_clone = orderbook_manager.clone();
     let message_handler_clone = message_handler.clone();
     let proxy_manager_clone = proxy_manager.clone();
-    tokio::spawn(async move {
+    let stats_report_join = tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
         loop {
             interval.tick().await;
@@ -406,7 +406,7 @@ async fn main() -> Result<()> {
 
     // Periodic symbol discovery: detect newly listed and delisted symbols.
     // Skipped when a fixed [collection].symbols whitelist is configured.
-    if !using_whitelist {
+    let symbol_discovery_join = if !using_whitelist {
         let symbol_discovery_clone = symbol_discovery;
         let discovery_interval_minutes = config.collection.symbol_discovery_interval_minutes;
         let delisted_set = delisted.clone();
@@ -490,8 +490,10 @@ async fn main() -> Result<()> {
                     }
                 }
             }
-        });
-    }
+        }))
+    } else {
+        None
+    };
 
     tokio::select! {
         _ = signal::ctrl_c() => {
@@ -506,6 +508,28 @@ async fn main() -> Result<()> {
     }
 
     info!("Shutdown signal received - Beginning graceful shutdown");
+
+    info!("  • Stopping symbol discovery and stats tasks...");
+    if let Some(task) = symbol_discovery_join {
+        task.abort();
+        if let Err(error) = task.await {
+            if !error.is_cancelled() {
+                return Err(anyhow::anyhow!("symbol discovery task failed: {error}"));
+            }
+        }
+    }
+    stats_report_join.abort();
+    if let Err(error) = stats_report_join.await {
+        if !error.is_cancelled() {
+            return Err(anyhow::anyhow!("stats report task failed: {error}"));
+        }
+    }
+    stats_exporter_join.abort();
+    if let Err(error) = stats_exporter_join.await {
+        if !error.is_cancelled() {
+            return Err(anyhow::anyhow!("stats exporter task failed: {error}"));
+        }
+    }
 
     // Stop ingest, then tell the handler to drain what's already queued and join
     // it, so in-flight updates are written before we flush, a deterministic
