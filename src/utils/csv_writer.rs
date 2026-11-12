@@ -182,6 +182,7 @@ impl BlockingOperationTracker {
         })
     }
 
+    #[cfg(test)]
     fn is_closed(&self) -> bool {
         self.state.lock().closed
     }
