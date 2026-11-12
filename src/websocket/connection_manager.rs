@@ -160,21 +160,7 @@ impl WebSocketManager {
             std::mem::take(&mut *tasks)
         };
 
-        let mut join_errors = Vec::new();
-        for task in tasks {
-            if let Err(error) = task.await {
-                if !error.is_cancelled() {
-                    join_errors.push(error.to_string());
-                }
-            }
-        }
-        if !join_errors.is_empty() {
-            anyhow::bail!(
-                "one or more websocket tasks failed to join: {}",
-                join_errors.join("; ")
-            );
-        }
-        Ok(())
+        join_websocket_tasks(tasks).await
     }
 
     /// Start WebSocket connections for a specific batch (COORDINATED STARTUP)
@@ -861,6 +847,25 @@ pub struct ConnectionStats {
     pub reconnect_attempts: u32,
 }
 
+async fn join_websocket_tasks(tasks: Vec<JoinHandle<()>>) -> Result<()> {
+    let mut join_errors = Vec::new();
+    for task in tasks {
+        if let Err(error) = task.await {
+            if !error.is_cancelled() {
+                join_errors.push(error.to_string());
+            }
+        }
+    }
+
+    if !join_errors.is_empty() {
+        anyhow::bail!(
+            "one or more websocket tasks failed to join: {}",
+            join_errors.join("; ")
+        );
+    }
+    Ok(())
+}
+
 impl Clone for WebSocketManager {
     fn clone(&self) -> Self {
         Self {
@@ -909,5 +914,14 @@ mod tests {
         // keep 2^attempt from overflowing u32 — this must not panic and stays capped.
         assert_eq!(backoff_for(1_000_000, init, max), max);
         assert_eq!(backoff_for(u32::MAX, init, max), max);
+    }    #[tokio::test]
+    async fn websocket_shutdown_joins_every_connection_task() {
+        let task = tokio::spawn(async {
+            std::future::pending::<()>().await;
+        });
+
+        join_websocket_tasks(vec![task]).await.unwrap();
     }
+
+
 }
