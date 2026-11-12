@@ -635,6 +635,7 @@ impl WebSocketManager {
                 .iter()
                 .any(|symbol| symbol.eq_ignore_ascii_case("btcusdt"));
         if invalidates_btc {
+            self.btc_orderbook_publisher.mark_broken();
             let btc_buffer = self
                 .symbol_buffers
                 .get("btcusdt")
@@ -642,7 +643,6 @@ impl WebSocketManager {
             if let Some(buffer) = btc_buffer {
                 buffer.lock().await.clear();
             }
-            self.btc_orderbook_publisher.mark_broken();
         }
 
         self.connections.remove(&batch_id);
