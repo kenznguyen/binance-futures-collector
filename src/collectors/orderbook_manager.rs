@@ -755,12 +755,12 @@ impl OrderbookManager {
         let anchor = self
             .btc_v1_rest_snapshot
             .get(symbol)
-            .map(|snapshot| snapshot.clone())
+            .map(|snapshot| snapshot.value().clone())
             .context("BTCUSDT V1 REST anchor is unavailable")?;
         let updates = self
             .btc_v1_buffered_updates
             .get(symbol)
-            .map(|buffer| buffer.clone())
+            .map(|buffer| buffer.value().clone())
             .unwrap_or_default();
 
         if updates.is_empty()
@@ -1312,18 +1312,27 @@ impl OrderbookManager {
                                     warn!("[BTCUSDT] V1 publish fenced: {error:#}");
                                     break;
                                 }
-                                if let Some(mut book) = self.orderbooks.get_mut(&symbol) {
-                                    if let Err(error) = Self::apply_update_to_book(&mut book, update) {
-                                        warn!("[BTCUSDT] V1 live book update rejected: {error:#}");
-                                        self.trigger_resnapshot("btcusdt", "v1_live_apply_rejected")
-                                            .await
-                                            .ok();
-                                        break;
+                                let legacy_apply_error = {
+                                    if let Some(mut book) = self.orderbooks.get_mut(&symbol) {
+                                        match Self::apply_update_to_book(&mut book, update) {
+                                            Ok(()) => {
+                                                Self::trim_book_to_depth(
+                                                    self.config.orderbook.depth_limit as usize,
+                                                    &mut book,
+                                                );
+                                                None
+                                            }
+                                            Err(error) => Some(error.to_string()),
+                                        }
+                                    } else {
+                                        None
                                     }
-                                    Self::trim_book_to_depth(
-                                        self.config.orderbook.depth_limit as usize,
-                                        &mut book,
-                                    );
+                                };
+                                if let Some(error) = legacy_apply_error {
+                                    warn!("[BTCUSDT] V1 legacy mirror update rejected: {error}");
+                                    self.trigger_resnapshot("btcusdt", "v1_live_apply_rejected")
+                                        .await?;
+                                    break;
                                 }
                             }
                             Err(error) => {
