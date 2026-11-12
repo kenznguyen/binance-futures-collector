@@ -1485,14 +1485,22 @@ mod tests {
 
         OrderbookManager::apply_update_to_book(&mut book, &insert).unwrap();
 
-        assert_eq!(book.bids.len(), 2, "distinct decimal prices must remain distinct");
+        assert_eq!(
+            book.bids.len(),
+            2,
+            "distinct decimal prices must remain distinct"
+        );
         assert_eq!(book.raw_bids.len(), 2);
 
         let mut delete = update(6, &[], &[]);
         delete.bids = vec![["1.00000000000000001".to_string(), "0".to_string()]];
         OrderbookManager::apply_update_to_book(&mut book, &delete).unwrap();
 
-        assert_eq!(book.bids.len(), 1, "deleting one exact price must not delete its neighbor");
+        assert_eq!(
+            book.bids.len(),
+            1,
+            "deleting one exact price must not delete its neighbor"
+        );
         assert_eq!(book.raw_bids.len(), 1);
         assert!(book.raw_bids.contains_key("1.00000000000000002"));
     }
