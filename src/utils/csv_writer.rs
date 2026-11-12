@@ -1423,11 +1423,7 @@ mod flush_all_error_tests {
 
     #[test]
     fn flush_results_propagates_an_error_after_checking_all_buffers() {
-        let result = collect_flush_results(vec![
-            Ok(()),
-            Err(anyhow::anyhow!("disk full")),
-            Ok(()),
-        ]);
+        let result = collect_flush_results(vec![Ok(()), Err(anyhow::anyhow!("disk full")), Ok(())]);
         assert!(result.is_err());
         assert!(format!("{:#}", result.unwrap_err()).contains("disk full"));
     }
