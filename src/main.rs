@@ -582,4 +582,24 @@ mod tests {
         // The shipped example config must load (config.toml is user-local/gitignored).
         assert!(Config::from_file("config.example.toml").is_ok());
     }
+
+    #[tokio::test]
+    async fn handler_drain_timeout_is_an_error_not_permission_to_flush() {
+        let handler = tokio::spawn(async {
+            std::future::pending::<()>().await;
+        });
+
+        let result = await_handler_drain(handler, std::time::Duration::from_millis(10)).await;
+
+        assert!(result.is_err(), "a handler that did not drain must block final persistence");
+    }
+
+    #[tokio::test]
+    async fn handler_drain_completes_successfully_before_final_persistence() {
+        let handler = tokio::spawn(async {});
+
+        await_handler_drain(handler, std::time::Duration::from_secs(1))
+            .await
+            .unwrap();
+    }
 }
