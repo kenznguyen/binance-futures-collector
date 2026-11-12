@@ -560,7 +560,7 @@ async fn main() -> Result<()> {
     csv_writer.shutdown_background_tasks().await?;
 
     info!("  • Flushing CSV buffers...");
-    csv_writer.flush_all().await?;
+    csv_writer.flush_all_after_shutdown().await?;
 
     info!("  • Stopping gap registry saver and saving remaining events...");
     gap_registry.shutdown().await?;
