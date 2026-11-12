@@ -1014,8 +1014,7 @@ impl CsvWriter {
         let writer_cleanup = self.clone();
         let mut shutdown_rx = self.shutdown_tx.subscribe();
         let cleanup_task = tokio::spawn(async move {
-            let mut cleanup_interval =
-                tokio::time::interval(tokio::time::Duration::from_secs(120));
+            let mut cleanup_interval = tokio::time::interval(tokio::time::Duration::from_secs(120));
 
             loop {
                 tokio::select! {
