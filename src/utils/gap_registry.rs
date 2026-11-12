@@ -163,15 +163,55 @@ impl GapRegistry {
 
         info!("Saving gap data for {} dirty symbols...", dirty_copy.len());
 
-        for symbol in &dirty_copy {
-            if let Err(e) = self.save_to_disk(symbol).await {
-                error!("Failed to save gap data for {}: {}", symbol, e);
-            }
+        let results = dirty_copy
+            .iter()
+            .map(|symbol| async move { (symbol.clone(), self.save_to_disk(symbol).await) });
+
+        let mut save_results = Vec::with_capacity(dirty_copy.len());
+        for result in results {
+            save_results.push(result.await);
+        }
+
+        let (failed_symbols, error) = collect_failed_gap_saves(save_results);
+        if !failed_symbols.is_empty() {
+            // A failed write must remain dirty so a later periodic/final save can retry it.
+            let mut dirty = self.dirty_symbols.lock().await;
+            dirty.extend(failed_symbols);
+        }
+
+        if let Some(error) = error {
+            return Err(error);
         }
 
         info!("Finished saving dirty gap data");
         Ok(())
     }
+}
+
+fn collect_failed_gap_saves(
+    results: impl IntoIterator<Item = (String, Result<()>)>,
+) -> (Vec<String>, Option<anyhow::Error>) {
+    let mut failed_symbols = Vec::new();
+    let mut errors = Vec::new();
+
+    for (symbol, result) in results {
+        if let Err(error) = result {
+            failed_symbols.push(symbol.clone());
+            errors.push(format!("{symbol}: {error:#}"));
+        }
+    }
+
+    let error = if errors.is_empty() {
+        None
+    } else {
+        Some(anyhow::anyhow!(
+            "failed to persist gap data for {} symbol(s): {}",
+            errors.len(),
+            errors.join("; ")
+        ))
+    };
+
+    (failed_symbols, error)
 }
 
 impl Clone for GapRegistry {
