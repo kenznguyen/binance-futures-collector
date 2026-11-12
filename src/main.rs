@@ -411,7 +411,7 @@ async fn main() -> Result<()> {
         let discovery_interval_minutes = config.collection.symbol_discovery_interval_minutes;
         let delisted_set = delisted.clone();
         let new_listings_reg = new_listings.clone();
-        tokio::spawn(async move {
+        Some(tokio::spawn(async move {
             let mut tracker = SymbolSetTracker::new(symbols.iter().cloned());
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(
                 discovery_interval_minutes * 60,
@@ -490,7 +490,7 @@ async fn main() -> Result<()> {
                     }
                 }
             }
-        })
+        }))
     } else {
         None
     };
