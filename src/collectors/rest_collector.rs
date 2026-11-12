@@ -657,8 +657,7 @@ impl RestCollector {
                 let key = format!("index_price_klines:{}", symbol);
                 let closed = klines.len().saturating_sub(1);
                 for kline_data in klines.iter().take(closed) {
-                    let Some((timestamp, open, high, low, close)) =
-                        extract_rest_kline(kline_data)
+                    let Some((timestamp, open, high, low, close)) = extract_rest_kline(kline_data)
                     else {
                         warn!("Skipping malformed index price kline for {}", symbol);
                         continue;
@@ -852,8 +851,7 @@ impl RestCollector {
                 let key = format!("premium_index_klines:{}", symbol);
                 let closed = klines.len().saturating_sub(1);
                 for kline_data in klines.iter().take(closed) {
-                    let Some((timestamp, open, high, low, close)) =
-                        extract_rest_kline(kline_data)
+                    let Some((timestamp, open, high, low, close)) = extract_rest_kline(kline_data)
                     else {
                         warn!("Skipping malformed premium index kline for {}", symbol);
                         continue;
@@ -935,4 +933,3 @@ mod rest_decimal_tests {
         .is_none());
     }
 }
-
