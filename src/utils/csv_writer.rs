@@ -1402,3 +1402,29 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod flush_all_error_tests {
+    use super::collect_flush_results;
+
+    #[test]
+    fn flush_results_propagates_an_error_after_checking_all_buffers() {
+        let result = collect_flush_results(vec![
+            Ok(()),
+            Err(anyhow::anyhow!("disk full")),
+            Ok(()),
+        ]);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("disk full"));
+    }
+
+    #[test]
+    fn flush_results_succeeds_when_every_buffer_flushes() {
+        assert!(collect_flush_results(vec![Ok(()), Ok(())]).is_ok());
+    }
+
+    #[test]
+    fn flush_results_succeeds_for_no_buffers() {
+        assert!(collect_flush_results(Vec::<anyhow::Result<()>>::new()).is_ok());
+    }
+}
