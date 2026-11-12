@@ -525,6 +525,9 @@ async fn main() -> Result<()> {
     info!("  • Stopping REST collectors...");
     rest_collector.shutdown().await;
 
+    info!("  • Stopping CSV background tasks...");
+    csv_writer.shutdown_background_tasks().await?;
+
     info!("  • Flushing CSV buffers...");
     csv_writer.flush_all().await?;
 
