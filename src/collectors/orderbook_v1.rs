@@ -199,6 +199,24 @@ fn validate_snapshot_order(raw_levels: &[[String; 2]], side: &str, descending: b
     Ok(())
 }
 
+fn trim_levels(levels: &mut Levels, depth_limit: usize, highest_first: bool) {
+    if levels.len() <= depth_limit {
+        return;
+    }
+    let mut keys: Vec<String> = levels.keys().cloned().collect();
+    keys.sort_by(|left, right| {
+        let order = compare_normalized_decimals(left, right);
+        if highest_first {
+            order.reverse()
+        } else {
+            order
+        }
+    });
+    for key in keys.into_iter().skip(depth_limit) {
+        levels.remove(&key);
+    }
+}
+
 fn sorted_levels(levels: Levels, descending: bool) -> Vec<DepthLevel> {
     let mut result: Vec<(String, DepthLevel)> = levels.into_iter().collect();
     result.sort_by(|left, right| {
@@ -328,6 +346,7 @@ pub fn build_snapshot(
 pub fn apply_live_diff(
     current: &OrderbookSnapshotV1,
     update: &DepthUpdateWs,
+    depth_limit: usize,
     observed_at_ms: i64,
     decision_time_ms: i64,
 ) -> Result<OrderbookSnapshotV1> {
@@ -357,7 +376,9 @@ pub fn apply_live_diff(
 
     insert_levels(&mut bids, &update.bids, "bid", true)?;
     insert_levels(&mut asks, &update.asks, "ask", true)?;
-    if bids.len() < REQUIRED_DEPTH || asks.len() < REQUIRED_DEPTH {
+    trim_levels(&mut bids, depth_limit, true);
+    trim_levels(&mut asks, depth_limit, false);
+    if depth_limit < REQUIRED_DEPTH || bids.len() < REQUIRED_DEPTH || asks.len() < REQUIRED_DEPTH {
         bail!("live candidate book does not meet the minimum depth on both sides");
     }
 
@@ -569,14 +590,14 @@ mod tests {
         let current = build_snapshot(&snapshot(), &valid_updates(), 4, NOW - 10, NOW).unwrap();
         let mut next_event = update(104, 104, 103, NOW - 20);
         next_event.bids.push(["9999".into(), "3".into()]);
-        let next = apply_live_diff(&current, &next_event, NOW - 5, NOW).unwrap();
+        let next = apply_live_diff(&current, &next_event, 20, NOW - 5, NOW).unwrap();
         assert_eq!(current.last_applied_u, 103);
         assert_eq!(next.last_applied_u, 104);
         assert_eq!(next.decision_watermark, 104);
         assert_ne!(current.snapshot_id, next.snapshot_id);
 
         next_event.prev_update_id = 102;
-        assert!(apply_live_diff(&current, &next_event, NOW - 5, NOW).is_err());
+        assert!(apply_live_diff(&current, &next_event, 20, NOW - 5, NOW).is_err());
     }
 
     #[test]
