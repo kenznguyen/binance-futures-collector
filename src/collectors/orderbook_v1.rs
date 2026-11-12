@@ -4,7 +4,7 @@ use std::sync::{Arc, RwLock};
 
 use crate::models::{DepthSnapshotRest, DepthUpdateWs};
 use crate::utils::{
-    compare_normalized_decimals, normalize_plain_decimal, validate_orderbook_level,
+    compare_normalized_decimals, validate_orderbook_level,
 };
 
 pub const CONTRACT_VERSION: &str = "T1_BTCUSDT_ORDERBOOK_V1";
@@ -97,6 +97,7 @@ impl SnapshotPublisher {
             .inner
             .write()
             .expect("snapshot publisher lock poisoned");
+        inner.generation = inner.generation.saturating_add(1);
         inner.snapshot = None;
         inner.state = OrderbookV1State::Broken;
     }
@@ -106,6 +107,7 @@ impl SnapshotPublisher {
             .inner
             .write()
             .expect("snapshot publisher lock poisoned");
+        inner.generation = inner.generation.saturating_add(1);
         inner.snapshot = None;
         inner.state = OrderbookV1State::Stopped;
     }
