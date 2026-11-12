@@ -824,7 +824,11 @@ impl OrderbookManager {
         let mut keys: Vec<String> = levels.keys().cloned().collect();
         keys.sort_by(|left, right| {
             let order = compare_normalized_decimals(left, right);
-            if highest_first { order.reverse() } else { order }
+            if highest_first {
+                order.reverse()
+            } else {
+                order
+            }
         });
         for key in keys.into_iter().skip(depth) {
             levels.remove(&key);
