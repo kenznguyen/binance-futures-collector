@@ -13,9 +13,7 @@ use crate::utils::{multiply_decimal_strings, time_utils, CsvWriter};
 
 /// Extract the timestamp and four source decimal strings from a REST kline array.
 /// Invalid/missing fields are rejected instead of being fabricated as numeric zero.
-fn extract_rest_kline(
-    data: &[serde_json::Value],
-) -> Option<(i64, &str, &str, &str, &str)> {
+fn extract_rest_kline(data: &[serde_json::Value]) -> Option<(i64, &str, &str, &str, &str)> {
     if data.len() < 5 {
         return None;
     }
@@ -560,8 +558,7 @@ impl RestCollector {
                 // Skip the final (in-progress) bucket; write each newly-closed one.
                 let closed = klines.len().saturating_sub(1);
                 for kline_data in klines.iter().take(closed) {
-                    let Some((timestamp, open, high, low, close)) =
-                        extract_rest_kline(kline_data)
+                    let Some((timestamp, open, high, low, close)) = extract_rest_kline(kline_data)
                     else {
                         warn!("Skipping malformed mark price kline for {}", symbol);
                         continue;
@@ -924,12 +921,18 @@ mod rest_decimal_tests {
     #[test]
     fn rest_kline_extract_rejects_missing_or_wrongly_typed_fields() {
         assert!(extract_rest_kline(&[json!(1), json!("1"), json!("2")]).is_none());
+        assert!(
+            extract_rest_kline(&[json!(1), json!(1.25), json!("2"), json!("1"), json!("1.5")])
+                .is_none()
+        );
         assert!(extract_rest_kline(&[
-            json!(1), json!(1.25), json!("2"), json!("1"), json!("1.5")
-        ]).is_none());
-        assert!(extract_rest_kline(&[
-            json!("bad-ts"), json!("1"), json!("2"), json!("1"), json!("1.5")
-        ]).is_none());
+            json!("bad-ts"),
+            json!("1"),
+            json!("2"),
+            json!("1"),
+            json!("1.5")
+        ])
+        .is_none());
     }
 }
 
