@@ -685,6 +685,19 @@ mod tests {
     }
 
     #[test]
+    fn publisher_read_rechecks_freshness_at_decision_time() {
+        let publisher = SnapshotPublisher::new();
+        let generation = publisher.begin_connection_generation();
+        publisher.note_reanchor_attempt().unwrap();
+        let candidate =
+            build_snapshot(&snapshot(), &valid_updates(), generation, NOW - 10, NOW).unwrap();
+        publisher.publish_if_current(candidate).unwrap();
+
+        assert!(publisher.read_fresh(NOW).is_ok());
+        assert!(publisher.read_fresh(NOW + MAX_BOOK_AGE_MS).is_err());
+    }
+
+    #[test]
     fn rest_anchor_without_exchange_timestamped_bridge_is_not_publishable() {
         assert!(build_snapshot(&snapshot(), &[], 1, NOW, NOW).is_err());
     }
