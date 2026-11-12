@@ -163,13 +163,9 @@ impl GapRegistry {
 
         info!("Saving gap data for {} dirty symbols...", dirty_copy.len());
 
-        let results = dirty_copy
-            .iter()
-            .map(|symbol| async move { (symbol.clone(), self.save_to_disk(symbol).await) });
-
         let mut save_results = Vec::with_capacity(dirty_copy.len());
-        for result in results {
-            save_results.push(result.await);
+        for symbol in &dirty_copy {
+            save_results.push((symbol.clone(), self.save_to_disk(symbol).await));
         }
 
         let (failed_symbols, error) = collect_failed_gap_saves(save_results);
