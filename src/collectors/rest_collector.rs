@@ -68,6 +68,7 @@ impl RestTaskGroup {
         }
     }
 
+    #[cfg(test)]
     async fn len(&self) -> usize {
         self.handles.lock().await.len()
     }
@@ -988,10 +989,12 @@ mod rest_task_group_tests {
     async fn shutdown_aborts_and_joins_every_registered_task() {
         let tasks = RestTaskGroup::default();
         let (started_tx, started_rx) = oneshot::channel();
-        tasks.spawn(async move {
-            let _ = started_tx.send(());
-            std::future::pending::<()>().await;
-        }).await;
+        tasks
+            .spawn(async move {
+                let _ = started_tx.send(());
+                std::future::pending::<()>().await;
+            })
+            .await;
 
         tokio::time::timeout(Duration::from_secs(1), started_rx)
             .await
@@ -1006,10 +1009,12 @@ mod rest_task_group_tests {
     async fn shutdown_waits_for_task_cancellation_to_finish() {
         let tasks = RestTaskGroup::default();
         let (started_tx, started_rx) = oneshot::channel();
-        tasks.spawn(async move {
-            let _ = started_tx.send(());
-            std::future::pending::<()>().await;
-        }).await;
+        tasks
+            .spawn(async move {
+                let _ = started_tx.send(());
+                std::future::pending::<()>().await;
+            })
+            .await;
 
         started_rx.await.expect("task should start");
         tasks.shutdown().await;
