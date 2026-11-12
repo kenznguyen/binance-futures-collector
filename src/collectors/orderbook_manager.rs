@@ -93,8 +93,9 @@ fn find_bridge(snapshot_u: u64, diffs: &[DepthUpdateWs]) -> Option<(usize, Bridg
 pub struct Orderbook {
     pub symbol: String,
     pub last_update_id: u64,
-    pub bids: HashMap<u64, f64>, // Computational view; raw decimal levels below remain authoritative for CSV.
-    pub asks: HashMap<u64, f64>,
+    // Normalized exact decimal price keys; quantities remain f64 for calculations.
+    pub bids: HashMap<String, f64>,
+    pub asks: HashMap<String, f64>,
     pub raw_bids: HashMap<String, (String, String)>,
     pub raw_asks: HashMap<String, (String, String)>,
     pub last_processed_time: Instant,
@@ -542,11 +543,10 @@ impl OrderbookManager {
         let mut bids = HashMap::new();
         let mut raw_bids = HashMap::new();
         for [price_str, qty_str] in &snapshot.bids {
-            let price: f64 = price_str.parse()?;
             let qty: f64 = qty_str.parse()?;
             let price_key = normalize_plain_decimal(price_str)?;
             let quantity_key = normalize_plain_decimal(qty_str)?;
-            bids.insert(price.to_bits(), qty);
+            bids.insert(price_key.clone(), qty);
             if quantity_key != "0" {
                 raw_bids.insert(price_key, (price_str.clone(), qty_str.clone()));
             }
@@ -555,11 +555,10 @@ impl OrderbookManager {
         let mut asks = HashMap::new();
         let mut raw_asks = HashMap::new();
         for [price_str, qty_str] in &snapshot.asks {
-            let price: f64 = price_str.parse()?;
             let qty: f64 = qty_str.parse()?;
             let price_key = normalize_plain_decimal(price_str)?;
             let quantity_key = normalize_plain_decimal(qty_str)?;
-            asks.insert(price.to_bits(), qty);
+            asks.insert(price_key.clone(), qty);
             if quantity_key != "0" {
                 raw_asks.insert(price_key, (price_str.clone(), qty_str.clone()));
             }
@@ -767,30 +766,28 @@ impl OrderbookManager {
     /// verbatim for snapshots; f64 values are only an internal computational view.
     fn apply_update_to_book(book: &mut Orderbook, update: &DepthUpdateWs) -> Result<()> {
         for [price_str, quantity_str] in &update.bids {
-            let price: f64 = price_str.parse()?;
             let quantity: f64 = quantity_str.parse()?;
             let price_key = normalize_plain_decimal(price_str)?;
             let quantity_key = normalize_plain_decimal(quantity_str)?;
             if quantity_key == "0" {
-                book.bids.remove(&price.to_bits());
+                book.bids.remove(&price_key);
                 book.raw_bids.remove(&price_key);
             } else {
-                book.bids.insert(price.to_bits(), quantity);
+                book.bids.insert(price_key.clone(), quantity);
                 book.raw_bids
                     .insert(price_key, (price_str.clone(), quantity_str.clone()));
             }
         }
 
         for [price_str, quantity_str] in &update.asks {
-            let price: f64 = price_str.parse()?;
             let quantity: f64 = quantity_str.parse()?;
             let price_key = normalize_plain_decimal(price_str)?;
             let quantity_key = normalize_plain_decimal(quantity_str)?;
             if quantity_key == "0" {
-                book.asks.remove(&price.to_bits());
+                book.asks.remove(&price_key);
                 book.raw_asks.remove(&price_key);
             } else {
-                book.asks.insert(price.to_bits(), quantity);
+                book.asks.insert(price_key.clone(), quantity);
                 book.raw_asks
                     .insert(price_key, (price_str.clone(), quantity_str.clone()));
             }
@@ -806,39 +803,32 @@ impl OrderbookManager {
     /// Memory impact: 512 symbols × 10k levels × 32 bytes = ~163MB (plus HashMap overhead)
     /// After trim: 512 symbols × 100 levels × 32 bytes = ~1.6MB (99% reduction)
     fn trim_book_to_depth(depth: usize, book: &mut Orderbook) {
-        // Trim bids: keep only top N (highest prices)
-        if book.bids.len() > depth {
-            // Convert to sorted vec (descending by price)
-            let mut bid_vec: Vec<(u64, f64)> = book.bids.iter().map(|(k, v)| (*k, *v)).collect();
+        // Trim bids by exact decimal price, keeping the highest N levels.
+        Self::trim_computational_levels(depth, &mut book.bids, true);
 
-            bid_vec.sort_by(|a, b| {
-                let price_a = f64::from_bits(a.0);
-                let price_b = f64::from_bits(b.0);
-                price_b.total_cmp(&price_a)
-            });
-
-            book.bids.clear();
-            for (price_bits, qty) in bid_vec.into_iter().take(depth) {
-                book.bids.insert(price_bits, qty);
-            }
-        }
-
-        // Trim asks: keep only top N (lowest prices)
-        if book.asks.len() > depth {
-            let mut ask_vec: Vec<(u64, f64)> = book.asks.iter().map(|(k, v)| (*k, *v)).collect();
-            ask_vec.sort_by(|a, b| {
-                let price_a = f64::from_bits(a.0);
-                let price_b = f64::from_bits(b.0);
-                price_a.total_cmp(&price_b)
-            });
-            book.asks.clear();
-            for (price_bits, qty) in ask_vec.into_iter().take(depth) {
-                book.asks.insert(price_bits, qty);
-            }
-        }
+        // Trim asks by exact decimal price, keeping the lowest N levels.
+        Self::trim_computational_levels(depth, &mut book.asks, false);
 
         Self::trim_raw_levels(depth, &mut book.raw_bids, true);
         Self::trim_raw_levels(depth, &mut book.raw_asks, false);
+    }
+
+    fn trim_computational_levels(
+        depth: usize,
+        levels: &mut HashMap<String, f64>,
+        highest_first: bool,
+    ) {
+        if levels.len() <= depth {
+            return;
+        }
+        let mut keys: Vec<String> = levels.keys().cloned().collect();
+        keys.sort_by(|left, right| {
+            let order = compare_normalized_decimals(left, right);
+            if highest_first { order.reverse() } else { order }
+        });
+        for key in keys.into_iter().skip(depth) {
+            levels.remove(&key);
+        }
     }
 
     fn trim_raw_levels(
@@ -1323,27 +1313,27 @@ mod tests {
         assert_eq!(find_bridge(100, &diffs), None);
     }
 
-    fn best_bid(book: &Orderbook) -> Option<f64> {
+    fn best_bid(book: &Orderbook) -> Option<String> {
         book.bids
             .keys()
-            .map(|b| f64::from_bits(*b))
-            .max_by(|a, b| a.total_cmp(b))
+            .max_by(|a, b| compare_normalized_decimals(a, b))
+            .cloned()
     }
 
-    fn best_ask(book: &Orderbook) -> Option<f64> {
+    fn best_ask(book: &Orderbook) -> Option<String> {
         book.asks
             .keys()
-            .map(|b| f64::from_bits(*b))
-            .min_by(|a, b| a.total_cmp(b))
+            .min_by(|a, b| compare_normalized_decimals(a, b))
+            .cloned()
     }
 
     fn snapshot_book(last_update_id: u64) -> Orderbook {
         let mut book = empty_book();
         book.last_update_id = last_update_id;
-        book.bids.insert(100.0f64.to_bits(), 1.0);
-        book.bids.insert(99.5f64.to_bits(), 2.0);
-        book.asks.insert(100.5f64.to_bits(), 1.5);
-        book.asks.insert(101.0f64.to_bits(), 3.0);
+        book.bids.insert("100".to_string(), 1.0);
+        book.bids.insert("99.5".to_string(), 2.0);
+        book.asks.insert("100.5".to_string(), 1.5);
+        book.asks.insert("101".to_string(), 3.0);
         book.raw_bids
             .insert("100".to_string(), ("100.0".to_string(), "1.0".to_string()));
         book.raw_bids
@@ -1378,9 +1368,9 @@ mod tests {
         // Independently reconstruct the expected state from the REST snapshot
         // plus the accepted absolute-quantity diff.
         let mut expected = snapshot_book(100);
-        expected.bids.insert(100.0f64.to_bits(), 0.7);
-        expected.bids.insert(98.0f64.to_bits(), 4.0);
-        expected.asks.remove(&100.5f64.to_bits());
+        expected.bids.insert("100".to_string(), 0.7);
+        expected.bids.insert("98".to_string(), 4.0);
+        expected.asks.remove("100.5");
         expected.last_update_id = 105;
 
         assert_eq!(applied, Some(1));
@@ -1420,13 +1410,13 @@ mod tests {
         reconnect_diff.prev_update_id = 120;
 
         OrderbookManager::apply_update_to_book(&mut book, &reconnect_diff).unwrap();
-        assert_eq!(book.bids[&100.0f64.to_bits()], 0.4);
-        assert_eq!(book.asks[&100.5f64.to_bits()], 2.0);
+        assert_eq!(book.bids["100"], 0.4);
+        assert_eq!(book.asks["100.5"], 2.0);
 
         // A quiet level changed during the outage is absent from this diff and
         // therefore remains stale in memory until a later absolute update or
         // snapshot reconstruction.
-        assert_eq!(book.bids[&99.5f64.to_bits()], 2.0);
+        assert_eq!(book.bids["99.5"], 2.0);
         assert_eq!(reconnect_diff.prev_update_id, 120);
         assert_eq!(book.last_update_id, 125);
     }
@@ -1445,14 +1435,14 @@ mod tests {
         assert_eq!(book.bids.len(), 2);
         assert_eq!(book.asks.len(), 2);
         assert_eq!(book.last_update_id, 10);
-        assert_eq!(best_bid(&book), Some(100.0));
-        assert_eq!(best_ask(&book), Some(100.5));
+        assert_eq!(best_bid(&book).as_deref(), Some("100"));
+        assert_eq!(best_ask(&book).as_deref(), Some("100.5"));
 
         // Replace a quantity and delete a level with qty 0.
         let u2 = update(11, &[(100.0, 0.7), (99.5, 0.0)], &[]);
         OrderbookManager::apply_update_to_book(&mut book, &u2).unwrap();
         assert_eq!(book.bids.len(), 1);
-        assert_eq!(book.bids[&100.0f64.to_bits()], 0.7);
+        assert_eq!(book.bids["100"], 0.7);
         assert_eq!(book.last_update_id, 11);
     }
 
@@ -1518,27 +1508,30 @@ mod tests {
         let mut book = empty_book();
         // 10 bids at 90..99 and 10 asks at 101..110.
         for i in 0..10 {
-            book.bids.insert((90.0 + i as f64).to_bits(), 1.0);
-            book.asks.insert((101.0 + i as f64).to_bits(), 1.0);
+            book.bids.insert((90 + i).to_string(), 1.0);
+            book.asks.insert((101 + i).to_string(), 1.0);
         }
 
         OrderbookManager::trim_book_to_depth(3, &mut book);
 
         // Bids keep the HIGHEST prices, asks the LOWEST, so the touch survives.
-        let mut bids: Vec<f64> = book.bids.keys().map(|b| f64::from_bits(*b)).collect();
-        let mut asks: Vec<f64> = book.asks.keys().map(|b| f64::from_bits(*b)).collect();
-        bids.sort_by(|a, b| a.total_cmp(b));
-        asks.sort_by(|a, b| a.total_cmp(b));
-        assert_eq!(bids, vec![97.0, 98.0, 99.0]);
-        assert_eq!(asks, vec![101.0, 102.0, 103.0]);
-        assert!(best_bid(&book).unwrap() < best_ask(&book).unwrap());
+        let mut bids: Vec<String> = book.bids.keys().cloned().collect();
+        let mut asks: Vec<String> = book.asks.keys().cloned().collect();
+        bids.sort_by(|a, b| compare_normalized_decimals(a, b));
+        asks.sort_by(|a, b| compare_normalized_decimals(a, b));
+        assert_eq!(bids, vec!["97", "98", "99"]);
+        assert_eq!(asks, vec!["101", "102", "103"]);
+        assert_eq!(
+            compare_normalized_decimals(&best_bid(&book).unwrap(), &best_ask(&book).unwrap()),
+            std::cmp::Ordering::Less
+        );
     }
 
     #[test]
     fn trim_is_noop_within_depth() {
         let mut book = empty_book();
-        book.bids.insert(100.0f64.to_bits(), 1.0);
-        book.asks.insert(101.0f64.to_bits(), 1.0);
+        book.bids.insert("100".to_string(), 1.0);
+        book.asks.insert("101".to_string(), 1.0);
         OrderbookManager::trim_book_to_depth(50, &mut book);
         assert_eq!(book.bids.len(), 1);
         assert_eq!(book.asks.len(), 1);
