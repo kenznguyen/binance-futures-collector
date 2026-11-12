@@ -1469,6 +1469,22 @@ mod tests {
     }
 
     #[test]
+    fn computational_orderbook_preserves_exact_quantity_decimal_values() {
+        let mut book = empty_book();
+        let quantity = "1.23456789123456789123456789";
+        let mut insert = update(5, &[], &[]);
+        insert.bids = vec![["100".to_string(), quantity.to_string()]];
+
+        OrderbookManager::apply_update_to_book(&mut book, &insert).unwrap();
+
+        assert_eq!(
+            book.bids.get("100").map(ToString::to_string).as_deref(),
+            Some(quantity),
+            "computational orderbook must not round exchange quantity decimals"
+        );
+    }
+
+    #[test]
     fn distinct_decimal_price_levels_do_not_collide_in_the_computational_book() {
         let mut book = empty_book();
         let mut insert = update(5, &[], &[]);
