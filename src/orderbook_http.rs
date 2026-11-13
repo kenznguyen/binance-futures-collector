@@ -79,11 +79,7 @@ pub async fn serve(
         let token = token.clone();
         tokio::spawn(async move {
             let _permit = permit;
-            let _ = timeout(
-                IO_TIMEOUT,
-                handle_connection(stream, publisher, &token),
-            )
-            .await;
+            let _ = timeout(IO_TIMEOUT, handle_connection(stream, publisher, &token)).await;
         });
     }
 }
@@ -208,8 +204,7 @@ async fn handle_connection(
     }
 
     let expected = format!("Bearer {expected_token}");
-    if !authorization.is_some_and(|value| constant_time_eq(value.as_bytes(), expected.as_bytes()))
-    {
+    if !authorization.is_some_and(|value| constant_time_eq(value.as_bytes(), expected.as_bytes())) {
         return write_response(
             stream,
             401,
