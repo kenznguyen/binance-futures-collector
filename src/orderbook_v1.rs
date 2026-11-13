@@ -479,8 +479,7 @@ pub fn apply_live_diff_classified(
     observed_at_ms: i64,
     decision_time_ms: i64,
 ) -> std::result::Result<OrderbookSnapshotV1, LiveDiffRejection> {
-    validate_update_header(update)
-        .map_err(|error| LiveDiffRejection::Shape(format!("{error:#}")))?;
+    validate_live_update_header(update)?;
 
     if update.prev_update_id != current.last_applied_u
         || update.final_update_id <= current.last_applied_u
@@ -560,6 +559,29 @@ pub fn apply_live_diff_classified(
     next.freshness = "FRESH".to_string();
     next.complete = true;
     Ok(next)
+}
+
+fn validate_live_update_header(
+    update: &DepthUpdateWs,
+) -> std::result::Result<(), LiveDiffRejection> {
+    if update.symbol != "BTCUSDT"
+        || update.event_type != "depthUpdate"
+        || update.first_update_id == 0
+        || update.final_update_id == 0
+        || update.event_time <= 0
+    {
+        return Err(LiveDiffRejection::Shape(
+            "malformed WS depth update header".to_string(),
+        ));
+    }
+    if update.first_update_id > update.final_update_id
+        || update.prev_update_id >= update.final_update_id
+    {
+        return Err(LiveDiffRejection::Sequence(
+            "invalid WS update-ID ordering".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn validate_update_header(update: &DepthUpdateWs) -> Result<()> {
@@ -895,6 +917,12 @@ mod tests {
     fn classified_live_diff_maps_watermark_and_pu_mismatch_to_sequence() {
         let current = build_snapshot(&snapshot(), &valid_updates(), 4, NOW - 10, NOW).unwrap();
         let mut invalid = update(104, 104, 102, NOW - 20);
+        assert!(matches!(
+            apply_live_diff_classified(&current, &invalid, 20, NOW - 5, NOW),
+            Err(LiveDiffRejection::Sequence(_))
+        ));
+
+        invalid = update(105, 104, 103, NOW - 20);
         assert!(matches!(
             apply_live_diff_classified(&current, &invalid, 20, NOW - 5, NOW),
             Err(LiveDiffRejection::Sequence(_))
