@@ -1019,16 +1019,14 @@ mod tests {
         let generation = publisher.begin_connection_generation();
         publisher.note_reanchor_attempt().unwrap();
 
-        let older = build_snapshot(&snapshot(), &valid_updates(), generation, NOW - 10, NOW)
-            .unwrap();
+        let older =
+            build_snapshot(&snapshot(), &valid_updates(), generation, NOW - 10, NOW).unwrap();
         let mut newer_updates = valid_updates();
         newer_updates.push(update(104, 105, 103, NOW - 25));
-        let newer = build_snapshot(&snapshot(), &newer_updates, generation, NOW - 5, NOW)
-            .unwrap();
+        let newer = build_snapshot(&snapshot(), &newer_updates, generation, NOW - 5, NOW).unwrap();
 
         publisher.publish_if_current(newer).unwrap();
         assert!(publisher.publish_if_current(older).is_err());
         assert_eq!(publisher.read().unwrap().last_applied_u, 105);
     }
-
 }
