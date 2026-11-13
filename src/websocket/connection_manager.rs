@@ -65,6 +65,22 @@ pub struct BufferedDepthUpdate {
     pub buffered_at: Instant,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DepthUpdateTiming {
+    pub receive_to_apply: Duration,
+    pub buffer_residence: Duration,
+}
+
+impl BufferedDepthUpdate {
+    /// Derive both delays from monotonic instants only; wall-clock adjustments are irrelevant.
+    pub fn timing_at(&self, applied_at: Instant) -> DepthUpdateTiming {
+        DepthUpdateTiming {
+            receive_to_apply: applied_at.duration_since(self.received_at),
+            buffer_residence: applied_at.duration_since(self.buffered_at),
+        }
+    }
+}
+
 /// WebSocket message types
 #[derive(Debug, Clone)]
 pub enum WebSocketMessage {
@@ -1049,6 +1065,40 @@ mod tests {
         assert_eq!(cloned.received_at, received_at);
         assert_eq!(cloned.buffered_at, buffered_at);
         assert_eq!(cloned.update.final_update_id, 102);
+    }
+
+    #[test]
+    fn monotonic_timing_separates_receive_delay_from_buffer_residence() {
+        let received_at = std::time::Instant::now();
+        let buffered_at = received_at + Duration::from_millis(500);
+        let applied_at = received_at + Duration::from_millis(750);
+        let buffered = BufferedDepthUpdate {
+            update: depth_update_fixture(),
+            received_at,
+            buffered_at,
+        };
+
+        let timing = buffered.timing_at(applied_at);
+
+        assert_eq!(timing.receive_to_apply, Duration::from_millis(750));
+        assert_eq!(timing.buffer_residence, Duration::from_millis(250));
+    }
+
+    #[test]
+    fn monotonic_timing_includes_ticker_wait_and_ignores_wall_clock_semantics() {
+        let received_at = std::time::Instant::now();
+        let buffered_at = received_at + Duration::from_millis(2);
+        let applied_at = buffered_at + Duration::from_millis(500);
+        let buffered = BufferedDepthUpdate {
+            update: depth_update_fixture(),
+            received_at,
+            buffered_at,
+        };
+
+        let timing = buffered.timing_at(applied_at);
+
+        assert_eq!(timing.buffer_residence, Duration::from_millis(500));
+        assert_eq!(timing.receive_to_apply, Duration::from_millis(502));
     }
 
     #[tokio::test]
