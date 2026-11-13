@@ -220,6 +220,13 @@ impl SnapshotPublisher {
         {
             bail!("refusing to publish an incomplete or unverified snapshot");
         }
+        if let Some(current) = inner.snapshot.as_ref() {
+            if current.generation == snapshot.generation
+                && snapshot.last_applied_u <= current.last_applied_u
+            {
+                bail!("refusing to regress or repeat the published order-book watermark");
+            }
+        }
         inner.snapshot = Some(Arc::new(snapshot));
         inner.reanchor_attempts = 0;
         inner.state = OrderbookV1State::Ready;
