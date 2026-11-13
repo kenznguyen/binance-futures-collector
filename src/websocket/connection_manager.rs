@@ -1,15 +1,16 @@
 use anyhow::{Context, Result};
-use dashmap::DashMap;
+use dashmap::{DashMap, DashSet};
 use futures_util::{SinkExt, StreamExt};
 use log::{debug, error, info, warn};
 use rustc_hash::FxHashMap;
 use serde_json::Value;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 use tokio::net::TcpStream;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{mpsc, watch, Mutex};
+use tokio::task::JoinHandle;
 use tokio::time::{interval, sleep, timeout};
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::tungstenite::{Bytes, Error as WsError, Message};
@@ -17,6 +18,7 @@ use tokio_tungstenite::{connect_async_with_config, MaybeTlsStream, WebSocketStre
 
 use crate::config::Config;
 use crate::models::*;
+use crate::orderbook_v1::SnapshotPublisher;
 
 type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
@@ -25,17 +27,22 @@ pub struct WebSocketManager {
     config: Arc<Config>,
     connections: Arc<DashMap<usize, ConnectionState>>,
     message_tx: mpsc::Sender<WebSocketMessage>,
+    orderbook_v1_publishers: Arc<DashMap<String, Arc<SnapshotPublisher>>>,
     // Set on shutdown to stop ingest: read loops close and the reconnect loop
     // exits instead of retrying, so the message channel can drain before flush.
     shutdown: Arc<AtomicBool>,
+    shutdown_tx: watch::Sender<bool>,
+    tasks: Arc<StdMutex<Vec<JoinHandle<()>>>>,
     reconnect_attempts: Arc<DashMap<usize, u32>>,
     batch_shutdown_flags: Arc<DashMap<usize, Arc<AtomicBool>>>,
 
     // Ring buffers with maxlen to prevent unbounded memory growth
-    symbol_buffers: Arc<DashMap<String, Arc<Mutex<VecDeque<DepthUpdateWs>>>>>,
+    symbol_buffers: Arc<DashMap<String, Arc<Mutex<VecDeque<BufferedDepthUpdate>>>>>,
 
     // Track message counts for stability checks
     symbol_message_counts: Arc<DashMap<String, usize>>,
+    // A ring-buffer eviction invalidates the registered order-book decision snapshot.
+    buffer_overflow_symbols: Arc<DashSet<String>>,
 }
 
 /// State of a single WebSocket connection
@@ -48,6 +55,30 @@ struct ConnectionState {
     is_connected: bool,
     last_pong: std::time::Instant,
     message_count: u64,
+}
+
+/// Internal-only depth envelope retaining monotonic receive and ring insertion times.
+#[derive(Debug, Clone)]
+pub struct BufferedDepthUpdate {
+    pub update: DepthUpdateWs,
+    pub received_at: Instant,
+    pub buffered_at: Instant,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DepthUpdateTiming {
+    pub receive_to_apply: Duration,
+    pub buffer_residence: Duration,
+}
+
+impl BufferedDepthUpdate {
+    /// Derive both delays from monotonic instants only; wall-clock adjustments are irrelevant.
+    pub fn timing_at(&self, applied_at: Instant) -> DepthUpdateTiming {
+        DepthUpdateTiming {
+            receive_to_apply: applied_at.duration_since(self.received_at),
+            buffer_residence: applied_at.duration_since(self.buffered_at),
+        }
+    }
 }
 
 /// WebSocket message types
@@ -105,6 +136,7 @@ impl WebSocketManager {
         config: Arc<Config>,
         message_tx: mpsc::Sender<WebSocketMessage>,
         symbols: &[String],
+        orderbook_v1_publishers: Arc<DashMap<String, Arc<SnapshotPublisher>>>,
     ) -> Self {
         let symbol_buffers = Arc::new(DashMap::new());
         for symbol in symbols {
@@ -116,31 +148,58 @@ impl WebSocketManager {
             );
         }
 
+        let (shutdown_tx, _) = watch::channel(false);
+
         Self {
             config,
             connections: Arc::new(DashMap::new()),
             message_tx,
+            orderbook_v1_publishers,
             shutdown: Arc::new(AtomicBool::new(false)),
+            shutdown_tx,
+            tasks: Arc::new(StdMutex::new(Vec::new())),
             reconnect_attempts: Arc::new(DashMap::new()),
             batch_shutdown_flags: Arc::new(DashMap::new()),
             symbol_buffers,
             symbol_message_counts: Arc::new(DashMap::new()),
+            buffer_overflow_symbols: Arc::new(DashSet::new()),
         }
     }
 
     /// Signal all connections to stop. Read loops close and the reconnect loop
     /// exits rather than retrying, letting the message channel drain before the
     /// caller flushes buffers to disk.
-    pub fn shutdown(&self) {
+    fn track_task(&self, task: JoinHandle<()>) {
+        self.tasks
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(task);
+    }
+
+    pub async fn shutdown(&self) -> Result<()> {
         self.shutdown.store(true, Ordering::Relaxed);
+        self.shutdown_tx.send_replace(true);
         for flag in self.batch_shutdown_flags.iter() {
             flag.value().store(true, Ordering::Relaxed);
         }
+
+        let tasks = {
+            let mut tasks = self
+                .tasks
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            std::mem::take(&mut *tasks)
+        };
+
+        join_websocket_tasks(tasks).await
     }
 
     /// Start WebSocket connections for a specific batch (COORDINATED STARTUP)
     /// This is called by the orderbook manager to coordinate staged startup.
     pub async fn start_batch(&self, symbols_batch: Vec<String>, batch_id: usize) -> Result<()> {
+        if self.shutdown.load(Ordering::Relaxed) {
+            anyhow::bail!("websocket manager is shutting down");
+        }
         if symbols_batch.is_empty() {
             warn!("Batch {}: No symbols to start.", batch_id);
             return Ok(());
@@ -164,7 +223,7 @@ impl WebSocketManager {
 
         let public = manager.clone();
         let public_syms = symbols.clone();
-        tokio::spawn(async move {
+        let public_task = tokio::spawn(async move {
             if let Err(e) = public
                 .run_connection(batch_id, public_syms, Route::Public)
                 .await
@@ -172,7 +231,9 @@ impl WebSocketManager {
                 error!("Batch {} [public] connection error: {}", batch_id, e);
             }
         });
-        tokio::spawn(async move {
+        self.track_task(public_task);
+
+        let market_task = tokio::spawn(async move {
             if let Err(e) = manager
                 .run_connection(batch_id, symbols, Route::Market)
                 .await
@@ -180,6 +241,7 @@ impl WebSocketManager {
                 error!("Batch {} [market] connection error: {}", batch_id, e);
             }
         });
+        self.track_task(market_task);
 
         // Brief delay to ensure connection starts before returning
         sleep(Duration::from_millis(100)).await;
@@ -187,16 +249,30 @@ impl WebSocketManager {
         Ok(())
     }
 
-    /// Atomically drains and returns the buffer for a given symbol.
-    /// This is the designated, thread-safe interface for the OrderbookManager.
-    pub async fn drain_buffer(&self, symbol: &str) -> Vec<DepthUpdateWs> {
+    /// Atomically drains a symbol buffer and reports its exact pre/post depths.
+    pub async fn drain_buffer_with_depth(
+        &self,
+        symbol: &str,
+    ) -> (Vec<BufferedDepthUpdate>, usize, usize) {
         if let Some(buffer_arc) = self.symbol_buffers.get(symbol) {
             let mut buffer = buffer_arc.lock().await;
+            let depth_before = buffer.len();
             let drained: Vec<_> = buffer.drain(..).collect();
-            drained
+            let depth_after = buffer.len();
+            (drained, depth_before, depth_after)
         } else {
-            Vec::new()
+            (Vec::new(), 0, 0)
         }
+    }
+
+    /// Atomically drains and returns the buffer for a given symbol.
+    /// This is the designated, thread-safe interface for the OrderbookManager.
+    pub async fn drain_buffer(&self, symbol: &str) -> Vec<BufferedDepthUpdate> {
+        self.drain_buffer_with_depth(symbol).await.0
+    }
+
+    pub fn take_buffer_overflow(&self, symbol: &str) -> bool {
+        self.buffer_overflow_symbols.remove(symbol).is_some()
     }
 
     /// Get the number of messages processed for a symbol (for stability checks)
@@ -228,25 +304,33 @@ impl WebSocketManager {
         // resets the backoff instead of compounding an old attempt count.
         let stable_connection = Duration::from_secs(60);
 
+        let mut shutdown_rx = self.shutdown_tx.subscribe();
         loop {
             if self.shutdown.load(Ordering::Relaxed) {
                 info!("Batch {} [{}] stopping (shutdown)", batch_id, route.path());
                 return Ok(());
             }
             let run_started = Instant::now();
-            match self.connect_and_run(batch_id, &symbols, route).await {
+            let connection_result = tokio::select! {
+                _ = shutdown_rx.changed() => return Ok(()),
+                result = self.connect_and_run(batch_id, &symbols, route) => result,
+            };
+
+            match connection_result {
                 Ok(_) => {
                     if self.shutdown.load(Ordering::Relaxed) {
                         return Ok(());
                     }
-                    // Graceful end (e.g. scheduled stream rotation): reconnect at once.
                     info!(
                         "Batch {} [{}] connection ended, reconnecting",
                         batch_id,
                         route.path()
                     );
                     self.reconnect_attempts.insert(cid, 0);
-                    sleep(Duration::from_millis(500)).await;
+                    tokio::select! {
+                        _ = shutdown_rx.changed() => return Ok(()),
+                        _ = sleep(Duration::from_millis(500)) => {}
+                    }
                 }
                 Err(e) => {
                     if self.shutdown.load(Ordering::Relaxed) {
@@ -259,9 +343,6 @@ impl WebSocketManager {
                         e
                     );
 
-                    // A link that stayed up past the stable window is a fresh failure,
-                    // not part of a tight loop — clear the count so a healthy connection
-                    // that blips doesn't inherit an old backoff.
                     if run_started.elapsed() >= stable_connection {
                         self.reconnect_attempts.insert(cid, 0);
                     }
@@ -271,9 +352,6 @@ impl WebSocketManager {
                         .and_modify(|a| *a += 1)
                         .or_insert(1);
 
-                    // Escalate the log past the configured threshold, but never give up:
-                    // an unattended collector must ride out outages longer than any fixed
-                    // budget, or it silently drops this batch's symbols until a restart.
                     if attempts == self.config.websocket.max_reconnect_attempts {
                         error!(
                             "Batch {} [{}] still down after {} attempts; continuing to retry",
@@ -283,7 +361,6 @@ impl WebSocketManager {
                         );
                     }
 
-                    // Exponential backoff, capped (see backoff_for).
                     let backoff = backoff_for(attempts, initial_backoff, max_backoff);
                     let jitter = Duration::from_millis((rand::random::<f64>() * 1000.0) as u64);
                     warn!(
@@ -293,7 +370,10 @@ impl WebSocketManager {
                         backoff + jitter,
                         attempts
                     );
-                    sleep(backoff + jitter).await;
+                    tokio::select! {
+                        _ = shutdown_rx.changed() => return Ok(()),
+                        _ = sleep(backoff + jitter) => {}
+                    }
                 }
             }
         }
@@ -400,6 +480,16 @@ impl WebSocketManager {
             },
         );
 
+        if route == Route::Public {
+            for symbol in symbols {
+                let key = symbol.to_lowercase();
+                if let Some(publisher) = self.orderbook_v1_publishers.get(&key) {
+                    publisher.begin_connection_generation();
+                    self.buffer_overflow_symbols.remove(&key);
+                }
+            }
+        }
+
         let _ = self.message_tx.send(WebSocketMessage::Connected(cid)).await;
 
         let result = self.run_message_loop(cid, ws_stream, shutdown_flag).await;
@@ -500,13 +590,15 @@ impl WebSocketManager {
 
                     match msg_result {
                         Ok(Message::Text(text)) => {
-                            if let Err(e) = self.process_text_message(batch_id, &text).await {
+                            let received_at = Instant::now();
+                            if let Err(e) = self.process_text_message(batch_id, &text, received_at).await {
                                 error!("Batch {} message processing error: {}", batch_id, e);
                             }
                         }
                         Ok(Message::Binary(data)) => {
+                            let received_at = Instant::now();
                             if let Ok(text) = String::from_utf8(data.to_vec()) {
-                                if let Err(e) = self.process_text_message(batch_id, &text).await {
+                                if let Err(e) = self.process_text_message(batch_id, &text, received_at).await {
                                     error!("Batch {} binary message processing error: {}", batch_id, e);
                                 }
                             }
@@ -572,11 +664,38 @@ impl WebSocketManager {
         }
 
         ping_timer.abort();
+        let _ = ping_timer.await;
 
         if had_error {
             warn!("Batch {} disconnected with error: {}", batch_id, error_msg);
         } else {
             info!("Batch {} disconnected gracefully", batch_id);
+        }
+
+        let disconnected_symbols = self
+            .connections
+            .get(&batch_id)
+            .map(|state| state.symbols.clone())
+            .unwrap_or_default();
+        if batch_id.is_multiple_of(2) {
+            for symbol in disconnected_symbols {
+                let key = symbol.to_lowercase();
+                let publisher = self
+                    .orderbook_v1_publishers
+                    .get(&key)
+                    .map(|entry| entry.value().clone());
+                if let Some(publisher) = publisher {
+                    publisher.mark_broken();
+                    let buffer = self
+                        .symbol_buffers
+                        .get(&key)
+                        .map(|entry| entry.value().clone());
+                    if let Some(buffer) = buffer {
+                        buffer.lock().await.clear();
+                    }
+                    self.buffer_overflow_symbols.remove(&key);
+                }
+            }
         }
 
         self.connections.remove(&batch_id);
@@ -593,10 +712,12 @@ impl WebSocketManager {
         }
     }
 
-    async fn process_text_message(&self, batch_id: usize, text: &str) -> Result<()> {
-        // Capture timestamp when message is received for latency tracking
-        let received_at = std::time::Instant::now();
-
+    async fn process_text_message(
+        &self,
+        batch_id: usize,
+        text: &str,
+        received_at: Instant,
+    ) -> Result<()> {
         // Parse as wrapped message (Binance futures uses {"stream": "...", "data": {...}})
         #[derive(serde::Deserialize)]
         struct Wrapper {
@@ -616,7 +737,7 @@ impl WebSocketManager {
         &self,
         batch_id: usize,
         _stream_name: &str,
-        mut data: Value,
+        data: Value,
         received_at: std::time::Instant,
     ) -> Result<()> {
         // Handle liquidation array from !forceOrder@arr stream
@@ -637,43 +758,10 @@ impl WebSocketManager {
 
         match event_type {
             Some("depthUpdate") => {
-                // Pre-convert floats for orderbook operations (8-10% CPU reduction)
-                if let Some(bids_raw) = data.get("b").and_then(|b| b.as_array()) {
-                    let b_floats: Vec<(f64, f64)> = bids_raw
-                        .iter()
-                        .filter_map(|item| {
-                            let arr = item.as_array()?;
-                            let p = arr.first()?.as_str()?.parse::<f64>().ok()?;
-                            let q = arr.get(1)?.as_str()?.parse::<f64>().ok()?;
-                            Some((p, q))
-                        })
-                        .collect();
-
-                    if let Some(obj) = data.as_object_mut() {
-                        obj.insert("b_floats".to_string(), serde_json::to_value(&b_floats)?);
-                    }
-                }
-
-                if let Some(asks_raw) = data.get("a").and_then(|a| a.as_array()) {
-                    let a_floats: Vec<(f64, f64)> = asks_raw
-                        .iter()
-                        .filter_map(|item| {
-                            let arr = item.as_array()?;
-                            let p = arr.first()?.as_str()?.parse::<f64>().ok()?;
-                            let q = arr.get(1)?.as_str()?.parse::<f64>().ok()?;
-                            Some((p, q))
-                        })
-                        .collect();
-
-                    if let Some(obj) = data.as_object_mut() {
-                        obj.insert("a_floats".to_string(), serde_json::to_value(&a_floats)?);
-                    }
-                }
-
                 let update: DepthUpdateWs = serde_json::from_value(data)?;
 
                 // Buffer the update (don't process yet - that's the orderbook manager's job)
-                self.buffer_depth_update(update.clone()).await;
+                self.buffer_depth_update(update.clone(), received_at).await;
 
                 // Send to message handler for CSV writing
                 let _ = self
@@ -714,7 +802,7 @@ impl WebSocketManager {
     }
 
     /// Buffer depth update in ring buffer
-    async fn buffer_depth_update(&self, update: DepthUpdateWs) {
+    async fn buffer_depth_update(&self, update: DepthUpdateWs, received_at: Instant) {
         // Convert to lowercase to match buffer keys (Binance sends uppercase)
         let symbol = update.symbol.to_lowercase();
 
@@ -733,33 +821,51 @@ impl WebSocketManager {
         if let Some(buffer_arc) = self.symbol_buffers.get(&symbol) {
             let mut buffer = buffer_arc.lock().await;
 
-            buffer.push_back(update.clone());
+            buffer.push_back(BufferedDepthUpdate {
+                update: update.clone(),
+                received_at,
+                buffered_at: Instant::now(),
+            });
 
             // Maintain ring buffer constraints
             let capacity = self.config.websocket.ring_buffer_capacity;
             let max_seconds = self.config.websocket.ring_buffer_seconds;
 
-            // Enforce capacity limit (evict oldest when over limit)
+            // Eviction is a continuity failure for the BTCUSDT decision book.
+            let mut evicted = false;
             while buffer.len() > capacity {
                 buffer.pop_front();
+                evicted = true;
             }
 
-            // Enforce time limit (evict messages older than max_seconds)
-            // Uses real time instead of message timestamps (robust against timestamp skew)
-            if buffer.len() > 1 {
+            // The legacy buffer's time pruning compares exchange E to local time.
+            // Registered V1 books instead check source/observation freshness at publication.
+            if !self.orderbook_v1_publishers.contains_key(&symbol) && buffer.len() > 1 {
                 let now = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()
                     .as_millis() as i64;
 
                 while buffer.len() > 1 {
-                    let first_ts = buffer.front().unwrap().event_time;
+                    let first_ts = buffer.front().unwrap().update.event_time;
                     if (now - first_ts) > (max_seconds * 1000) as i64 {
                         buffer.pop_front();
+                        evicted = true;
                     } else {
                         break;
                     }
                 }
+            }
+            drop(buffer);
+            if evicted && self.orderbook_v1_publishers.contains_key(&symbol) {
+                if let Some(publisher) = self
+                    .orderbook_v1_publishers
+                    .get(&symbol)
+                    .map(|entry| entry.value().clone())
+                {
+                    publisher.mark_broken();
+                }
+                self.buffer_overflow_symbols.insert(symbol);
             }
         }
     }
@@ -769,12 +875,16 @@ impl WebSocketManager {
         let shutdown_flags = self.batch_shutdown_flags.clone();
         let heartbeat_interval = Duration::from_secs(self.config.websocket.ping_interval_seconds);
         let miss_threshold = self.config.websocket.heartbeat_miss_reconnect;
+        let mut shutdown_rx = self.shutdown_tx.subscribe();
 
-        tokio::spawn(async move {
+        let task = tokio::spawn(async move {
             let mut interval = interval(heartbeat_interval);
 
             loop {
-                interval.tick().await;
+                tokio::select! {
+                    _ = shutdown_rx.changed() => break,
+                    _ = interval.tick() => {}
+                }
 
                 for entry in connections.iter() {
                     let batch_id = *entry.key();
@@ -797,6 +907,7 @@ impl WebSocketManager {
                 }
             }
         });
+        self.track_task(task);
     }
 
     /// Get connection statistics
@@ -839,24 +950,47 @@ pub struct ConnectionStats {
     pub reconnect_attempts: u32,
 }
 
+async fn join_websocket_tasks(tasks: Vec<JoinHandle<()>>) -> Result<()> {
+    let mut join_errors = Vec::new();
+    for task in tasks {
+        if let Err(error) = task.await {
+            if !error.is_cancelled() {
+                join_errors.push(error.to_string());
+            }
+        }
+    }
+
+    if !join_errors.is_empty() {
+        anyhow::bail!(
+            "one or more websocket tasks failed to join: {}",
+            join_errors.join("; ")
+        );
+    }
+    Ok(())
+}
+
 impl Clone for WebSocketManager {
     fn clone(&self) -> Self {
         Self {
             config: self.config.clone(),
             connections: self.connections.clone(),
             message_tx: self.message_tx.clone(),
+            orderbook_v1_publishers: self.orderbook_v1_publishers.clone(),
             shutdown: self.shutdown.clone(),
+            shutdown_tx: self.shutdown_tx.clone(),
+            tasks: self.tasks.clone(),
             reconnect_attempts: self.reconnect_attempts.clone(),
             batch_shutdown_flags: self.batch_shutdown_flags.clone(),
             symbol_buffers: self.symbol_buffers.clone(),
             symbol_message_counts: self.symbol_message_counts.clone(),
+            buffer_overflow_symbols: self.buffer_overflow_symbols.clone(),
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::backoff_for;
+    use super::{backoff_for, join_websocket_tasks, BufferedDepthUpdate};
     use std::time::Duration;
 
     #[test]
@@ -885,5 +1019,114 @@ mod tests {
         // keep 2^attempt from overflowing u32 — this must not panic and stays capped.
         assert_eq!(backoff_for(1_000_000, init, max), max);
         assert_eq!(backoff_for(u32::MAX, init, max), max);
+    }
+
+    fn depth_update_fixture() -> crate::models::DepthUpdateWs {
+        crate::models::DepthUpdateWs {
+            event_type: "depthUpdate".to_string(),
+            event_time: 1_800_000_000_000,
+            transaction_time: 1_800_000_000_000,
+            symbol: "BTCUSDT".to_string(),
+            first_update_id: 101,
+            final_update_id: 102,
+            prev_update_id: 100,
+            bids: vec![["100.0".to_string(), "1.0".to_string()]],
+            asks: vec![["101.0".to_string(), "2.0".to_string()]],
+        }
+    }
+
+    #[test]
+    fn buffered_depth_update_preserves_original_monotonic_receive_instant() {
+        let received_at = std::time::Instant::now();
+        let buffered_at = received_at + Duration::from_millis(3);
+        let buffered = BufferedDepthUpdate {
+            update: depth_update_fixture(),
+            received_at,
+            buffered_at,
+        };
+
+        assert_eq!(buffered.received_at, received_at);
+        assert_eq!(buffered.buffered_at, buffered_at);
+        assert_eq!(buffered.update.final_update_id, 102);
+    }
+
+    #[test]
+    fn cloning_buffered_depth_update_does_not_replace_receive_instant() {
+        let received_at = std::time::Instant::now();
+        let buffered_at = received_at + Duration::from_millis(5);
+        let buffered = BufferedDepthUpdate {
+            update: depth_update_fixture(),
+            received_at,
+            buffered_at,
+        };
+
+        let cloned = buffered.clone();
+
+        assert_eq!(cloned.received_at, received_at);
+        assert_eq!(cloned.buffered_at, buffered_at);
+        assert_eq!(cloned.update.final_update_id, 102);
+    }
+
+    #[test]
+    fn monotonic_timing_separates_receive_delay_from_buffer_residence() {
+        let received_at = std::time::Instant::now();
+        let buffered_at = received_at + Duration::from_millis(500);
+        let applied_at = received_at + Duration::from_millis(750);
+        let buffered = BufferedDepthUpdate {
+            update: depth_update_fixture(),
+            received_at,
+            buffered_at,
+        };
+
+        let timing = buffered.timing_at(applied_at);
+
+        assert_eq!(timing.receive_to_apply, Duration::from_millis(750));
+        assert_eq!(timing.buffer_residence, Duration::from_millis(250));
+    }
+
+    #[test]
+    fn monotonic_timing_includes_ticker_wait_and_ignores_wall_clock_semantics() {
+        let received_at = std::time::Instant::now();
+        let buffered_at = received_at + Duration::from_millis(2);
+        let applied_at = buffered_at + Duration::from_millis(500);
+        let buffered = BufferedDepthUpdate {
+            update: depth_update_fixture(),
+            received_at,
+            buffered_at,
+        };
+
+        let timing = buffered.timing_at(applied_at);
+
+        assert_eq!(timing.buffer_residence, Duration::from_millis(500));
+        assert_eq!(timing.receive_to_apply, Duration::from_millis(502));
+    }
+
+    #[tokio::test]
+    async fn websocket_shutdown_joins_every_connection_task() {
+        let (first_release_tx, first_release_rx) = tokio::sync::oneshot::channel();
+        let (second_release_tx, second_release_rx) = tokio::sync::oneshot::channel();
+
+        let first_task = tokio::spawn(async move {
+            let _ = first_release_rx.await;
+        });
+        let second_task = tokio::spawn(async move {
+            let _ = second_release_rx.await;
+        });
+
+        let join = tokio::spawn(join_websocket_tasks(vec![first_task, second_task]));
+        tokio::task::yield_now().await;
+        assert!(
+            !join.is_finished(),
+            "shutdown must wait for every connection task"
+        );
+
+        first_release_tx.send(()).unwrap();
+        second_release_tx.send(()).unwrap();
+
+        tokio::time::timeout(Duration::from_secs(1), join)
+            .await
+            .expect("connection tasks should be joined promptly")
+            .unwrap()
+            .unwrap();
     }
 }

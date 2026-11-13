@@ -18,6 +18,8 @@ use tokio::sync::{mpsc, Notify};
 
 use binance_futures_collector::{
     collectors::{OrderbookManager, RestCollector, SymbolDiscovery, SymbolSetTracker},
+    orderbook_http::{bind_loopback, serve},
+    orderbook_v1::SnapshotPublisher,
     rest::{ProxyManager, RestClient},
     utils::{CsvWriter, GapRegistry, StatsExporter},
     websocket::{MessageHandler, WebSocketManager},
@@ -275,7 +277,35 @@ async fn main() -> Result<()> {
 
     // Initialize WebSocket manager FIRST (must buffer messages before snapshots)
     // Use full symbol list (BTCUSDT filtered at message handler level)
-    let ws_manager = Arc::new(WebSocketManager::new(config.clone(), message_tx, &symbols));
+    let btc_orderbook_publisher = Arc::new(SnapshotPublisher::new());
+
+    // The V1 transport is opt-in and remains disabled unless a secret is
+    // supplied out-of-band. Its only bind address is 127.0.0.1:8787.
+    let orderbook_http_join = match std::env::var("T1_ORDERBOOK_HTTP_TOKEN") {
+        Ok(token) if !token.is_empty() => {
+            let listener = bind_loopback().await?;
+            info!("T1 Order Book V1 HTTP enabled on 127.0.0.1:8787");
+            let publisher = btc_orderbook_publisher.clone();
+            Some(tokio::spawn(async move {
+                if let Err(error) = serve(listener, publisher, token).await {
+                    error!("T1 Order Book V1 HTTP server stopped: {}", error);
+                }
+            }))
+        }
+        _ => {
+            info!("T1 Order Book V1 HTTP disabled (T1_ORDERBOOK_HTTP_TOKEN is unset)");
+            None
+        }
+    };
+
+    let orderbook_v1_publishers = Arc::new(dashmap::DashMap::new());
+    orderbook_v1_publishers.insert("btcusdt".to_string(), btc_orderbook_publisher.clone());
+    let ws_manager = Arc::new(WebSocketManager::new(
+        config.clone(),
+        message_tx,
+        &symbols,
+        orderbook_v1_publishers,
+    ));
 
     // Symbols confirmed delisted by periodic discovery (absent from two
     // consecutive exchangeInfo results). Discovery writes it; the order-book
@@ -296,6 +326,7 @@ async fn main() -> Result<()> {
         ws_manager.clone(),
         gap_registry.clone(),
         delisted.clone(),
+        btc_orderbook_publisher.clone(),
     ));
 
     // Extract BTCUSDT as priority symbol (will initialize first)
@@ -313,7 +344,7 @@ async fn main() -> Result<()> {
     }
     let manager_clone = orderbook_manager.clone();
     let symbols_clone = symbols.clone();
-    tokio::spawn(async move {
+    let manager_start_join = tokio::spawn(async move {
         if let Err(e) = manager_clone.start(symbols_clone, priority_symbol).await {
             error!("Orderbook manager initialization error: {}", e);
         } else {
@@ -345,7 +376,7 @@ async fn main() -> Result<()> {
         new_listings.clone(),
         stats_dir.clone(),
     ));
-    stats_exporter.clone().start().await;
+    let stats_exporter_join = stats_exporter.clone().start().await?;
     info!(
         "Stats exporter started (writing to {})",
         stats_dir.join("stats.json").display()
@@ -360,7 +391,7 @@ async fn main() -> Result<()> {
     let orderbook_manager_clone = orderbook_manager.clone();
     let message_handler_clone = message_handler.clone();
     let proxy_manager_clone = proxy_manager.clone();
-    tokio::spawn(async move {
+    let stats_report_join = tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
         loop {
             interval.tick().await;
@@ -406,12 +437,12 @@ async fn main() -> Result<()> {
 
     // Periodic symbol discovery: detect newly listed and delisted symbols.
     // Skipped when a fixed [collection].symbols whitelist is configured.
-    if !using_whitelist {
+    let symbol_discovery_join = if !using_whitelist {
         let symbol_discovery_clone = symbol_discovery;
         let discovery_interval_minutes = config.collection.symbol_discovery_interval_minutes;
         let delisted_set = delisted.clone();
         let new_listings_reg = new_listings.clone();
-        tokio::spawn(async move {
+        Some(tokio::spawn(async move {
             let mut tracker = SymbolSetTracker::new(symbols.iter().cloned());
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(
                 discovery_interval_minutes * 60,
@@ -490,8 +521,10 @@ async fn main() -> Result<()> {
                     }
                 }
             }
-        });
-    }
+        }))
+    } else {
+        None
+    };
 
     tokio::select! {
         _ = signal::ctrl_c() => {
@@ -507,29 +540,95 @@ async fn main() -> Result<()> {
 
     info!("Shutdown signal received - Beginning graceful shutdown");
 
+    if let Some(task) = orderbook_http_join {
+        info!("  • Stopping internal Order Book V1 HTTP listener...");
+        task.abort();
+        if let Err(error) = task.await {
+            if !error.is_cancelled() {
+                return Err(anyhow::anyhow!("Order Book V1 HTTP task failed: {error}"));
+            }
+        }
+    }
+
+    info!("  • Stopping symbol discovery and stats tasks...");
+    if let Some(task) = symbol_discovery_join {
+        task.abort();
+        match task.await {
+            Ok(()) => {}
+            Err(error) if error.is_cancelled() => {}
+            Err(error) => {
+                return Err(anyhow::anyhow!("symbol discovery task failed: {error}"));
+            }
+        }
+    }
+    stats_report_join.abort();
+    match stats_report_join.await {
+        Ok(()) => {}
+        Err(error) if error.is_cancelled() => {}
+        Err(error) => {
+            return Err(anyhow::anyhow!("stats report task failed: {error}"));
+        }
+    }
+    stats_exporter_join.abort();
+    if let Err(error) = stats_exporter_join.await {
+        if !error.is_cancelled() {
+            return Err(anyhow::anyhow!("stats exporter task failed: {error}"));
+        }
+    }
+
     // Stop ingest, then tell the handler to drain what's already queued and join
     // it, so in-flight updates are written before we flush, a deterministic
     // drain rather than a fixed sleep. The brief grace lets connection tasks'
     // final sends reach the channel; the timeout is a safety cap so shutdown can
     // never hang (the manager keeps a sender, so the channel won't close itself).
-    info!("  • Stopping websocket ingest...");
-    ws_manager.shutdown();
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    handler_shutdown.notify_one();
-    match tokio::time::timeout(std::time::Duration::from_secs(5), handler_join).await {
-        Ok(Ok(())) => {}
-        Ok(Err(e)) => warn!("Message handler task ended abnormally: {}", e),
-        Err(_) => warn!("Message handler did not drain within 5s; flushing anyway"),
+    info!("  • Stopping orderbook startup orchestration...");
+    manager_start_join.abort();
+    if let Err(error) = manager_start_join.await {
+        if !error.is_cancelled() {
+            return Err(anyhow::anyhow!("orderbook startup task failed: {error}"));
+        }
     }
 
-    info!("  • Flushing CSV buffers...");
-    csv_writer.flush_all().await?;
+    info!("  • Stopping websocket ingest...");
+    ws_manager.shutdown().await?;
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    handler_shutdown.notify_one();
+    await_handler_drain(handler_join, std::time::Duration::from_secs(5)).await?;
 
-    info!("  • Saving gap registry...");
-    gap_registry.save_all_dirty().await?;
+    info!("  • Stopping REST collectors...");
+    rest_collector.shutdown().await;
+
+    info!("  • Stopping orderbook manager tasks...");
+    orderbook_manager.shutdown().await?;
+
+    info!("  • Stopping CSV background tasks...");
+    csv_writer.shutdown_background_tasks().await?;
+
+    info!("  • Flushing CSV buffers...");
+    csv_writer.flush_all_after_shutdown().await?;
+
+    info!("  • Stopping gap registry saver and saving remaining events...");
+    gap_registry.shutdown().await?;
 
     info!("Shutdown complete");
     Ok(())
+}
+
+async fn await_handler_drain(
+    mut handler: tokio::task::JoinHandle<()>,
+    timeout_after: std::time::Duration,
+) -> anyhow::Result<()> {
+    match tokio::time::timeout(timeout_after, &mut handler).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(error)) => Err(anyhow::anyhow!("message handler task failed: {error}")),
+        Err(_) => {
+            handler.abort();
+            let _ = handler.await;
+            Err(anyhow::anyhow!(
+                "message handler did not drain before timeout; final persistence is blocked"
+            ))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -540,5 +639,28 @@ mod tests {
     async fn test_config_loading() {
         // The shipped example config must load (config.toml is user-local/gitignored).
         assert!(Config::from_file("config.example.toml").is_ok());
+    }
+
+    #[tokio::test]
+    async fn handler_drain_timeout_is_an_error_not_permission_to_flush() {
+        let handler = tokio::spawn(async {
+            std::future::pending::<()>().await;
+        });
+
+        let result = await_handler_drain(handler, std::time::Duration::from_millis(10)).await;
+
+        assert!(
+            result.is_err(),
+            "a handler that did not drain must block final persistence"
+        );
+    }
+
+    #[tokio::test]
+    async fn handler_drain_completes_successfully_before_final_persistence() {
+        let handler = tokio::spawn(async {});
+
+        await_handler_drain(handler, std::time::Duration::from_secs(1))
+            .await
+            .unwrap();
     }
 }

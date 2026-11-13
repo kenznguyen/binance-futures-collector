@@ -2,7 +2,8 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, feature/t1-connection-sidecar-integration-20261107]
+  workflow_dispatch:
   pull_request:
 
 env:
@@ -32,6 +33,91 @@ jobs:
 
       - name: Test
         run: cargo test --all
+
+      - name: Sidecar writer format
+        run: cargo fmt --manifest-path crates/connection-sidecar/Cargo.toml --all -- --check
+
+      - name: Sidecar writer Clippy
+        run: cargo clippy --manifest-path crates/connection-sidecar/Cargo.toml --all-targets -- -D warnings
+
+      - name: Sidecar writer offline tests
+        run: cargo test --manifest-path crates/connection-sidecar/Cargo.toml --all-targets
+
+      - name: Prepare standalone Linux Collector artifact
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        run: |
+          test "$(uname -m)" = "x86_64"
+          cd target/release
+          sha256sum binance-futures-collector > SHA256SUMS
+
+      - name: Upload standalone Linux Collector artifact
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: t1-collector-linux-x86_64-${{ github.sha }}
+          path: |
+            target/release/binance-futures-collector
+            target/release/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 7
+
+
+  collector-arm64:
+    name: collector · native ARM64 build · test · artifact
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Assert native ARM64 runner
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = "aarch64"
+          rustc -vV | grep -F "host: aarch64-unknown-linux-gnu"
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Build standalone ARM64 Collector
+        run: cargo build --release --locked
+
+      - name: Test
+        run: cargo test --all
+
+      - name: Sidecar writer offline tests
+        run: cargo test --manifest-path crates/connection-sidecar/Cargo.toml --all-targets
+
+      - name: Verify ARM64 ELF and prepare checksums
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        shell: bash
+        run: |
+          set -euo pipefail
+          binary=target/release/binance-futures-collector
+          test -x "$binary"
+          file "$binary" | tee target/release/ELF-IDENTITY.txt
+          readelf -h "$binary" | grep -F "Machine:                           AArch64"
+          cd target/release
+          sha256sum binance-futures-collector > SHA256SUMS
+
+      - name: Upload standalone Linux ARM64 Collector artifact
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: t1-collector-linux-aarch64-${{ github.sha }}
+          path: |
+            target/release/binance-futures-collector
+            target/release/SHA256SUMS
+            target/release/ELF-IDENTITY.txt
+          if-no-files-found: error
+          retention-days: 7
 
   dashboard-backend:
     name: dashboard backend · pytest
@@ -93,31 +179,119 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: dtolnay/rust-toolchain@stable
-
+      - name: Dependency feature reachability diagnostics
+        shell: bash
+        run: |
+          set -u
+          classify_tree_output() {
+            local output="$1"
+            local package_nodes
+            if grep -qE 'warning: nothing to print' <<<"$output"; then
+              echo "NO_PATH_EMITTED"
+              return
+            fi
+            package_nodes="$(grep -Ec '^[[:space:]│├└─`-]*[[:alnum:]_.+-]+ v[0-9]+\.' <<<"$output" || true)"
+            if [[ "$package_nodes" =~ ^[0-9]+$ ]] && (( package_nodes >= 2 )); then
+              echo "PATH_FOUND"
+            else
+              echo "NO_PATH_EMITTED"
+            fi
+          }
+          tree_fixture=$'quinn-proto v0.11.16\n└── quinn v0.11.11\n    └── reqwest v0.13.1'
+          empty_fixture='warning: nothing to print'
+          download_noise_fixture=$'Downloaded quinn-proto v0.11.16'
+          if [[ "$(classify_tree_output "$tree_fixture")" != "PATH_FOUND" ]]; then
+            echo "classifier fixture failed: populated reverse tree"
+            exit 1
+          fi
+          if [[ "$(classify_tree_output "$empty_fixture")" != "NO_PATH_EMITTED" ]]; then
+            echo "classifier fixture failed: Cargo nothing-to-print output"
+            exit 1
+          fi
+          if [[ "$(classify_tree_output "")" != "NO_PATH_EMITTED" ]]; then
+            echo "classifier fixture failed: empty output"
+            exit 1
+          fi
+          if [[ "$(classify_tree_output "$download_noise_fixture")" != "NO_PATH_EMITTED" ]]; then
+            echo "classifier fixture failed: registry download chatter"
+            exit 1
+          fi
+          echo "DIAGNOSTIC_CLASSIFIER_FIXTURES=4/4_PASS"
+          packages=(
+            quinn-proto@0.11.18
+            rustls@0.23.46
+            rustls-webpki@0.103.16
+            webpki-root-certs@1.0.10
+            webpki-roots@1.0.10
+            tokio@1.53.3
+            chacha20@0.10.2
+          )
+          for package in "${packages[@]}"; do
+            echo "::group::cargo tree default-feature reverse path: $package"
+            if output="$(cargo tree --locked --color never -e features -i "$package" 2>&1)"; then
+              printf '%s\n' "$output"
+              classification="$(classify_tree_output "$output")"
+              echo "DEFAULT_FEATURE_REACHABILITY[$package]=$classification"
+            else
+              status=$?
+              printf '%s\n' "$output"
+              echo "DEFAULT_FEATURE_REACHABILITY[$package]=COMMAND_ERROR (exit $status)"
+            fi
+            echo "::endgroup::"
+          done
+      - name: All-target exact package reachability diagnostics
+        shell: bash
+        run: |
+          set -u
+          classify_tree_output() {
+            local output="$1"
+            local package_nodes
+            if grep -qE 'warning: nothing to print' <<<"$output"; then
+              echo "NO_PATH_EMITTED"
+              return
+            fi
+            package_nodes="$(grep -Ec '^[[:space:]│├└─`-]*[[:alnum:]_.+-]+ v[0-9]+\.' <<<"$output" || true)"
+            if [[ "$package_nodes" =~ ^[0-9]+$ ]] && (( package_nodes >= 2 )); then
+              echo "PATH_FOUND"
+            else
+              echo "NO_PATH_EMITTED"
+            fi
+          }
+          packages=(
+            quinn-proto@0.11.18
+            rustls@0.23.46
+            rustls-webpki@0.103.16
+            webpki-root-certs@1.0.10
+            webpki-roots@1.0.10
+            tokio@1.53.3
+            chacha20@0.10.2
+          )
+          for package in "${packages[@]}"; do
+            echo "::group::cargo tree all-target reverse path: $package"
+            if output="$(cargo tree --locked --color never --target all -i "$package" 2>&1)"; then
+              printf '%s\n' "$output"
+              classification="$(classify_tree_output "$output")"
+              echo "ALL_TARGET_PACKAGE_REACHABILITY[$package]=$classification"
+            else
+              status=$?
+              printf '%s\n' "$output"
+              echo "ALL_TARGET_PACKAGE_REACHABILITY[$package]=COMMAND_ERROR (exit $status)"
+            fi
+            echo "::endgroup::"
+          done
       - name: cargo-audit (Rust advisories)
         run: |
           cargo install cargo-audit --locked
           cargo audit
-
       - uses: actions/setup-node@v4
         with:
           node-version: 24
           cache: npm
           cache-dependency-path: dashboard/frontend/package-lock.json
-
-      # Gate on what actually ships. The dashboard image serves the *built* static
-      # assets through FastAPI, so vite/esbuild and the rest of devDependencies are
-      # build-time only and never reachable at runtime. Auditing them here would gate
-      # the build on advisories that do not apply to the deployed artifact (the
-      # standing example being the esbuild dev-server advisory, which needs a
-      # breaking vite major to clear and affects `vite dev` alone).
       - name: npm audit (production dependencies, high severity)
         working-directory: dashboard/frontend
         run: npm audit --omit=dev --audit-level=high
-
-      # Dev-dependency advisories are still worth seeing; they just do not fail CI.
       - name: npm audit (dev dependencies, informational)
         working-directory: dashboard/frontend
         continue-on-error: true

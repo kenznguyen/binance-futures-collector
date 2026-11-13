@@ -8,7 +8,7 @@ use tokio::sync::{mpsc, Notify};
 
 use crate::constants;
 use crate::models::*;
-use crate::utils::CsvWriter;
+use crate::utils::{multiply_decimal_strings, CsvWriter};
 use crate::websocket::connection_manager::WebSocketMessage;
 
 /// Number of most-recent trade IDs retained per symbol for deduplication.
@@ -302,9 +302,7 @@ impl MessageHandler {
             return Ok(());
         }
 
-        let price: f64 = order.price.parse()?;
-        let quantity: f64 = order.quantity.parse()?;
-        let value = price * quantity;
+        let value = multiply_decimal_strings(&order.price, &order.quantity)?;
 
         let csv_liquidation = LiquidationCsv {
             exchange: constants::EXCHANGE.to_string(),
@@ -315,7 +313,7 @@ impl MessageHandler {
             side: order.side.to_lowercase(), // Convert SELL -> sell
             price: format_decimal_str(&order.price),
             quantity: format_decimal_str(&order.quantity),
-            value: format_decimal(value),
+            value,
         };
 
         self.csv_writer.write_liquidation(&csv_liquidation).await?;
