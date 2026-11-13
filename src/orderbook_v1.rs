@@ -759,13 +759,7 @@ mod tests {
 
         stale_source.event_time = NOW - 20;
         assert!(matches!(
-            apply_live_diff_classified(
-                &current,
-                &stale_source,
-                20,
-                NOW - MAX_BOOK_AGE_MS - 1,
-                NOW
-            ),
+            apply_live_diff_classified(&current, &stale_source, 20, NOW - MAX_BOOK_AGE_MS - 1, NOW),
             Err(LiveDiffRejection::Freshness(_))
         ));
 
@@ -814,7 +808,13 @@ mod tests {
         ));
 
         assert!(matches!(
-            apply_live_diff_classified(&current, &update(104, 104, 103, NOW - 20), 19, NOW - 5, NOW),
+            apply_live_diff_classified(
+                &current,
+                &update(104, 104, 103, NOW - 20),
+                19,
+                NOW - 5,
+                NOW
+            ),
             Err(LiveDiffRejection::Shape(_))
         ));
 
@@ -834,19 +834,15 @@ mod tests {
         let mut malformed_and_discontinuous = update(104, 104, 102, NOW - 20);
         malformed_and_discontinuous.first_update_id = 0;
         assert!(matches!(
-            apply_live_diff_classified(
-                &current,
-                &malformed_and_discontinuous,
-                20,
-                NOW - 5,
-                NOW
-            ),
+            apply_live_diff_classified(&current, &malformed_and_discontinuous, 20, NOW - 5, NOW),
             Err(LiveDiffRejection::Shape(_))
         ));
 
         // Sequence validation precedes level and timestamp validation.
         let mut stale_and_discontinuous = update(104, 104, 102, NOW - MAX_BOOK_AGE_MS - 1);
-        stale_and_discontinuous.bids.push(["not-a-price".into(), "1".into()]);
+        stale_and_discontinuous
+            .bids
+            .push(["not-a-price".into(), "1".into()]);
         assert!(matches!(
             apply_live_diff_classified(&current, &stale_and_discontinuous, 20, NOW - 5, NOW),
             Err(LiveDiffRejection::Sequence(_))
@@ -854,12 +850,13 @@ mod tests {
 
         // Shape validation precedes freshness validation after sequence passes.
         let mut stale_and_malformed = update(104, 104, 103, NOW - MAX_BOOK_AGE_MS - 1);
-        stale_and_malformed.bids.push(["not-a-price".into(), "1".into()]);
+        stale_and_malformed
+            .bids
+            .push(["not-a-price".into(), "1".into()]);
         assert!(matches!(
             apply_live_diff_classified(&current, &stale_and_malformed, 20, NOW - 5, NOW),
             Err(LiveDiffRejection::Shape(_))
         ));
         assert_eq!(current.last_applied_u, 103);
     }
-
 }
