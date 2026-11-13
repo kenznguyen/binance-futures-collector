@@ -11,6 +11,25 @@ pub const REQUIRED_DEPTH: usize = 20;
 pub const MAX_BOOK_AGE_MS: i64 = 2_000;
 pub const MAX_FUTURE_SKEW_MS: i64 = 250;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LiveDiffRejection {
+    Freshness(String),
+    Sequence(String),
+    Shape(String),
+}
+
+impl std::fmt::Display for LiveDiffRejection {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Freshness(detail) => write!(formatter, "freshness rejected: {detail}"),
+            Self::Sequence(detail) => write!(formatter, "sequence rejected: {detail}"),
+            Self::Shape(detail) => write!(formatter, "shape rejected: {detail}"),
+        }
+    }
+}
+
+impl std::error::Error for LiveDiffRejection {}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OrderbookV1State {
     Initializing,
@@ -409,11 +428,35 @@ pub fn apply_live_diff(
     observed_at_ms: i64,
     decision_time_ms: i64,
 ) -> Result<OrderbookSnapshotV1> {
-    validate_update_header(update)?;
+    apply_live_diff_classified(
+        current,
+        update,
+        depth_limit,
+        observed_at_ms,
+        decision_time_ms,
+    )
+    .map_err(anyhow::Error::new)
+}
+
+/// Apply one live diff and retain a stable typed rejection class for diagnostics.
+/// Validation order intentionally matches the original fail-closed path:
+/// header -> sequence -> levels/structure -> source and observation freshness.
+pub fn apply_live_diff_classified(
+    current: &OrderbookSnapshotV1,
+    update: &DepthUpdateWs,
+    depth_limit: usize,
+    observed_at_ms: i64,
+    decision_time_ms: i64,
+) -> std::result::Result<OrderbookSnapshotV1, LiveDiffRejection> {
+    validate_update_header(update)
+        .map_err(|error| LiveDiffRejection::Shape(format!("{error:#}")))?;
+
     if update.prev_update_id != current.last_applied_u
         || update.final_update_id <= current.last_applied_u
     {
-        bail!("live WS diff does not continue the published watermark");
+        return Err(LiveDiffRejection::Sequence(
+            "live WS diff does not continue the published watermark".to_string(),
+        ));
     }
 
     let mut bids: Levels = current
@@ -423,7 +466,8 @@ pub fn apply_live_diff(
             let key = crate::utils::normalize_plain_decimal(&level[0])?;
             Ok((key, level.clone()))
         })
-        .collect::<Result<_>>()?;
+        .collect::<Result<_>>()
+        .map_err(|error| LiveDiffRejection::Shape(format!("{error:#}")))?;
     let mut asks: Levels = current
         .asks
         .iter()
@@ -431,30 +475,41 @@ pub fn apply_live_diff(
             let key = crate::utils::normalize_plain_decimal(&level[0])?;
             Ok((key, level.clone()))
         })
-        .collect::<Result<_>>()?;
+        .collect::<Result<_>>()
+        .map_err(|error| LiveDiffRejection::Shape(format!("{error:#}")))?;
 
-    insert_levels(&mut bids, &update.bids, "bid", true)?;
-    insert_levels(&mut asks, &update.asks, "ask", true)?;
+    insert_levels(&mut bids, &update.bids, "bid", true)
+        .map_err(|error| LiveDiffRejection::Shape(format!("{error:#}")))?;
+    insert_levels(&mut asks, &update.asks, "ask", true)
+        .map_err(|error| LiveDiffRejection::Shape(format!("{error:#}")))?;
     trim_levels(&mut bids, depth_limit, true);
     trim_levels(&mut asks, depth_limit, false);
     if depth_limit < REQUIRED_DEPTH || bids.len() < REQUIRED_DEPTH || asks.len() < REQUIRED_DEPTH {
-        bail!("live candidate book does not meet the minimum depth on both sides");
+        return Err(LiveDiffRejection::Shape(
+            "live candidate book does not meet the minimum depth".to_string(),
+        ));
     }
 
     let best_bid = bids
         .keys()
         .max_by(|left, right| compare_normalized_decimals(left, right))
-        .context("empty bid side")?;
+        .context("empty bid side")
+        .map_err(|error| LiveDiffRejection::Shape(format!("{error:#}")))?;
     let best_ask = asks
         .keys()
         .min_by(|left, right| compare_normalized_decimals(left, right))
-        .context("empty ask side")?;
+        .context("empty ask side")
+        .map_err(|error| LiveDiffRejection::Shape(format!("{error:#}")))?;
     if compare_normalized_decimals(best_bid, best_ask).is_ge() {
-        bail!("live candidate order book is locked or crossed");
+        return Err(LiveDiffRejection::Shape(
+            "live candidate book is locked or crossed".to_string(),
+        ));
     }
 
-    validate_timestamp(update.event_time, decision_time_ms, "source")?;
-    validate_timestamp(observed_at_ms, decision_time_ms, "observation")?;
+    validate_timestamp(update.event_time, decision_time_ms, "source")
+        .map_err(|error| LiveDiffRejection::Freshness(format!("{error:#}")))?;
+    validate_timestamp(observed_at_ms, decision_time_ms, "observation")
+        .map_err(|error| LiveDiffRejection::Freshness(format!("{error:#}")))?;
 
     let bid_levels = sorted_levels(bids, true);
     let ask_levels = sorted_levels(asks, false);
