@@ -746,4 +746,120 @@ mod tests {
     fn rest_anchor_without_exchange_timestamped_bridge_is_not_publishable() {
         assert!(build_snapshot(&snapshot(), &[], 1, NOW, NOW).is_err());
     }
+
+    #[test]
+    fn classified_live_diff_maps_source_observation_and_future_skew_to_freshness() {
+        let current = build_snapshot(&snapshot(), &valid_updates(), 4, NOW - 10, NOW).unwrap();
+
+        let mut stale_source = update(104, 104, 103, NOW - MAX_BOOK_AGE_MS - 1);
+        assert!(matches!(
+            apply_live_diff_classified(&current, &stale_source, 20, NOW - 5, NOW),
+            Err(LiveDiffRejection::Freshness(_))
+        ));
+
+        stale_source.event_time = NOW - 20;
+        assert!(matches!(
+            apply_live_diff_classified(
+                &current,
+                &stale_source,
+                20,
+                NOW - MAX_BOOK_AGE_MS - 1,
+                NOW
+            ),
+            Err(LiveDiffRejection::Freshness(_))
+        ));
+
+        stale_source.event_time = NOW + MAX_FUTURE_SKEW_MS + 1;
+        assert!(matches!(
+            apply_live_diff_classified(&current, &stale_source, 20, NOW - 5, NOW),
+            Err(LiveDiffRejection::Freshness(_))
+        ));
+        assert_eq!(current.last_applied_u, 103);
+    }
+
+    #[test]
+    fn classified_live_diff_maps_watermark_and_pu_mismatch_to_sequence() {
+        let current = build_snapshot(&snapshot(), &valid_updates(), 4, NOW - 10, NOW).unwrap();
+        let mut invalid = update(104, 104, 102, NOW - 20);
+        assert!(matches!(
+            apply_live_diff_classified(&current, &invalid, 20, NOW - 5, NOW),
+            Err(LiveDiffRejection::Sequence(_))
+        ));
+
+        invalid.prev_update_id = 103;
+        invalid.first_update_id = 105;
+        assert!(matches!(
+            apply_live_diff_classified(&current, &invalid, 20, NOW - 5, NOW),
+            Err(LiveDiffRejection::Sequence(_))
+        ));
+        assert_eq!(current.last_applied_u, 103);
+    }
+
+    #[test]
+    fn classified_live_diff_maps_header_levels_depth_and_crossed_book_to_shape() {
+        let current = build_snapshot(&snapshot(), &valid_updates(), 4, NOW - 10, NOW).unwrap();
+
+        let mut malformed_header = update(104, 104, 103, NOW - 20);
+        malformed_header.first_update_id = 0;
+        assert!(matches!(
+            apply_live_diff_classified(&current, &malformed_header, 20, NOW - 5, NOW),
+            Err(LiveDiffRejection::Shape(_))
+        ));
+
+        let mut invalid_level = update(104, 104, 103, NOW - 20);
+        invalid_level.bids.push(["not-a-price".into(), "1".into()]);
+        assert!(matches!(
+            apply_live_diff_classified(&current, &invalid_level, 20, NOW - 5, NOW),
+            Err(LiveDiffRejection::Shape(_))
+        ));
+
+        assert!(matches!(
+            apply_live_diff_classified(&current, &update(104, 104, 103, NOW - 20), 19, NOW - 5, NOW),
+            Err(LiveDiffRejection::Shape(_))
+        ));
+
+        let mut crossed = update(104, 104, 103, NOW - 20);
+        crossed.asks.push(["9999".into(), "1".into()]);
+        assert!(matches!(
+            apply_live_diff_classified(&current, &crossed, 20, NOW - 5, NOW),
+            Err(LiveDiffRejection::Shape(_))
+        ));
+    }
+
+    #[test]
+    fn classified_live_diff_preserves_existing_validation_precedence() {
+        let current = build_snapshot(&snapshot(), &valid_updates(), 4, NOW - 10, NOW).unwrap();
+
+        // Header validation precedes sequence validation, as in the existing path.
+        let mut malformed_and_discontinuous = update(104, 104, 102, NOW - 20);
+        malformed_and_discontinuous.first_update_id = 0;
+        assert!(matches!(
+            apply_live_diff_classified(
+                &current,
+                &malformed_and_discontinuous,
+                20,
+                NOW - 5,
+                NOW
+            ),
+            Err(LiveDiffRejection::Shape(_))
+        ));
+
+        // Sequence validation precedes level and timestamp validation.
+        let mut stale_and_discontinuous = update(104, 104, 102, NOW - MAX_BOOK_AGE_MS - 1);
+        stale_and_discontinuous.bids.push(["not-a-price".into(), "1".into()]);
+        assert!(matches!(
+            apply_live_diff_classified(&current, &stale_and_discontinuous, 20, NOW - 5, NOW),
+            Err(LiveDiffRejection::Sequence(_))
+        ));
+
+        // Shape validation precedes freshness validation after sequence passes.
+        let mut stale_and_malformed = update(104, 104, 103, NOW - MAX_BOOK_AGE_MS - 1);
+        stale_and_malformed.bids.push(["not-a-price".into(), "1".into()]);
+        assert!(matches!(
+            apply_live_diff_classified(&current, &stale_and_malformed, 20, NOW - 5, NOW),
+            Err(LiveDiffRejection::Shape(_))
+        ));
+        assert_eq!(current.last_applied_u, 103);
+    }
+
 }
