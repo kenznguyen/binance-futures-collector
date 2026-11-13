@@ -107,3 +107,41 @@ The read-only comparison against T2's frozen `T1_T2_ORDERBOOK_V1` validator foun
 - Run #611 `43347993751` completed at 2026-11-13T01:55:04Z with overall conclusion **SUCCESS** on exact source SHA `96cd94f3eb4d2bb5e449537672c145ee055b8076`.
 - All six jobs PASS, including Docker build job `131631890815`; no outstanding CI job remains.
 - Therefore the schema-alignment increment's exact-SHA CI status is promoted from PARTIAL to **PASS**. This does not promote runtime, transport, T2 reader, or end-to-end readiness.
+
+## C2.2 — dedicated loopback HTTP snapshot endpoint (2026-11-13)
+
+### Implementation
+
+- Added src/orderbook_http.rs as a read-only transport over the live SnapshotPublisher.
+- Route: GET /internal/v1/orderbook/{symbol}; fixed production bind 127.0.0.1:8787.
+- Endpoint is opt-in: it starts only when T1_ORDERBOOK_HTTP_TOKEN is present and non-empty. The token is supplied through the process environment, not source control or URL.
+- Handler checks loopback peer, requires Bearer authentication, accepts only GET for BTCUSDT, reads one freshness-checked immutable snapshot with one read_fresh(now_ms), serializes that object without numeric coercion, and returns Cache-Control: no-store.
+- Request size, response size, concurrent connection count and handler time are bounded. Broken/unavailable snapshots return non-2xx; no last-good cache, write route, subscription, or mutation path was added.
+- Integrated into the collector lifecycle and aborts the listener task during graceful shutdown. Default runtime behavior remains disabled when the token is unset.
+- Source branch: feature/t1-connection-sidecar-integration-20261107.
+- Exact tested branch HEAD/source SHA: 8326ac2075ebd644e5cca0146a77ce1ae110954c.
+- Current source blobs: src/orderbook_http.rs bd9aa9b66b40dca2cc6231f7599368d3de900a00; src/lib.rs e57fff3722e7af099c996446fa9ccdc3065fe28d; src/main.rs ba60c7ca8259f3c126eb62851f9fab68f8025e28.
+
+### Test and exact-SHA CI evidence
+
+- The first fixture run exposed a CRLF parser mismatch: the parser compared the header terminator against an escaped literal. The implementation was corrected in commit 8326ac2075ebd644e5cca0146a77ce1ae110954c; the four endpoint contract tests then passed.
+- Exact-SHA workflow run #637: 43355193041, source SHA 8326ac2075ebd644e5cca0146a77ce1ae110954c, completed SUCCESS at 2026-11-13T02:56:20Z.
+- All six workflow jobs PASS:
+  - x86_64 collector job 131655458945: Format, Clippy, Build, Test, sidecar-writer format/Clippy/offline tests and artifact upload PASS.
+  - ARM64 collector job 131655458795: native ARM64 assertion, Format, Clippy, Build, Test, sidecar-writer offline tests, ELF verification and artifact upload PASS.
+  - Dashboard frontend 131655458874: PASS.
+  - Dashboard backend 131655458978: PASS.
+  - Security 131655458484: PASS.
+  - Docker 131655458759: PASS.
+- Per architecture Rust test groups: 103 + 3 + 12 + 27 = 145 passed, 0 failed. Sidecar-writer offline test step also PASS.
+- x86_64 artifact ID 14006001176, name t1-collector-linux-x86_64-8326ac2075ebd644e5cca0146a77ce1ae110954c, ZIP SHA-256 54fcea918ed96f4e036f8d483c87bb6376f71d54fc226319a3067c12be1b0112.
+- ARM64 artifact ID 14005816766, name t1-collector-linux-aarch64-8326ac2075ebd644e5cca0146a77ce1ae110954c, ZIP SHA-256 ae9b52040fa46caf82c04069679c9b1d9213e737db318c9f52911ab77f40a8e3.
+- Both artifacts expire 2026-11-20T02:54–02:55Z; CI evidence only, not approved for deployment or VPS installation.
+
+### C2.2 T1 disposition
+
+- Loopback HTTP endpoint source, x86_64/ARM64 build and exact-SHA CI: PASS.
+- Endpoint unit tests: PASS on both architectures.
+- Runtime activation, actual inter-process T1→T2 delivery, reconnect/re-anchor soak and VPS behavior: NOT VERIFIED / NOT RUN.
+- T2 reader and cross-boundary integration: NOT IMPLEMENTED at this checkpoint.
+- No T0 data/API/storage, VPS, systemd/autostart, deployment, strategy, ledger, Shared Risk Engine, AI execution or real-order changes.
