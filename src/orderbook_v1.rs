@@ -31,6 +31,37 @@ impl std::fmt::Display for LiveDiffRejection {
 impl std::error::Error for LiveDiffRejection {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum V1RejectionClass {
+    FreshnessRejected,
+    SequenceRejected,
+    ShapeRejected,
+    PublishFenced,
+    LegacyMirrorRejected,
+}
+
+impl V1RejectionClass {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::FreshnessRejected => "FRESHNESS_REJECTED",
+            Self::SequenceRejected => "SEQUENCE_REJECTED",
+            Self::ShapeRejected => "SHAPE_REJECTED",
+            Self::PublishFenced => "PUBLISH_FENCED",
+            Self::LegacyMirrorRejected => "LEGACY_MIRROR_REJECTED",
+        }
+    }
+}
+
+impl From<&LiveDiffRejection> for V1RejectionClass {
+    fn from(rejection: &LiveDiffRejection) -> Self {
+        match rejection {
+            LiveDiffRejection::Freshness(_) => Self::FreshnessRejected,
+            LiveDiffRejection::Sequence(_) => Self::SequenceRejected,
+            LiveDiffRejection::Shape(_) => Self::ShapeRejected,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OrderbookV1State {
     Initializing,
     Buffering,
@@ -800,6 +831,40 @@ mod tests {
     #[test]
     fn rest_anchor_without_exchange_timestamped_bridge_is_not_publishable() {
         assert!(build_snapshot(&snapshot(), &[], 1, NOW, NOW).is_err());
+    }
+
+    #[test]
+    fn all_v1_rejection_classes_have_stable_diagnostic_labels() {
+        assert_eq!(
+            V1RejectionClass::FreshnessRejected.label(),
+            "FRESHNESS_REJECTED"
+        );
+        assert_eq!(
+            V1RejectionClass::SequenceRejected.label(),
+            "SEQUENCE_REJECTED"
+        );
+        assert_eq!(V1RejectionClass::ShapeRejected.label(), "SHAPE_REJECTED");
+        assert_eq!(V1RejectionClass::PublishFenced.label(), "PUBLISH_FENCED");
+        assert_eq!(
+            V1RejectionClass::LegacyMirrorRejected.label(),
+            "LEGACY_MIRROR_REJECTED"
+        );
+    }
+
+    #[test]
+    fn typed_live_diff_errors_map_to_their_stable_rejection_classes() {
+        assert_eq!(
+            V1RejectionClass::from(&LiveDiffRejection::Freshness("stale".into())),
+            V1RejectionClass::FreshnessRejected
+        );
+        assert_eq!(
+            V1RejectionClass::from(&LiveDiffRejection::Sequence("pu".into())),
+            V1RejectionClass::SequenceRejected
+        );
+        assert_eq!(
+            V1RejectionClass::from(&LiveDiffRejection::Shape("level".into())),
+            V1RejectionClass::ShapeRejected
+        );
     }
 
     #[test]
