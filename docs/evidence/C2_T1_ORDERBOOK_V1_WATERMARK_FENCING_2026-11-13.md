@@ -100,3 +100,10 @@ The read-only comparison against T2's frozen `T1_T2_ORDERBOOK_V1` validator foun
 - Overall workflow #611: **PARTIAL / NOT FINAL** until Docker job completes.
 - T1 runtime reconnect/re-anchor, transport/storage atomicity to T2, T2 live reader and end-to-end delivery: **NOT VERIFIED / NOT IMPLEMENTED**.
 - TDD RED for schema alignment: **PASS** (run #609 reproduced the expected failure); GREEN: **PASS** (run #611 tests passed).
+
+
+### Final workflow closure — run #611
+
+- Run #611 `43347993751` completed at 2026-11-13T01:55:04Z with overall conclusion **SUCCESS** on exact source SHA `96cd94f3eb4d2bb5e449537672c145ee055b8076`.
+- All six jobs PASS, including Docker build job `131631890815`; no outstanding CI job remains.
+- Therefore the schema-alignment increment's exact-SHA CI status is promoted from PARTIAL to **PASS**. This does not promote runtime, transport, T2 reader, or end-to-end readiness.
