@@ -979,7 +979,6 @@ mod tests {
         assert_eq!(backoff_for(u32::MAX, init, max), max);
     }
 
-
     fn depth_update_fixture() -> crate::models::DepthUpdateWs {
         crate::models::DepthUpdateWs {
             event_type: "depthUpdate".to_string(),
