@@ -849,12 +849,12 @@ impl OrderbookManager {
         let applied_at = Instant::now();
         let receive_to_apply_max_ms = buffered_updates
             .iter()
-            .map(|buffered| applied_at.duration_since(buffered.received_at).as_millis())
+            .map(|buffered| buffered.timing_at(applied_at).receive_to_apply.as_millis())
             .max()
             .unwrap_or(0);
         let buffer_residence_max_ms = buffered_updates
             .iter()
-            .map(|buffered| applied_at.duration_since(buffered.buffered_at).as_millis())
+            .map(|buffered| buffered.timing_at(applied_at).buffer_residence.as_millis())
             .max()
             .unwrap_or(0);
         info!(
@@ -1404,10 +1404,11 @@ impl OrderbookManager {
                             break;
                         };
                         let decision_at = Instant::now();
-                        receive_to_apply_max_ms = receive_to_apply_max_ms
-                            .max(decision_at.duration_since(buffered.received_at).as_millis());
-                        buffer_residence_max_ms = buffer_residence_max_ms
-                            .max(decision_at.duration_since(buffered.buffered_at).as_millis());
+                        let timing = buffered.timing_at(decision_at);
+                        receive_to_apply_max_ms =
+                            receive_to_apply_max_ms.max(timing.receive_to_apply.as_millis());
+                        buffer_residence_max_ms =
+                            buffer_residence_max_ms.max(timing.buffer_residence.as_millis());
                         let now_ms = chrono::Utc::now().timestamp_millis();
                         match apply_live_diff_classified(
                             &current,
