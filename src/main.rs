@@ -18,6 +18,7 @@ use tokio::sync::{mpsc, Notify};
 
 use binance_futures_collector::{
     collectors::{OrderbookManager, RestCollector, SymbolDiscovery, SymbolSetTracker},
+    orderbook_http::{bind_loopback, serve},
     orderbook_v1::SnapshotPublisher,
     rest::{ProxyManager, RestClient},
     utils::{CsvWriter, GapRegistry, StatsExporter},
@@ -277,6 +278,26 @@ async fn main() -> Result<()> {
     // Initialize WebSocket manager FIRST (must buffer messages before snapshots)
     // Use full symbol list (BTCUSDT filtered at message handler level)
     let btc_orderbook_publisher = Arc::new(SnapshotPublisher::new());
+
+    // The V1 transport is opt-in and remains disabled unless a secret is
+    // supplied out-of-band. Its only bind address is 127.0.0.1:8787.
+    let orderbook_http_join = match std::env::var("T1_ORDERBOOK_HTTP_TOKEN") {
+        Ok(token) if !token.is_empty() => {
+            let listener = bind_loopback().await?;
+            info!("T1 Order Book V1 HTTP enabled on 127.0.0.1:8787");
+            let publisher = btc_orderbook_publisher.clone();
+            Some(tokio::spawn(async move {
+                if let Err(error) = serve(listener, publisher, token).await {
+                    error!("T1 Order Book V1 HTTP server stopped: {}", error);
+                }
+            }))
+        }
+        _ => {
+            info!("T1 Order Book V1 HTTP disabled (T1_ORDERBOOK_HTTP_TOKEN is unset)");
+            None
+        }
+    };
+
     let orderbook_v1_publishers = Arc::new(dashmap::DashMap::new());
     orderbook_v1_publishers.insert("btcusdt".to_string(), btc_orderbook_publisher.clone());
     let ws_manager = Arc::new(WebSocketManager::new(
@@ -518,6 +539,16 @@ async fn main() -> Result<()> {
     }
 
     info!("Shutdown signal received - Beginning graceful shutdown");
+
+    if let Some(task) = orderbook_http_join {
+        info!("  • Stopping internal Order Book V1 HTTP listener...");
+        task.abort();
+        if let Err(error) = task.await {
+            if !error.is_cancelled() {
+                return Err(anyhow::anyhow!("Order Book V1 HTTP task failed: {error}"));
+            }
+        }
+    }
 
     info!("  • Stopping symbol discovery and stats tasks...");
     if let Some(task) = symbol_discovery_join {
