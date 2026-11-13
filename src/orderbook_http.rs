@@ -310,8 +310,6 @@ async fn write_raw_response(
     stream.shutdown().await
 }
 
-
-
 #[cfg(test)]
 mod tests {
     use std::{io, sync::Arc, time::Duration};
