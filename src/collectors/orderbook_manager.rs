@@ -1403,20 +1403,21 @@ impl OrderbookManager {
                             rejection_class = Some(V1RejectionClass::PublishFenced);
                             break;
                         };
-                        let decision_at = Instant::now();
-                        let timing = buffered.timing_at(decision_at);
-                        receive_to_apply_max_ms =
-                            receive_to_apply_max_ms.max(timing.receive_to_apply.as_millis());
-                        buffer_residence_max_ms =
-                            buffer_residence_max_ms.max(timing.buffer_residence.as_millis());
                         let now_ms = chrono::Utc::now().timestamp_millis();
-                        match apply_live_diff_classified(
+                        let apply_result = apply_live_diff_classified(
                             &current,
                             &buffered.update,
                             self.config.orderbook.depth_limit as usize,
                             now_ms,
                             now_ms,
-                        ) {
+                        );
+                        let applied_at = Instant::now();
+                        let timing = buffered.timing_at(applied_at);
+                        receive_to_apply_max_ms =
+                            receive_to_apply_max_ms.max(timing.receive_to_apply.as_millis());
+                        buffer_residence_max_ms =
+                            buffer_residence_max_ms.max(timing.buffer_residence.as_millis());
+                        match apply_result {
                             Ok(candidate) => {
                                 if let Err(error) =
                                     self.btc_v1_publisher.publish_if_current(candidate)
