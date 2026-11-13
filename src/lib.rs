@@ -7,5 +7,8 @@ pub mod rest;
 pub mod utils;
 pub mod websocket;
 
+#[cfg(test)]
+mod orderbook_http;
+
 pub use config::Config;
 pub use models::*;
