@@ -37,7 +37,7 @@ pub struct WebSocketManager {
     batch_shutdown_flags: Arc<DashMap<usize, Arc<AtomicBool>>>,
 
     // Ring buffers with maxlen to prevent unbounded memory growth
-    symbol_buffers: Arc<DashMap<String, Arc<Mutex<VecDeque<DepthUpdateWs>>>>>,
+    symbol_buffers: Arc<DashMap<String, Arc<Mutex<VecDeque<BufferedDepthUpdate>>>>>,
 
     // Track message counts for stability checks
     symbol_message_counts: Arc<DashMap<String, usize>>,
@@ -55,6 +55,14 @@ struct ConnectionState {
     is_connected: bool,
     last_pong: std::time::Instant,
     message_count: u64,
+}
+
+/// Internal-only depth envelope retaining monotonic receive and ring insertion times.
+#[derive(Debug, Clone)]
+pub struct BufferedDepthUpdate {
+    pub update: DepthUpdateWs,
+    pub received_at: Instant,
+    pub buffered_at: Instant,
 }
 
 /// WebSocket message types
@@ -225,16 +233,26 @@ impl WebSocketManager {
         Ok(())
     }
 
-    /// Atomically drains and returns the buffer for a given symbol.
-    /// This is the designated, thread-safe interface for the OrderbookManager.
-    pub async fn drain_buffer(&self, symbol: &str) -> Vec<DepthUpdateWs> {
+    /// Atomically drains a symbol buffer and reports its exact pre/post depths.
+    pub async fn drain_buffer_with_depth(
+        &self,
+        symbol: &str,
+    ) -> (Vec<BufferedDepthUpdate>, usize, usize) {
         if let Some(buffer_arc) = self.symbol_buffers.get(symbol) {
             let mut buffer = buffer_arc.lock().await;
+            let depth_before = buffer.len();
             let drained: Vec<_> = buffer.drain(..).collect();
-            drained
+            let depth_after = buffer.len();
+            (drained, depth_before, depth_after)
         } else {
-            Vec::new()
+            (Vec::new(), 0, 0)
         }
+    }
+
+    /// Atomically drains and returns the buffer for a given symbol.
+    /// This is the designated, thread-safe interface for the OrderbookManager.
+    pub async fn drain_buffer(&self, symbol: &str) -> Vec<BufferedDepthUpdate> {
+        self.drain_buffer_with_depth(symbol).await.0
     }
 
     pub fn take_buffer_overflow(&self, symbol: &str) -> bool {
@@ -556,7 +574,7 @@ impl WebSocketManager {
 
                     match msg_result {
                         Ok(Message::Text(text)) => {
-                            if let Err(e) = self.process_text_message(batch_id, &text).await {
+                            if let Err(e) = self.process_text_message(batch_id, &text, Instant::now()).await {
                                 error!("Batch {} message processing error: {}", batch_id, e);
                             }
                         }
@@ -676,9 +694,12 @@ impl WebSocketManager {
         }
     }
 
-    async fn process_text_message(&self, batch_id: usize, text: &str) -> Result<()> {
-        // Capture timestamp when message is received for latency tracking
-        let received_at = std::time::Instant::now();
+    async fn process_text_message(
+        &self,
+        batch_id: usize,
+        text: &str,
+        received_at: Instant,
+    ) -> Result<()> {
 
         // Parse as wrapped message (Binance futures uses {"stream": "...", "data": {...}})
         #[derive(serde::Deserialize)]
@@ -723,7 +744,7 @@ impl WebSocketManager {
                 let update: DepthUpdateWs = serde_json::from_value(data)?;
 
                 // Buffer the update (don't process yet - that's the orderbook manager's job)
-                self.buffer_depth_update(update.clone()).await;
+                self.buffer_depth_update(update.clone(), received_at).await;
 
                 // Send to message handler for CSV writing
                 let _ = self
@@ -764,7 +785,7 @@ impl WebSocketManager {
     }
 
     /// Buffer depth update in ring buffer
-    async fn buffer_depth_update(&self, update: DepthUpdateWs) {
+    async fn buffer_depth_update(&self, update: DepthUpdateWs, received_at: Instant) {
         // Convert to lowercase to match buffer keys (Binance sends uppercase)
         let symbol = update.symbol.to_lowercase();
 
@@ -783,7 +804,11 @@ impl WebSocketManager {
         if let Some(buffer_arc) = self.symbol_buffers.get(&symbol) {
             let mut buffer = buffer_arc.lock().await;
 
-            buffer.push_back(update.clone());
+            buffer.push_back(BufferedDepthUpdate {
+                update: update.clone(),
+                received_at,
+                buffered_at: Instant::now(),
+            });
 
             // Maintain ring buffer constraints
             let capacity = self.config.websocket.ring_buffer_capacity;
@@ -805,7 +830,7 @@ impl WebSocketManager {
                     .as_millis() as i64;
 
                 while buffer.len() > 1 {
-                    let first_ts = buffer.front().unwrap().event_time;
+                    let first_ts = buffer.front().unwrap().update.event_time;
                     if (now - first_ts) > (max_seconds * 1000) as i64 {
                         buffer.pop_front();
                         evicted = true;
@@ -996,26 +1021,32 @@ mod tests {
     #[test]
     fn buffered_depth_update_preserves_original_monotonic_receive_instant() {
         let received_at = std::time::Instant::now();
+        let buffered_at = received_at + Duration::from_millis(3);
         let buffered = BufferedDepthUpdate {
             update: depth_update_fixture(),
             received_at,
+            buffered_at,
         };
 
         assert_eq!(buffered.received_at, received_at);
+        assert_eq!(buffered.buffered_at, buffered_at);
         assert_eq!(buffered.update.final_update_id, 102);
     }
 
     #[test]
     fn cloning_buffered_depth_update_does_not_replace_receive_instant() {
         let received_at = std::time::Instant::now();
+        let buffered_at = received_at + Duration::from_millis(5);
         let buffered = BufferedDepthUpdate {
             update: depth_update_fixture(),
             received_at,
+            buffered_at,
         };
 
         let cloned = buffered.clone();
 
         assert_eq!(cloned.received_at, received_at);
+        assert_eq!(cloned.buffered_at, buffered_at);
         assert_eq!(cloned.update.final_update_id, 102);
     }
 
