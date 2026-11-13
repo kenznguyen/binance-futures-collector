@@ -13,7 +13,7 @@ use crate::constants;
 use crate::models::*;
 use crate::orderbook_v1::{
     apply_live_diff_classified, build_snapshot, LiveDiffRejection, OrderbookV1State,
-    SnapshotPublisher,
+    SnapshotPublisher, V1RejectionClass,
 };
 use crate::rest::RestClient;
 use crate::utils::{compare_normalized_decimals, normalize_plain_decimal, CsvWriter, GapRegistry};
@@ -1396,11 +1396,11 @@ impl OrderbookManager {
                     let mut applied_before_rejection = 0usize;
                     let mut receive_to_apply_max_ms = 0u128;
                     let mut buffer_residence_max_ms = 0u128;
-                    let mut rejection_class = "NONE";
+                    let mut rejection_class: Option<V1RejectionClass> = None;
 
                     for buffered in &updates {
                         let Some(current) = self.btc_v1_publisher.read() else {
-                            rejection_class = "PUBLISH_FENCED";
+                            rejection_class = Some(V1RejectionClass::PublishFenced);
                             break;
                         };
                         let decision_at = Instant::now();
@@ -1421,12 +1421,13 @@ impl OrderbookManager {
                                 if let Err(error) =
                                     self.btc_v1_publisher.publish_if_current(candidate)
                                 {
-                                    rejection_class = "PUBLISH_FENCED";
+                                    rejection_class = Some(V1RejectionClass::PublishFenced);
                                     warn!(
                                         "[BTCUSDT][PUBLISH_FENCED] V1 publish rejected: {error:#}"
                                     );
                                     break;
                                 }
+                                applied_before_rejection += 1;
                                 let legacy_apply_error = {
                                     if let Some(mut book) = self.orderbooks.get_mut(&symbol) {
                                         match Self::apply_update_to_book(
@@ -1447,7 +1448,7 @@ impl OrderbookManager {
                                     }
                                 };
                                 if let Some(error) = legacy_apply_error {
-                                    rejection_class = "LEGACY_MIRROR_REJECTED";
+                                    rejection_class = Some(V1RejectionClass::LegacyMirrorRejected);
                                     warn!(
                                         "[BTCUSDT][LEGACY_MIRROR_REJECTED] V1 legacy mirror update rejected: {error}"
                                     );
@@ -1459,22 +1460,19 @@ impl OrderbookManager {
                                     }
                                     break;
                                 }
-                                applied_before_rejection += 1;
                             }
                             Err(error) => {
-                                let (class, reason) = match &error {
-                                    LiveDiffRejection::Freshness(_) => {
-                                        ("FRESHNESS_REJECTED", "v1_live_freshness_rejected")
-                                    }
-                                    LiveDiffRejection::Sequence(_) => {
-                                        ("SEQUENCE_REJECTED", "v1_live_sequence_rejected")
-                                    }
-                                    LiveDiffRejection::Shape(_) => {
-                                        ("SHAPE_REJECTED", "v1_live_shape_rejected")
-                                    }
+                                let class = V1RejectionClass::from(&error);
+                                let reason = match &error {
+                                    LiveDiffRejection::Freshness(_) => "v1_live_freshness_rejected",
+                                    LiveDiffRejection::Sequence(_) => "v1_live_sequence_rejected",
+                                    LiveDiffRejection::Shape(_) => "v1_live_shape_rejected",
                                 };
-                                rejection_class = class;
-                                warn!("[BTCUSDT][{class}] V1 live diff rejected; re-anchoring: {error}");
+                                rejection_class = Some(class);
+                                warn!(
+                                    "[BTCUSDT][{}] V1 live diff rejected; re-anchoring: {error}",
+                                    class.label()
+                                );
                                 if let Err(resync_error) =
                                     self.trigger_resnapshot("btcusdt", reason).await
                                 {
@@ -1494,7 +1492,7 @@ impl OrderbookManager {
                         receive_to_apply_max_ms,
                         buffer_residence_max_ms,
                         applied_before_rejection,
-                        rejection_class,
+                        rejection_class.map(V1RejectionClass::label).unwrap_or("NONE"),
                     );
                     continue;
                 }
