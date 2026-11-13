@@ -11,10 +11,13 @@ use tokio::time::{interval, sleep};
 use crate::config::Config;
 use crate::constants;
 use crate::models::*;
-use crate::orderbook_v1::{apply_live_diff, build_snapshot, OrderbookV1State, SnapshotPublisher};
+use crate::orderbook_v1::{
+    apply_live_diff_classified, build_snapshot, LiveDiffRejection, OrderbookV1State,
+    SnapshotPublisher,
+};
 use crate::rest::RestClient;
 use crate::utils::{compare_normalized_decimals, normalize_plain_decimal, CsvWriter, GapRegistry};
-use crate::websocket::connection_manager::WebSocketManager;
+use crate::websocket::connection_manager::{BufferedDepthUpdate, WebSocketManager};
 
 /// Manages orderbook state and gap detection for all symbols
 pub struct OrderbookManager {
@@ -42,7 +45,7 @@ pub struct OrderbookManager {
     btc_v1_publisher: Arc<SnapshotPublisher>,
     btc_v1_rest_snapshot: Arc<DashMap<String, DepthSnapshotRest>>,
     btc_v1_anchor_generation: Arc<DashMap<String, u64>>,
-    btc_v1_buffered_updates: Arc<DashMap<String, Vec<DepthUpdateWs>>>,
+    btc_v1_buffered_updates: Arc<DashMap<String, Vec<BufferedDepthUpdate>>>,
 
     // Symbols confirmed delisted by periodic discovery (shared with main and
     // the REST pollers). A member's manage_symbol task exits and drops state.
@@ -678,6 +681,10 @@ impl OrderbookManager {
         }
 
         let buffered = self.websocket_manager.drain_buffer(symbol).await;
+        let buffered: Vec<DepthUpdateWs> = buffered
+            .into_iter()
+            .map(|buffered| buffered.update)
+            .collect();
 
         if buffered.is_empty() {
             debug!("[{}] No buffered updates yet for attach", symbol);
@@ -814,20 +821,24 @@ impl OrderbookManager {
             return Ok(false);
         }
 
-        let updates = self
+        let buffered_updates = self
             .btc_v1_buffered_updates
             .get(symbol)
             .map(|buffer| buffer.value().clone())
             .unwrap_or_default();
 
-        if updates.is_empty()
-            || updates
+        if buffered_updates.is_empty()
+            || buffered_updates
                 .iter()
-                .all(|update| update.final_update_id <= anchor.last_update_id)
+                .all(|buffered| buffered.update.final_update_id <= anchor.last_update_id)
         {
             return Ok(false);
         }
 
+        let updates: Vec<DepthUpdateWs> = buffered_updates
+            .iter()
+            .map(|buffered| buffered.update.clone())
+            .collect();
         let now_ms = chrono::Utc::now().timestamp_millis();
         let candidate = match build_snapshot(&anchor, &updates, anchor_generation, now_ms, now_ms) {
             Ok(candidate) => candidate,
@@ -1344,22 +1355,39 @@ impl OrderbookManager {
                     continue;
                 }
 
-                // Drain new updates from WebSocket ring buffer
-                let updates = self.websocket_manager.drain_buffer(&symbol).await;
+                // Drain new updates and capture exact buffer depths under the ring lock.
+                let (updates, buffer_depth_before, buffer_depth_after) = self
+                    .websocket_manager
+                    .drain_buffer_with_depth(&symbol)
+                    .await;
 
                 if updates.is_empty() {
                     continue;
                 }
 
                 if symbol.eq_ignore_ascii_case("btcusdt") {
-                    for update in &updates {
+                    let batch_started = Instant::now();
+                    let mut applied_before_rejection = 0usize;
+                    let mut receive_to_apply_max_ms = 0u128;
+                    let mut buffer_residence_max_ms = 0u128;
+                    let mut rejection_class = "NONE";
+
+                    for buffered in &updates {
                         let Some(current) = self.btc_v1_publisher.read() else {
+                            rejection_class = "PUBLISH_FENCED";
                             break;
                         };
+                        let decision_at = Instant::now();
+                        receive_to_apply_max_ms = receive_to_apply_max_ms.max(
+                            decision_at.duration_since(buffered.received_at).as_millis(),
+                        );
+                        buffer_residence_max_ms = buffer_residence_max_ms.max(
+                            decision_at.duration_since(buffered.buffered_at).as_millis(),
+                        );
                         let now_ms = chrono::Utc::now().timestamp_millis();
-                        match apply_live_diff(
+                        match apply_live_diff_classified(
                             &current,
-                            update,
+                            &buffered.update,
                             self.config.orderbook.depth_limit as usize,
                             now_ms,
                             now_ms,
@@ -1368,12 +1396,13 @@ impl OrderbookManager {
                                 if let Err(error) =
                                     self.btc_v1_publisher.publish_if_current(candidate)
                                 {
-                                    warn!("[BTCUSDT] V1 publish fenced: {error:#}");
+                                    rejection_class = "PUBLISH_FENCED";
+                                    warn!("[BTCUSDT][PUBLISH_FENCED] V1 publish rejected: {error:#}");
                                     break;
                                 }
                                 let legacy_apply_error = {
                                     if let Some(mut book) = self.orderbooks.get_mut(&symbol) {
-                                        match Self::apply_update_to_book(&mut book, update) {
+                                        match Self::apply_update_to_book(&mut book, &buffered.update) {
                                             Ok(()) => {
                                                 Self::trim_book_to_depth(
                                                     self.config.orderbook.depth_limit as usize,
@@ -1388,7 +1417,10 @@ impl OrderbookManager {
                                     }
                                 };
                                 if let Some(error) = legacy_apply_error {
-                                    warn!("[BTCUSDT] V1 legacy mirror update rejected: {error}");
+                                    rejection_class = "LEGACY_MIRROR_REJECTED";
+                                    warn!(
+                                        "[BTCUSDT][LEGACY_MIRROR_REJECTED] V1 legacy mirror update rejected: {error}"
+                                    );
                                     if let Err(resync_error) = self
                                         .trigger_resnapshot("btcusdt", "v1_live_apply_rejected")
                                         .await
@@ -1397,15 +1429,24 @@ impl OrderbookManager {
                                     }
                                     break;
                                 }
+                                applied_before_rejection += 1;
                             }
                             Err(error) => {
-                                warn!("[BTCUSDT] V1 live diff rejected; re-anchoring: {error:#}");
-                                if let Err(resync_error) = self
-                                    .trigger_resnapshot(
-                                        "btcusdt",
-                                        "v1_live_sequence_or_shape_failure",
-                                    )
-                                    .await
+                                let (class, reason) = match &error {
+                                    LiveDiffRejection::Freshness(_) => {
+                                        ("FRESHNESS_REJECTED", "v1_live_freshness_rejected")
+                                    }
+                                    LiveDiffRejection::Sequence(_) => {
+                                        ("SEQUENCE_REJECTED", "v1_live_sequence_rejected")
+                                    }
+                                    LiveDiffRejection::Shape(_) => {
+                                        ("SHAPE_REJECTED", "v1_live_shape_rejected")
+                                    }
+                                };
+                                rejection_class = class;
+                                warn!("[BTCUSDT][{class}] V1 live diff rejected; re-anchoring: {error}");
+                                if let Err(resync_error) =
+                                    self.trigger_resnapshot("btcusdt", reason).await
                                 {
                                     error!("[BTCUSDT] Failed to schedule V1 re-anchor: {resync_error:#}");
                                 }
@@ -1413,12 +1454,24 @@ impl OrderbookManager {
                             }
                         }
                     }
+
+                    info!(
+                        "[BTCUSDT] V1 batch diagnostics: size={} buffer_depth_before={} buffer_depth_after={} batch_processing_ms={} receive_to_apply_max_ms={} buffer_residence_max_ms={} applied_before_rejection={} rejection_class={}",
+                        updates.len(),
+                        buffer_depth_before,
+                        buffer_depth_after,
+                        batch_started.elapsed().as_millis(),
+                        receive_to_apply_max_ms,
+                        buffer_residence_max_ms,
+                        applied_before_rejection,
+                        rejection_class,
+                    );
                     continue;
                 }
 
                 // Non-BTCUSDT symbols retain the legacy collector path.
-                for update in &updates {
-                    if let Err(e) = self.apply_diff(&symbol, update).await {
+                for buffered in &updates {
+                    if let Err(e) = self.apply_diff(&symbol, &buffered.update).await {
                         error!("[{}] Failed to apply live depth update: {}", symbol, e);
                     }
                 }
