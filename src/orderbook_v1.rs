@@ -675,12 +675,16 @@ mod tests {
     fn serialized_snapshot_matches_t2_v1_wire_field_names_and_string_levels() {
         let result = build_snapshot(&snapshot(), &valid_updates(), 7, NOW - 10, NOW).unwrap();
         let value = serde_json::to_value(result).unwrap();
-        assert_eq!(value["contractVersion"], CONTRACT_VERSION);
+        assert_eq!(value["contractVersion"], "T1_T2_ORDERBOOK_V1");
         assert_eq!(value["symbol"], "BTCUSDT");
         assert_eq!(value["market"], "BINANCE_USDM_PERPETUAL");
         assert_eq!(value["continuity"], "VERIFIED");
         assert_eq!(value["freshness"], "FRESH");
         assert_eq!(value["decisionWatermark"], 103);
+        assert_eq!(value["depth"]["bids"], 20);
+        assert_eq!(value["depth"]["asks"], 20);
+        assert!(value.get("bidDepth").is_none());
+        assert!(value.get("askDepth").is_none());
         assert!(value["bids"][0].is_array());
         assert!(value["bids"][0][0].is_string());
         assert!(value["bids"][0][1].is_string());
