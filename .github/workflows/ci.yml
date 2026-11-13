@@ -60,6 +60,64 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+
+  collector-arm64:
+    name: collector · native ARM64 build · test · artifact
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Assert native ARM64 runner
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = "aarch64"
+          rustc -vV | grep -F "host: aarch64-unknown-linux-gnu"
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Build standalone ARM64 Collector
+        run: cargo build --release --locked
+
+      - name: Test
+        run: cargo test --all
+
+      - name: Sidecar writer offline tests
+        run: cargo test --manifest-path crates/connection-sidecar/Cargo.toml --all-targets
+
+      - name: Verify ARM64 ELF and prepare checksums
+        if: github.event_name == 'push'
+        shell: bash
+        run: |
+          set -euo pipefail
+          binary=target/release/binance-futures-collector
+          test -x "$binary"
+          file "$binary" | tee target/release/ELF-IDENTITY.txt
+          readelf -h "$binary" | grep -F "Machine:                           AArch64"
+          cd target/release
+          sha256sum binance-futures-collector > SHA256SUMS
+
+      - name: Upload standalone Linux ARM64 Collector artifact
+        if: github.event_name == 'push'
+        uses: actions/upload-artifact@v4
+        with:
+          name: t1-collector-linux-aarch64-${{ github.sha }}
+          path: |
+            target/release/binance-futures-collector
+            target/release/SHA256SUMS
+            target/release/ELF-IDENTITY.txt
+          if-no-files-found: error
+          retention-days: 7
+
   dashboard-backend:
     name: dashboard backend · pytest
     runs-on: ubuntu-latest
