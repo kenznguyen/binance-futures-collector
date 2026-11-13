@@ -702,7 +702,6 @@ impl WebSocketManager {
         text: &str,
         received_at: Instant,
     ) -> Result<()> {
-
         // Parse as wrapped message (Binance futures uses {"stream": "...", "data": {...}})
         #[derive(serde::Deserialize)]
         struct Wrapper {
