@@ -797,7 +797,10 @@ impl OrderbookManager {
             return Ok(false);
         }
 
-        let drained = self.websocket_manager.drain_buffer(symbol).await;
+        let (drained, buffer_depth_before, buffer_depth_after) = self
+            .websocket_manager
+            .drain_buffer_with_depth(symbol)
+            .await;
         if !drained.is_empty() {
             self.btc_v1_buffered_updates
                 .entry(symbol.to_string())
@@ -839,8 +842,31 @@ impl OrderbookManager {
             .iter()
             .map(|buffered| buffered.update.clone())
             .collect();
+        let batch_started = Instant::now();
         let now_ms = chrono::Utc::now().timestamp_millis();
-        let candidate = match build_snapshot(&anchor, &updates, anchor_generation, now_ms, now_ms) {
+        let candidate_result =
+            build_snapshot(&anchor, &updates, anchor_generation, now_ms, now_ms);
+        let applied_at = Instant::now();
+        let receive_to_apply_max_ms = buffered_updates
+            .iter()
+            .map(|buffered| applied_at.duration_since(buffered.received_at).as_millis())
+            .max()
+            .unwrap_or(0);
+        let buffer_residence_max_ms = buffered_updates
+            .iter()
+            .map(|buffered| applied_at.duration_since(buffered.buffered_at).as_millis())
+            .max()
+            .unwrap_or(0);
+        info!(
+            "[BTCUSDT] V1 attach batch diagnostics: size={} ring_depth_before={} ring_depth_after={} batch_processing_ms={} receive_to_apply_max_ms={} buffer_residence_max_ms={}",
+            buffered_updates.len(),
+            buffer_depth_before,
+            buffer_depth_after,
+            batch_started.elapsed().as_millis(),
+            receive_to_apply_max_ms,
+            buffer_residence_max_ms,
+        );
+        let candidate = match candidate_result {
             Ok(candidate) => candidate,
             Err(error) => {
                 warn!("[BTCUSDT] V1 attach rejected; re-anchoring: {error:#}");
