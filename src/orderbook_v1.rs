@@ -6,7 +6,7 @@ use std::sync::{Arc, RwLock};
 use crate::models::{DepthSnapshotRest, DepthUpdateWs};
 use crate::utils::{compare_normalized_decimals, validate_orderbook_level};
 
-pub const CONTRACT_VERSION: &str = "T1_BTCUSDT_ORDERBOOK_V1";
+pub const CONTRACT_VERSION: &str = "T1_T2_ORDERBOOK_V1";
 pub const REQUIRED_DEPTH: usize = 20;
 pub const MAX_BOOK_AGE_MS: i64 = 2_000;
 pub const MAX_FUTURE_SKEW_MS: i64 = 250;
@@ -77,6 +77,13 @@ pub type DepthLevel = [String; 2];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct OrderbookDepthV1 {
+    pub bids: usize,
+    pub asks: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct OrderbookSnapshotV1 {
     pub contract_version: String,
     pub symbol: String,
@@ -94,8 +101,7 @@ pub struct OrderbookSnapshotV1 {
     pub continuity: String,
     pub freshness: String,
     pub complete: bool,
-    pub bid_depth: usize,
-    pub ask_depth: usize,
+    pub depth: OrderbookDepthV1,
 }
 
 struct PublicationState {
@@ -437,8 +443,10 @@ pub fn build_snapshot(
         contract_version: CONTRACT_VERSION.to_string(),
         symbol: "BTCUSDT".to_string(),
         market: "BINANCE_USDM_PERPETUAL".to_string(),
-        bid_depth: bid_levels.len(),
-        ask_depth: ask_levels.len(),
+        depth: OrderbookDepthV1 {
+            bids: bid_levels.len(),
+            asks: ask_levels.len(),
+        },
         bids: bid_levels,
         asks: ask_levels,
         snapshot_last_update_id: snapshot.last_update_id,
@@ -553,8 +561,8 @@ pub fn apply_live_diff_classified(
     let mut next = current.clone();
     next.bids = bid_levels;
     next.asks = ask_levels;
-    next.bid_depth = next.bids.len();
-    next.ask_depth = next.asks.len();
+    next.depth.bids = next.bids.len();
+    next.depth.asks = next.asks.len();
     next.last_applied_u = update.final_update_id;
     next.decision_watermark = update.final_update_id;
     next.source_timestamp_ms = update.event_time;
@@ -664,8 +672,8 @@ mod tests {
         assert_eq!(result.last_applied_u, 103);
         assert_eq!(result.decision_watermark, 103);
         assert_eq!(result.source_timestamp_ms, NOW - 50);
-        assert_eq!(result.bid_depth, 20);
-        assert_eq!(result.ask_depth, 20);
+        assert_eq!(result.depth.bids, 20);
+        assert_eq!(result.depth.asks, 20);
         assert!(result.complete);
         assert_eq!(result.continuity, "VERIFIED");
         assert_eq!(result.freshness, "FRESH");
