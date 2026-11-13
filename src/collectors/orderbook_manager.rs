@@ -1404,12 +1404,10 @@ impl OrderbookManager {
                             break;
                         };
                         let decision_at = Instant::now();
-                        receive_to_apply_max_ms = receive_to_apply_max_ms.max(
-                            decision_at.duration_since(buffered.received_at).as_millis(),
-                        );
-                        buffer_residence_max_ms = buffer_residence_max_ms.max(
-                            decision_at.duration_since(buffered.buffered_at).as_millis(),
-                        );
+                        receive_to_apply_max_ms = receive_to_apply_max_ms
+                            .max(decision_at.duration_since(buffered.received_at).as_millis());
+                        buffer_residence_max_ms = buffer_residence_max_ms
+                            .max(decision_at.duration_since(buffered.buffered_at).as_millis());
                         let now_ms = chrono::Utc::now().timestamp_millis();
                         match apply_live_diff_classified(
                             &current,
@@ -1423,12 +1421,17 @@ impl OrderbookManager {
                                     self.btc_v1_publisher.publish_if_current(candidate)
                                 {
                                     rejection_class = "PUBLISH_FENCED";
-                                    warn!("[BTCUSDT][PUBLISH_FENCED] V1 publish rejected: {error:#}");
+                                    warn!(
+                                        "[BTCUSDT][PUBLISH_FENCED] V1 publish rejected: {error:#}"
+                                    );
                                     break;
                                 }
                                 let legacy_apply_error = {
                                     if let Some(mut book) = self.orderbooks.get_mut(&symbol) {
-                                        match Self::apply_update_to_book(&mut book, &buffered.update) {
+                                        match Self::apply_update_to_book(
+                                            &mut book,
+                                            &buffered.update,
+                                        ) {
                                             Ok(()) => {
                                                 Self::trim_book_to_depth(
                                                     self.config.orderbook.depth_limit as usize,
