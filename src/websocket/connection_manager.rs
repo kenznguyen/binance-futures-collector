@@ -574,13 +574,15 @@ impl WebSocketManager {
 
                     match msg_result {
                         Ok(Message::Text(text)) => {
-                            if let Err(e) = self.process_text_message(batch_id, &text, Instant::now()).await {
+                            let received_at = Instant::now();
+                            if let Err(e) = self.process_text_message(batch_id, &text, received_at).await {
                                 error!("Batch {} message processing error: {}", batch_id, e);
                             }
                         }
                         Ok(Message::Binary(data)) => {
+                            let received_at = Instant::now();
                             if let Ok(text) = String::from_utf8(data.to_vec()) {
-                                if let Err(e) = self.process_text_message(batch_id, &text).await {
+                                if let Err(e) = self.process_text_message(batch_id, &text, received_at).await {
                                     error!("Batch {} binary message processing error: {}", batch_id, e);
                                 }
                             }
