@@ -797,10 +797,8 @@ impl OrderbookManager {
             return Ok(false);
         }
 
-        let (drained, buffer_depth_before, buffer_depth_after) = self
-            .websocket_manager
-            .drain_buffer_with_depth(symbol)
-            .await;
+        let (drained, buffer_depth_before, buffer_depth_after) =
+            self.websocket_manager.drain_buffer_with_depth(symbol).await;
         if !drained.is_empty() {
             self.btc_v1_buffered_updates
                 .entry(symbol.to_string())
@@ -844,8 +842,7 @@ impl OrderbookManager {
             .collect();
         let batch_started = Instant::now();
         let now_ms = chrono::Utc::now().timestamp_millis();
-        let candidate_result =
-            build_snapshot(&anchor, &updates, anchor_generation, now_ms, now_ms);
+        let candidate_result = build_snapshot(&anchor, &updates, anchor_generation, now_ms, now_ms);
         let applied_at = Instant::now();
         let receive_to_apply_max_ms = buffered_updates
             .iter()
