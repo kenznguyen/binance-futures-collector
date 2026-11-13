@@ -948,7 +948,7 @@ impl Clone for WebSocketManager {
 
 #[cfg(test)]
 mod tests {
-    use super::{backoff_for, join_websocket_tasks};
+    use super::{backoff_for, join_websocket_tasks, BufferedDepthUpdate};
     use std::time::Duration;
 
     #[test]
@@ -977,6 +977,47 @@ mod tests {
         // keep 2^attempt from overflowing u32 — this must not panic and stays capped.
         assert_eq!(backoff_for(1_000_000, init, max), max);
         assert_eq!(backoff_for(u32::MAX, init, max), max);
+    }
+
+
+    fn depth_update_fixture() -> crate::models::DepthUpdateWs {
+        crate::models::DepthUpdateWs {
+            event_type: "depthUpdate".to_string(),
+            event_time: 1_800_000_000_000,
+            transaction_time: 1_800_000_000_000,
+            symbol: "BTCUSDT".to_string(),
+            first_update_id: 101,
+            final_update_id: 102,
+            prev_update_id: 100,
+            bids: vec![["100.0".to_string(), "1.0".to_string()]],
+            asks: vec![["101.0".to_string(), "2.0".to_string()]],
+        }
+    }
+
+    #[test]
+    fn buffered_depth_update_preserves_original_monotonic_receive_instant() {
+        let received_at = std::time::Instant::now();
+        let buffered = BufferedDepthUpdate {
+            update: depth_update_fixture(),
+            received_at,
+        };
+
+        assert_eq!(buffered.received_at, received_at);
+        assert_eq!(buffered.update.final_update_id, 102);
+    }
+
+    #[test]
+    fn cloning_buffered_depth_update_does_not_replace_receive_instant() {
+        let received_at = std::time::Instant::now();
+        let buffered = BufferedDepthUpdate {
+            update: depth_update_fixture(),
+            received_at,
+        };
+
+        let cloned = buffered.clone();
+
+        assert_eq!(cloned.received_at, received_at);
+        assert_eq!(cloned.update.final_update_id, 102);
     }
 
     #[tokio::test]
