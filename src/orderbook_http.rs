@@ -371,10 +371,10 @@ mod tests {
     async fn request(address: &str, method: &str, path: &str, token: Option<&str>) -> String {
         let mut stream = TcpStream::connect(address).await.unwrap();
         let authorization = token
-            .map(|value| format!("Authorization: Bearer {value}\\r\\n"))
+            .map(|value| format!("Authorization: Bearer {value}\r\n"))
             .unwrap_or_default();
         let request = format!(
-            "{method} {path} HTTP/1.1\\r\\nHost: localhost\\r\\n{authorization}Connection: close\\r\\n\\r\\n"
+            "{method} {path} HTTP/1.1\r\nHost: localhost\r\n{authorization}Connection: close\r\n\r\n"
         );
         stream.write_all(request.as_bytes()).await.unwrap();
         stream.shutdown().await.unwrap();
@@ -403,7 +403,7 @@ mod tests {
         assert!(response
             .to_ascii_lowercase()
             .contains("cache-control: no-store"));
-        let body = response.split("\\r\\n\\r\\n").nth(1).unwrap();
+        let body = response.split("\r\n\r\n").nth(1).unwrap();
         let json: serde_json::Value = serde_json::from_str(body).unwrap();
         assert_eq!(json["contractVersion"], CONTRACT_VERSION);
         assert_eq!(json["symbol"], "BTCUSDT");
