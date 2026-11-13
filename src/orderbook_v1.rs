@@ -835,8 +835,7 @@ mod tests {
             Err(LiveDiffRejection::Sequence(_))
         ));
 
-        invalid.prev_update_id = 103;
-        invalid.first_update_id = 105;
+        invalid = update(102, 102, 101, NOW - 20);
         assert!(matches!(
             apply_live_diff_classified(&current, &invalid, 20, NOW - 5, NOW),
             Err(LiveDiffRejection::Sequence(_))
