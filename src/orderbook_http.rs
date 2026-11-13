@@ -124,7 +124,10 @@ async fn handle_connection(
             .await;
         }
 
-        if request[..used].windows(4).any(|window| window == b"\r\n\r\n") {
+        if request[..used]
+            .windows(4)
+            .any(|window| window == b"\\r\\n\\r\\n")
+        {
             break;
         }
     }
