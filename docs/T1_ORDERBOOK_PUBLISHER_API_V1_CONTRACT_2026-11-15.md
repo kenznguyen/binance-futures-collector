@@ -84,13 +84,13 @@ HTTP 200 returns exactly one complete immutable snapshot serialized from `Orderb
 | `observedAtMs` | int64 | Local observation timestamp, UTC ms |
 | `generation` | uint64 | Current connection/re-anchor generation |
 | `snapshotId` | string | Stable identifier for this immutable publication |
-
-`snapshotId` is `sha256:` followed by lowercase SHA-256 hex of the compact UTF-8 JSON snapshot object with the `snapshotId` field omitted and object keys sorted lexicographically. T1 and T2 must compute the same digest over the exact published bids, asks, metadata, watermarks and depth; decimal strings are preserved verbatim.
 | `continuity` | string | Exactly `VERIFIED` |
 | `freshness` | string | Exactly `FRESH` |
 | `complete` | boolean | Exactly `true` |
 | `depth.bids` | integer | Must equal `bids.length` |
 | `depth.asks` | integer | Must equal `asks.length` |
+
+`snapshotId` is `sha256:` followed by lowercase SHA-256 hex of the compact UTF-8 JSON snapshot object with the `snapshotId` field omitted and object keys sorted lexicographically. T1 and T2 must compute the same digest over the exact published bids, asks, metadata, watermarks and depth; decimal strings are preserved verbatim.
 
 Decimal values must remain strings; consumers must not parse them through binary floating point before precision-sensitive calculations. Zero-quantity updates delete a level and must never appear as a retained level.
 

@@ -336,38 +336,38 @@ mod tests {
 
         let now_ms = chrono::Utc::now().timestamp_millis();
         let mut snapshot = OrderbookSnapshotV1 {
-                contract_version: CONTRACT_VERSION.to_string(),
-                symbol: "BTCUSDT".to_string(),
-                market: "BINANCE_USDM_PERPETUAL".to_string(),
-                bids: (0..20)
-                    .map(|index| {
-                        [
-                            format!("{:.2}", 67234.10 - index as f64),
-                            "0.012500".to_string(),
-                        ]
-                    })
-                    .collect(),
-                asks: (0..20)
-                    .map(|index| {
-                        [
-                            format!("{:.2}", 67234.20 + index as f64),
-                            "0.015000".to_string(),
-                        ]
-                    })
-                    .collect(),
-                snapshot_last_update_id: 900_000,
-                first_applied_u: 900_001,
-                last_applied_u: 900_010,
-                decision_watermark: 900_010,
-                source_timestamp_ms: now_ms,
-                observed_at_ms: now_ms,
-                generation,
-                snapshot_id: "btc-900010-g1".to_string(),
-                continuity: "VERIFIED".to_string(),
-                freshness: "FRESH".to_string(),
-                complete: true,
-                depth: OrderbookDepthV1 { bids: 20, asks: 20 },
-            };
+            contract_version: CONTRACT_VERSION.to_string(),
+            symbol: "BTCUSDT".to_string(),
+            market: "BINANCE_USDM_PERPETUAL".to_string(),
+            bids: (0..20)
+                .map(|index| {
+                    [
+                        format!("{:.2}", 67234.10 - index as f64),
+                        "0.012500".to_string(),
+                    ]
+                })
+                .collect(),
+            asks: (0..20)
+                .map(|index| {
+                    [
+                        format!("{:.2}", 67234.20 + index as f64),
+                        "0.015000".to_string(),
+                    ]
+                })
+                .collect(),
+            snapshot_last_update_id: 900_000,
+            first_applied_u: 900_001,
+            last_applied_u: 900_010,
+            decision_watermark: 900_010,
+            source_timestamp_ms: now_ms,
+            observed_at_ms: now_ms,
+            generation,
+            snapshot_id: "btc-900010-g1".to_string(),
+            continuity: "VERIFIED".to_string(),
+            freshness: "FRESH".to_string(),
+            complete: true,
+            depth: OrderbookDepthV1 { bids: 20, asks: 20 },
+        };
         snapshot.snapshot_id = canonical_snapshot_id(&snapshot).unwrap();
         publisher.publish_if_current(snapshot).unwrap();
 
