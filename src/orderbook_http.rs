@@ -322,7 +322,8 @@ mod tests {
 
     use super::serve;
     use crate::orderbook_v1::{
-        OrderbookDepthV1, OrderbookSnapshotV1, SnapshotPublisher, CONTRACT_VERSION,
+        canonical_snapshot_id, OrderbookDepthV1, OrderbookSnapshotV1, SnapshotPublisher,
+        CONTRACT_VERSION,
     };
 
     const TOKEN: &str = "test-only-loopback-token";
@@ -334,8 +335,7 @@ mod tests {
         publisher.mark_validating(generation).unwrap();
 
         let now_ms = chrono::Utc::now().timestamp_millis();
-        publisher
-            .publish_if_current(OrderbookSnapshotV1 {
+        let mut snapshot = OrderbookSnapshotV1 {
                 contract_version: CONTRACT_VERSION.to_string(),
                 symbol: "BTCUSDT".to_string(),
                 market: "BINANCE_USDM_PERPETUAL".to_string(),
@@ -367,8 +367,9 @@ mod tests {
                 freshness: "FRESH".to_string(),
                 complete: true,
                 depth: OrderbookDepthV1 { bids: 20, asks: 20 },
-            })
-            .unwrap();
+            };
+        snapshot.snapshot_id = canonical_snapshot_id(&snapshot).unwrap();
+        publisher.publish_if_current(snapshot).unwrap();
 
         publisher
     }

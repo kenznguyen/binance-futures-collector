@@ -40,6 +40,7 @@ These are source-level observations, not a fresh test run in this task.
 | CT-07 | Ask ordering | Strict ascending prices |
 | CT-08 | Depth metadata | Counts equal array lengths; minimum 20 each side for a built production snapshot |
 | CT-09 | Watermarks | decisionWatermark equals lastAppliedU; firstAppliedU and lastAppliedU are valid |
+| CT-11 | Snapshot identity | `snapshotId` matches the T2 SHA-256 canonical JSON algorithm; any payload mutation invalidates the identity |
 | CT-10 | Unknown/missing/extra required field policy | Required fields cannot disappear; additive compatibility policy documented |
 
 ### B. Continuity and generation fencing

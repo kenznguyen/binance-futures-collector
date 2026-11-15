@@ -1,6 +1,7 @@
 use anyhow::{bail, Context, Result};
+use ring::digest::{digest, SHA256};
 use serde::Serialize;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 
 use crate::models::{DepthSnapshotRest, DepthUpdateWs};
@@ -237,6 +238,9 @@ impl SnapshotPublisher {
         {
             bail!("refusing to publish snapshot with inconsistent depth metadata");
         }
+        if snapshot.snapshot_id != canonical_snapshot_id(&snapshot)? {
+            bail!("refusing to publish snapshot with a noncanonical T2 snapshot identity");
+        }
         if !snapshot.complete || snapshot.continuity != "VERIFIED" || snapshot.freshness != "FRESH"
         {
             bail!("refusing to publish an incomplete or unverified snapshot");
@@ -288,6 +292,29 @@ impl SnapshotPublisher {
             .expect("snapshot publisher lock poisoned")
             .generation
     }
+}
+
+/// Compute the deterministic snapshot identity shared with T2's Python contract.
+/// The compact UTF-8 JSON uses lexicographically sorted object keys and omits snapshotId.
+pub fn canonical_snapshot_id(snapshot: &OrderbookSnapshotV1) -> Result<String> {
+    let value = serde_json::to_value(snapshot)?;
+    let object = value
+        .as_object()
+        .context("order-book snapshot serialization must produce an object")?;
+    let identity: BTreeMap<&str, &serde_json::Value> = object
+        .iter()
+        .filter(|(key, _)| key.as_str() != "snapshotId")
+        .map(|(key, value)| (key.as_str(), value))
+        .collect();
+    let canonical = serde_json::to_vec(&identity)?;
+    let hash = digest(&SHA256, &canonical);
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut encoded = String::with_capacity(hash.as_ref().len() * 2);
+    for byte in hash.as_ref() {
+        encoded.push(HEX[(byte >> 4) as usize] as char);
+        encoded.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    Ok(format!("sha256:{encoded}"))
 }
 
 type Levels = HashMap<String, DepthLevel>;
@@ -454,7 +481,7 @@ pub fn build_snapshot(
     let ask_levels = sorted_levels(asks, false);
     let last_applied_u = previous_u;
 
-    Ok(OrderbookSnapshotV1 {
+    let mut result = OrderbookSnapshotV1 {
         contract_version: CONTRACT_VERSION.to_string(),
         symbol: CONTRACT_SYMBOL.to_string(),
         market: CONTRACT_MARKET.to_string(),
@@ -471,13 +498,13 @@ pub fn build_snapshot(
         source_timestamp_ms: last_event_timestamp_ms,
         observed_at_ms,
         generation,
-        snapshot_id: format!(
-            "btcusdt-{generation}-{last_applied_u}-{last_event_timestamp_ms}-{observed_at_ms}"
-        ),
+        snapshot_id: String::new(),
         continuity: "VERIFIED".to_string(),
         freshness: "FRESH".to_string(),
         complete: true,
-    })
+    };
+    result.snapshot_id = canonical_snapshot_id(&result)?;
+    Ok(result)
 }
 
 /// Apply one live WS diff to an immutable published snapshot. The previous snapshot

@@ -2,7 +2,10 @@ use std::{collections::BTreeSet, io, sync::Arc, time::Duration};
 
 use binance_futures_collector::{
     orderbook_http::{bind_loopback, serve},
-    orderbook_v1::{OrderbookDepthV1, OrderbookSnapshotV1, SnapshotPublisher, CONTRACT_VERSION},
+    orderbook_v1::{
+        canonical_snapshot_id, OrderbookDepthV1, OrderbookSnapshotV1, SnapshotPublisher,
+        CONTRACT_VERSION,
+    },
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -28,7 +31,7 @@ fn candidate(
         .map(|index| [(10_001 + index).to_string(), "2.000".to_string()])
         .collect::<Vec<_>>();
 
-    OrderbookSnapshotV1 {
+    let mut snapshot = OrderbookSnapshotV1 {
         contract_version: CONTRACT_VERSION.to_string(),
         symbol: "BTCUSDT".to_string(),
         market: market.to_string(),
@@ -41,7 +44,7 @@ fn candidate(
         source_timestamp_ms,
         observed_at_ms: source_timestamp_ms,
         generation,
-        snapshot_id: format!("btcusdt-{generation}-900010"),
+        snapshot_id: String::new(),
         continuity: "VERIFIED".to_string(),
         freshness: "FRESH".to_string(),
         complete: true,
@@ -49,7 +52,9 @@ fn candidate(
             bids: reported_bids,
             asks: reported_asks,
         },
-    }
+    };
+    snapshot.snapshot_id = canonical_snapshot_id(&snapshot).unwrap();
+    snapshot
 }
 
 fn publisher() -> Arc<SnapshotPublisher> {
@@ -142,6 +147,20 @@ fn publisher_rejects_non_v1_contract_version() {
     assert!(
         publisher.publish_if_current(wrong_version).is_err(),
         "Publisher must reject a contract version other than V1"
+    );
+}
+
+#[test]
+fn publisher_rejects_a_tampered_t2_snapshot_identity() {
+    let publisher = publisher();
+    let generation = begin_publish(&publisher);
+    let now = chrono::Utc::now().timestamp_millis();
+
+    let mut invalid = candidate(generation, "BINANCE_USDM_PERPETUAL", 20, 20, 20, 20, now);
+    invalid.snapshot_id = format!("sha256:{}", "0".repeat(64));
+    assert!(
+        publisher.publish_if_current(invalid).is_err(),
+        "Publisher must reject a snapshot identity that does not hash its payload"
     );
 }
 
