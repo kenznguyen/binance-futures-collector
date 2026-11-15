@@ -123,8 +123,7 @@ fn publisher_rejects_noncanonical_symbol_metadata() {
     let generation = begin_publish(&publisher);
     let now = chrono::Utc::now().timestamp_millis();
 
-    let mut wrong_symbol =
-        candidate(generation, "BINANCE_USDM_PERPETUAL", 20, 20, 20, 20, now);
+    let mut wrong_symbol = candidate(generation, "BINANCE_USDM_PERPETUAL", 20, 20, 20, 20, now);
     wrong_symbol.symbol = "ETHUSDT".to_string();
     assert!(
         publisher.publish_if_current(wrong_symbol).is_err(),
@@ -138,8 +137,7 @@ fn publisher_rejects_non_v1_contract_version() {
     let generation = begin_publish(&publisher);
     let now = chrono::Utc::now().timestamp_millis();
 
-    let mut wrong_version =
-        candidate(generation, "BINANCE_USDM_PERPETUAL", 20, 20, 20, 20, now);
+    let mut wrong_version = candidate(generation, "BINANCE_USDM_PERPETUAL", 20, 20, 20, 20, now);
     wrong_version.contract_version = "T1_T2_ORDERBOOK_V0".to_string();
     assert!(
         publisher.publish_if_current(wrong_version).is_err(),
