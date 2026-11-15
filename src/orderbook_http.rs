@@ -338,9 +338,23 @@ mod tests {
             .publish_if_current(OrderbookSnapshotV1 {
                 contract_version: CONTRACT_VERSION.to_string(),
                 symbol: "BTCUSDT".to_string(),
-                market: "USDT-M-PERPETUAL".to_string(),
-                bids: vec![["67234.10".to_string(), "0.012500".to_string()]],
-                asks: vec![["67234.20".to_string(), "0.015000".to_string()]],
+                market: "BINANCE_USDM_PERPETUAL".to_string(),
+                bids: (0..20)
+                    .map(|index| {
+                        [
+                            format!("{:.2}", 67234.10 - index as f64),
+                            "0.012500".to_string(),
+                        ]
+                    })
+                    .collect(),
+                asks: (0..20)
+                    .map(|index| {
+                        [
+                            format!("{:.2}", 67234.20 + index as f64),
+                            "0.015000".to_string(),
+                        ]
+                    })
+                    .collect(),
                 snapshot_last_update_id: 900_000,
                 first_applied_u: 900_001,
                 last_applied_u: 900_010,
@@ -352,7 +366,7 @@ mod tests {
                 continuity: "VERIFIED".to_string(),
                 freshness: "FRESH".to_string(),
                 complete: true,
-                depth: OrderbookDepthV1 { bids: 1, asks: 1 },
+                depth: OrderbookDepthV1 { bids: 20, asks: 20 },
             })
             .unwrap();
 
@@ -407,11 +421,14 @@ mod tests {
         let json: serde_json::Value = serde_json::from_str(body).unwrap();
         assert_eq!(json["contractVersion"], CONTRACT_VERSION);
         assert_eq!(json["symbol"], "BTCUSDT");
+        assert_eq!(json["market"], "BINANCE_USDM_PERPETUAL");
+        assert_eq!(json["bids"].as_array().unwrap().len(), 20);
+        assert_eq!(json["asks"].as_array().unwrap().len(), 20);
         assert_eq!(json["bids"][0][0], "67234.10");
         assert_eq!(json["bids"][0][1], "0.012500");
         assert_eq!(json["asks"][0][0], "67234.20");
-        assert_eq!(json["depth"]["bids"], 1);
-        assert_eq!(json["depth"]["asks"], 1);
+        assert_eq!(json["depth"]["bids"], 20);
+        assert_eq!(json["depth"]["asks"], 20);
 
         server.abort();
     }
