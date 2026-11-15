@@ -687,6 +687,10 @@ mod tests {
         assert_eq!(result.last_applied_u, 103);
         assert_eq!(result.decision_watermark, 103);
         assert_eq!(result.source_timestamp_ms, NOW - 50);
+        assert_eq!(
+            result.snapshot_id,
+            "sha256:ab1ec89ab2a05462f908196e6316d26dd650f187529db4c975875b3ad8879c1a"
+        );
         assert_eq!(result.depth.bids, 20);
         assert_eq!(result.depth.asks, 20);
         assert!(result.complete);
