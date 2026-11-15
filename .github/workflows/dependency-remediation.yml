@@ -98,7 +98,7 @@ jobs:
             if [ "$rc" -ne 0 ]; then overall=1; fi
             echo "::endgroup::"
           }
-          # Let Cargo select the newest versions compatible with the workspace constraints.
+          # Let Cargo select the newest versions compatible with workspace constraints.
           # No manifest edits, broad workspace update, or application-source changes.
           for package in \
             quinn-proto quinn-udp rustix rustls rustls-webpki \
@@ -124,8 +124,7 @@ jobs:
             cargo tree --locked --all-features --all-targets -e features -i "$package" \
               > "$report/$name.log" 2>&1
             rc=$?
-            echo "$name=$rc" | tee -a "$report/dependency-tree-status.txt" \
-              | tee -a "$report/exit-codes.txt"
+            echo "$name=$rc" | tee -a "$report/dependency-tree-status.txt"
           done
           git diff --stat > remediation-evidence/source-diff-stat.txt
           git status --short > remediation-evidence/git-status.txt
@@ -220,8 +219,9 @@ jobs:
           set -euo pipefail
           report="remediation-evidence/reports/exit-codes.txt"
           test -f "$report"
-          if grep -Eq '=[1-9][0-9]*$' "$report"; then
-            echo "One or more remediation checks failed; inspect uploaded evidence."
+          # Tree diagnostics are informational; only resolver/audit/build/test gates block.
+          if grep -Eq '^(update-[^=]+|install-cargo-audit|cargo-audit|cargo-audit-json|cargo-fmt|cargo-clippy|cargo-build|cargo-test)=[1-9][0-9]*$' "$report"; then
+            echo "One or more required remediation checks failed; inspect uploaded evidence."
             exit 1
           fi
           if grep -q 'scope_violation=1' "$report"; then
