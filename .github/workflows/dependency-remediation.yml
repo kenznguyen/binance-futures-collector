@@ -89,7 +89,7 @@ jobs:
             cargo tree --locked --all-features --all-targets -e features -i "$package" \
               > "$report/tree-$package.log" 2>&1
             rc=$?
-            echo "tree-$package=$rc" >> "$report/exit-codes.txt"
+            echo "tree-$package=$rc" >> "$report/dependency-tree-status.txt"
           done
           git diff --stat > remediation-evidence/source-diff-stat.txt
           git status --short > remediation-evidence/git-status.txt
