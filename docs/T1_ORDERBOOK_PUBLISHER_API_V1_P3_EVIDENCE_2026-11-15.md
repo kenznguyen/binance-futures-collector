@@ -302,3 +302,69 @@ Artifact payload bytes were not downloaded or independently re-hashed; the diges
 - T1 → T2 integration: **BLOCKED**.
 
 No source implementation, dependency, test-spec, T0/T2, collector ingestion, historical data, listener, VPS, runtime, PR merge, branch rebase, or deployment change was made for these CI runs. Next: preserve the security blocker; separately obtain precise reverse-dependency and shipped-target reachability evidence for `quinn-udp` and `rustix`, then address the remaining P3 contract matrix under offline GitHub Actions only.
+
+
+## 12. T2 snapshot identity compatibility fix — exact-source CI (2026-11-15)
+
+### 12.1 Contract finding and RED evidence
+
+- T2 repository: `kenznguyen/btcusdt-telegram-signals2`, active branch `feature/core-operational-proof-20261112`.
+- T2 wire route: `GET /internal/v1/orderbook/btcusdt`; T2's `OrderBookHttpClient` validates the frozen `T1_T2_ORDERBOOK_V1` snapshot directly. No `/status` endpoint is part of the T2 consumer contract.
+- T2's bundle validator recomputes `snapshotId` as `sha256:` + lowercase SHA-256 of compact UTF-8 JSON with lexicographically sorted object keys and `snapshotId` omitted.
+- Prior T1 implementation used a formatted generation/watermark string (`btcusdt-...`) and therefore did not satisfy the T2 snapshot identity algorithm.
+- RED test commit: `d77ea4d89a4e6d0d43613b955cc743a3e38d11ae`.
+- Push workflow [#671](https://github.com/kenznguyen/binance-futures-collector/actions/runs/43709712802), run ID `43709712802`, checked out exact SHA `d77ea4d89a4e6d0d43613b955cc743a3e38d11ae`: Collector `cargo test --all` failed exactly at `orderbook_v1::tests::exact_bridge_and_pu_chain_build_a_complete_snapshot`; 102 passed, 1 failed. Actual value was the old `btcusdt-7-103-1799999999950-1799999999990`; expected T2 canonical SHA-256 was `sha256:ab1ec89ab2a05462f908196e6316d26dd650f187529db4c975875b3ad8879c1a`. This is the intended behavioral RED.
+
+### 12.2 Implementation and source changes
+
+- Implementation commit: `900914a82fdb234dccd8f7fdbc22f65669f8e879`.
+- Follow-up formatting/documentation commit: `36eced798558a1809e780f03aff5347dac6f02b3`.
+- Current branch HEAD at this evidence update: `36eced798558a1809e780f03aff5347dac6f02b3`.
+- Added deterministic `canonical_snapshot_id()` using SHA-256 and canonical compact JSON; the snapshot builder now emits this identity.
+- `SnapshotPublisher::publish_if_current` rejects an identity that does not hash the exact snapshot payload.
+- Updated HTTP/P3 fixtures to generate canonical identities and added a tampered-identity rejection regression.
+- Added direct `ring 0.17.14` dependency, already present in `Cargo.lock` transitively; no new package version was introduced.
+- Updated the V1 contract and test specification with the exact snapshot identity algorithm.
+- No T0/T2 source, strategy, risk, ledger, ingestion/history, collector CSV persistence, runtime configuration, or deployment files were changed.
+
+### 12.3 Push workflow #675 — source and artifact evidence
+
+- Workflow: [#675](https://github.com/kenznguyen/binance-futures-collector/actions/runs/43710121719), run ID `43710121719`, event `push`.
+- Exact checked-out source SHA: `36eced798558a1809e780f03aff5347dac6f02b3`.
+- Collector fmt/Clippy/build/test job ID `132799648997`: **SUCCESS**. `cargo fmt --all --check`, Clippy, release build, `cargo test --all`, Sidecar writer format/Clippy/offline tests all passed. Collector test output included 103 library tests and 27 P3 Order Book HTTP contract integration tests, all passing; all other reported test targets also passed.
+- Native ARM64 job ID `132799648999`: **SUCCESS**. Host confirmed `aarch64-unknown-linux-gnu`; ARM64 ELF identity confirmed; test targets passed, including 103 library tests and 27 P3 Order Book HTTP contract integration tests.
+- Dashboard frontend job `132799649078`: **SUCCESS**.
+- Dashboard backend job `132799649094`: **SUCCESS**.
+- Docker job `132799649068`: **SUCCESS**.
+- Security job `132799648801`: **FAILURE**; details below.
+- x86_64 artifact: ID `14160277053`, name `t1-collector-linux-x86_64-36eced798558a1809e780f03aff5347dac6f02b3`, 4,331,697 bytes, GitHub metadata digest `sha256:4a88cb51eaa03dfc77f64d5fbb09e30332cd899632a5290077d2fd5ffd7874ac`, expires 2026-11-22 11:43:41Z.
+- ARM64 artifact: ID `14160167371`, name `t1-collector-linux-aarch64-36eced798558a1809e780f03aff5347dac6f02b3`, 4,035,762 bytes, GitHub metadata digest `sha256:f46fef5a5ad6260ea5105bd3db3f99b9bd31629bc51e2d9d4c972675ce876ec7`, expires 2026-11-22 11:43:47Z.
+- Artifact digests are GitHub metadata only; payload bytes were not downloaded or independently re-hashed. Artifacts are CI outputs, not deployment/runtime evidence.
+
+### 12.4 Pull-request workflow #676
+
+- Workflow: [#676](https://github.com/kenznguyen/binance-futures-collector/actions/runs/43710125366), run ID `43710125366`, event `pull_request`, PR #1.
+- PR head SHA: `36eced798558a1809e780f03aff5347dac6f02b3`; base SHA: `bc4f0ef633fbeee4a49defd72827f17162693805`.
+- Collector job checked out synthetic merge SHA `ecb3f928474627792225ef64385c032c873be379`, merging the PR head into base `45218c694af01602e39966d4668630323b4f8333`. Do not describe this as a direct-head checkout.
+- Collector, ARM64, dashboard frontend/backend and Docker jobs: **SUCCESS**. Security job: **FAILURE**. PR workflow produced no artifacts.
+
+### 12.5 Remaining security blocker and disposition
+
+- The security workflow scanned 248 crate dependencies and found the same three vulnerabilities plus one allowed unsound warning:
+  - `quinn-proto 0.11.18`: RUSTSEC-2026-0524 and RUSTSEC-2026-0523.
+  - `quinn-udp 0.5.15`: RUSTSEC-2026-0538.
+  - `rustix 1.1.4`: RUSTSEC-2026-0486 (unsound warning).
+- New reverse-dependency diagnostics classified `quinn-proto` as `NO_PATH_EMITTED` in both default-feature and all-target checks. `quinn-udp` and `rustix` reachability remain **NOT VERIFIED**. The cargo-audit step failed; npm audit was skipped. No advisory was suppressed and no dependency upgrade was made.
+- Overall push and PR workflows: **FAILURE** due to the security job; all source/build/test/Docker jobs listed above passed.
+- T1 snapshot identity compatibility with the T2 canonical hash: **PASS at source/CI level** on exact T1 SHA `36eced798558a1809e780f03aff5347dac6f02b3`.
+- T2's separate 49-test Order Book contract/HTTP-reader/loopback suite remains **PASS** on the T2 source SHA recorded in the active project handoff; no T2 source was changed here.
+- T1 P3 full acceptance: **PARTIAL / NOT ACCEPTED** while the security gate remains red and the remaining P0 contract matrix is not fully evidenced.
+- T1 runtime/listener activation: **NOT VERIFIED / NOT AUTHORIZED**. T1→T2 live runtime integration: **BLOCKED / NOT RUN**.
+- PR #1 remains OPEN / DRAFT / NOT MERGED. No VPS, exchange, T0, persistent runtime, live order, or deployment action occurred.
+
+### 12.6 Next permitted action
+
+- Keep the current branch and PR; do not create a parallel branch/PR or merge.
+- Preserve the T1 snapshot identity fix.
+- Obtain explicit scope approval before changing dependencies to remediate the Rust advisories. First complete the missing reverse-dependency/reachability analysis for `quinn-udp` and `rustix`; do not suppress advisories.
+- After the security disposition is resolved, finish the remaining P0 HTTP transport/fail-closed contract gaps with offline tests. Any runtime or T1→T2 activation requires separate explicit approval.
