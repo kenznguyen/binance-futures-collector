@@ -233,7 +233,8 @@ impl SnapshotPublisher {
         if snapshot.bids.len() < REQUIRED_DEPTH || snapshot.asks.len() < REQUIRED_DEPTH {
             bail!("refusing to publish snapshot below the required bid/ask depth");
         }
-        if snapshot.depth.bids != snapshot.bids.len() || snapshot.depth.asks != snapshot.asks.len() {
+        if snapshot.depth.bids != snapshot.bids.len() || snapshot.depth.asks != snapshot.asks.len()
+        {
             bail!("refusing to publish snapshot with inconsistent depth metadata");
         }
         if !snapshot.complete || snapshot.continuity != "VERIFIED" || snapshot.freshness != "FRESH"
