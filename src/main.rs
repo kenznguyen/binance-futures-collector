@@ -648,9 +648,7 @@ mod tests {
 
     #[test]
     fn orderbook_http_listener_is_disabled_when_token_is_missing_or_empty() {
-        assert!(
-            configured_orderbook_http_token(Err(std::env::VarError::NotPresent)).is_none()
-        );
+        assert!(configured_orderbook_http_token(Err(std::env::VarError::NotPresent)).is_none());
         assert!(configured_orderbook_http_token(Ok(String::new())).is_none());
     }
 
