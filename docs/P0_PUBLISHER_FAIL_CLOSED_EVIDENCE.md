@@ -103,3 +103,15 @@ Status: **BLOCKED — no safe lockfile change made.**
 - No source or dependency files were changed in this follow-up. No CI result is claimed for a regenerated lockfile.
 
 Next required execution: run Cargo's resolver in a network-enabled Rust environment against this exact branch, update the lockfile for patched QUIC packages and test-only `rustix`, inspect the complete lockfile diff, then commit the generated lockfile to this same branch and rerun the full push workflow. Until that evidence exists, security remains **BLOCKED**, and T1→T2 loopback remains **BLOCKED**.
+
+
+## Follow-up — latest PR workflow inspection (2026-11-15)
+
+- Commit inspected: `d8fbc4547815bd15250b6097059ba1c04020e038` (`docs(t1): record dependency remediation blocker`).
+- PR-triggered workflow: [43718687423](https://github.com/kenznguyen/binance-futures-collector/actions/runs/43718687423), run number 710.
+- Collector, native ARM64, dashboard frontend, Docker, and dashboard backend jobs: **PASS**.
+- Security job: **FAIL** at `cargo-audit`; npm audit was not the failing step.
+- The run still reports 3 vulnerabilities across locked packages: `quinn-proto 0.11.18` (RUSTSEC-2026-0524 and RUSTSEC-2026-0523; patched >=0.11.19) and `quinn-udp 0.5.15` (RUSTSEC-2026-0538; patched >=0.5.16, <0.6.0 or >=0.6.3).
+- `rustix 1.1.4` remains an allowed unsoundness warning (RUSTSEC-2026-0486; patched >=1.1.6).
+- This is a PR-triggered run, not an exact-head push run or a regenerated-lockfile verification.
+- No source, dependency manifest, or lockfile changes were made. Security remains **BLOCKED**; exact-head push build remains **NOT VERIFIED**; T1→T2 loopback remains **BLOCKED**.
