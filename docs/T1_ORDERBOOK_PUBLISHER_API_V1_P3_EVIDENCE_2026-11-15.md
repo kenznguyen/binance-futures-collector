@@ -426,3 +426,11 @@ No source implementation, dependency, test-spec, T0/T2, collector ingestion, his
 - Complete the remaining P0 environment-disabled and publisher fail-closed state tests offline.
 - Obtain explicit bounded approval before changing dependencies. First establish reverse-dependency/reachability for `quinn-udp` and `rustix`; do not suppress audit findings.
 - A live T1→T2 loopback integration or any runtime activation still requires separate explicit authorization.
+
+
+## 14. Existing PR #1 review constraint
+
+- PR #1 remains OPEN / DRAFT / NOT MERGED. The current PR metadata still contains an existing review comment dated 2026-11-07 on `crates/connection-sidecar/src/lib.rs`.
+- The review identifies a post-`fs::hard_link` failure path: manifest publication may succeed while cleanup or parent-directory sync fails, leaving the writer usable and allowing later appends to invalidate the published manifest. The review requests poisoning the writer after the publication boundary and a regression test.
+- This finding is outside the Order Book API changes in this increment. No Sidecar source was changed to address it. Do not merge PR #1 until the finding is explicitly resolved or the owner changes the merge gate.
+- This review constraint is independent of the T1 Order Book API source/CI PASS and the separate cargo-audit blocker.
