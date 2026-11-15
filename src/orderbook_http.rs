@@ -437,9 +437,7 @@ mod tests {
         assert!(response
             .to_ascii_lowercase()
             .contains("x-content-type-options: nosniff"));
-        assert!(response
-            .to_ascii_lowercase()
-            .contains("connection: close"));
+        assert!(response.to_ascii_lowercase().contains("connection: close"));
         let body = response.split("\r\n\r\n").nth(1).unwrap();
         let json: serde_json::Value = serde_json::from_str(body).unwrap();
         assert_eq!(json["contractVersion"], CONTRACT_VERSION);
@@ -499,7 +497,12 @@ mod tests {
     #[tokio::test]
     async fn serve_rejects_a_non_loopback_listener() {
         let listener = TcpListener::bind("0.0.0.0:0").await.unwrap();
-        let result = serve(listener, Arc::new(SnapshotPublisher::new()), TOKEN.to_string()).await;
+        let result = serve(
+            listener,
+            Arc::new(SnapshotPublisher::new()),
+            TOKEN.to_string(),
+        )
+        .await;
         assert_eq!(result.unwrap_err().kind(), io::ErrorKind::PermissionDenied);
     }
 
@@ -527,7 +530,10 @@ mod tests {
         );
         let chunked_response = raw_request(&address, chunked.as_bytes()).await;
         assert!(body_response.starts_with("HTTP/1.1 400"), "{body_response}");
-        assert!(chunked_response.starts_with("HTTP/1.1 400"), "{chunked_response}");
+        assert!(
+            chunked_response.starts_with("HTTP/1.1 400"),
+            "{chunked_response}"
+        );
         server.abort();
     }
 
@@ -544,7 +550,10 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert!(response.is_empty(), "timed-out request must not receive data");
+        assert!(
+            response.is_empty(),
+            "timed-out request must not receive data"
+        );
         server.abort();
     }
 
@@ -605,7 +614,10 @@ mod tests {
         )
         .await;
         assert!(response.starts_with("HTTP/1.1 503"), "{response}");
-        assert!(response.contains("snapshot_exceeds_response_limit"), "{response}");
+        assert!(
+            response.contains("snapshot_exceeds_response_limit"),
+            "{response}"
+        );
         assert!(!response.contains("500000"));
         server.abort();
     }
