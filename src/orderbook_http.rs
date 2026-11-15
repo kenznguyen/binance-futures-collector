@@ -18,8 +18,10 @@ use crate::orderbook_v1::SnapshotPublisher;
 pub const LOOPBACK_ADDR: &str = "127.0.0.1:8787";
 const ROUTE_PREFIX: &str = "/internal/v1/orderbook/";
 const MAX_REQUEST_BYTES: usize = 4 * 1024;
+const MAX_BEARER_TOKEN_BYTES: usize = MAX_REQUEST_BYTES - "Bearer ".len();
 const MAX_RESPONSE_BYTES: usize = 64 * 1024;
 const MAX_CONNECTIONS: usize = 8;
+const MAX_REJECTED_CONNECTIONS: usize = 8;
 const IO_TIMEOUT: Duration = Duration::from_millis(750);
 
 /// Bind the only supported production listener address.
@@ -36,10 +38,10 @@ pub async fn serve(
     publisher: Arc<SnapshotPublisher>,
     token: String,
 ) -> io::Result<()> {
-    if token.is_empty() {
+    if token.is_empty() || token.len() > MAX_BEARER_TOKEN_BYTES {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "T1_ORDERBOOK_HTTP_TOKEN must not be empty",
+            "T1_ORDERBOOK_HTTP_TOKEN must be non-empty and fit within the 4 KiB request limit",
         ));
     }
 
@@ -52,6 +54,7 @@ pub async fn serve(
     }
 
     let permits = Arc::new(Semaphore::new(MAX_CONNECTIONS));
+    let rejection_permits = Arc::new(Semaphore::new(MAX_REJECTED_CONNECTIONS));
     loop {
         let (stream, peer) = listener.accept().await?;
         if !peer.ip().is_loopback() {
@@ -62,12 +65,23 @@ pub async fn serve(
         let permit = match permits.clone().try_acquire_owned() {
             Ok(permit) => permit,
             Err(_) => {
+                let rejection_permit = match rejection_permits.clone().try_acquire_owned() {
+                    Ok(permit) => permit,
+                    Err(_) => {
+                        drop(stream);
+                        continue;
+                    }
+                };
                 tokio::spawn(async move {
-                    let _ = write_response(
-                        stream,
-                        503,
-                        "Service Unavailable",
-                        &json!({"error":"capacity_unavailable"}),
+                    let _permit = rejection_permit;
+                    let _ = timeout(
+                        IO_TIMEOUT,
+                        write_response(
+                            stream,
+                            503,
+                            "Service Unavailable",
+                            &json!({"error":"capacity_unavailable"}),
+                        ),
                     )
                     .await;
                 });
@@ -274,13 +288,21 @@ async fn handle_connection(
 }
 
 fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
-    if left.len() != right.len() {
-        return false;
+    // Both values are bounded by the 4 KiB HTTP request/token limits. Pad to a
+    // fixed width and always traverse the full bound; length mismatch is folded
+    // into the accumulated difference rather than returning early.
+    let mut left_padded = [0_u8; MAX_REQUEST_BYTES];
+    let mut right_padded = [0_u8; MAX_REQUEST_BYTES];
+    let left_len = left.len().min(MAX_REQUEST_BYTES);
+    let right_len = right.len().min(MAX_REQUEST_BYTES);
+    left_padded[..left_len].copy_from_slice(&left[..left_len]);
+    right_padded[..right_len].copy_from_slice(&right[..right_len]);
+
+    let mut difference = (left.len() != right.len()) as u8;
+    for index in 0..MAX_REQUEST_BYTES {
+        difference |= left_padded[index] ^ right_padded[index];
     }
-    left.iter()
-        .zip(right)
-        .fold(0_u8, |difference, (a, b)| difference | (a ^ b))
-        == 0
+    difference == 0
 }
 
 async fn write_response(
