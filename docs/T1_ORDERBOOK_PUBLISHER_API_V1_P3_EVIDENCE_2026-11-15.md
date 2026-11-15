@@ -106,3 +106,55 @@ Run #659 reproduced the same cargo-audit findings and versions recorded above. T
 - T1 runtime and T1 → T2 integration: **NOT VERIFIED / BLOCKED**.
 
 No dependency changes, advisory suppressions, runtime activation, VPS deployment, T0/T2 changes, PR merge, or branch rebase were made in this evidence update.
+
+
+## 8. Follow-up CI evidence — run #661
+
+Evidence update date: 2026-11-15 10:56:51Z  
+Source SHA: `f9671e300d915c14505c6b0cb6b3fd51609164b5` (documentation-only evidence update relative to run #659)  
+Workflow: [CI run #661](https://github.com/kenznguyen/binance-futures-collector/actions/runs/43706292850)  
+Workflow run ID: `43706292850`  
+Event: `push`  
+Conclusion: **FAILURE**
+
+| Job | Result |
+|---|---|
+| collector · fmt · clippy · test | PASS |
+| collector · native ARM64 build · test · artifact | PASS |
+| dashboard frontend · tsc · vitest | PASS |
+| dashboard backend · pytest | PASS |
+| docker · build images | PASS |
+| security · cargo-audit · npm audit | FAIL; cargo-audit found 3 vulnerabilities and 1 allowed warning; npm audit did not run |
+
+### 8.1 Artifacts actually published
+
+GitHub Actions artifact API confirmed both artifacts for run #661. Artifact digests are the SHA-256 values returned by GitHub's artifact metadata:
+
+| Artifact | Size | SHA-256 digest | Expiry |
+|---|---:|---|---|
+| `t1-collector-linux-aarch64-f9671e300d915c14505c6b0cb6b3fd51609164b5` | 4,022,090 bytes | `0a95e9c1507d5f1ae7c7cb8eb1f62e941cb8b76aac7bc6500a3d6a08367bb68d` | 2026-11-22 10:56:08Z |
+| `t1-collector-linux-x86_64-f9671e300d915c14505c6b0cb6b3fd51609164b5` | 4,310,901 bytes | `7a836d596ada38a4d0e45428f480b3a960c8fa69a957773fc96f09a7b9c1fda9` | 2026-11-22 10:56:17Z |
+
+Artifact records: [ARM64 artifact](https://github.com/kenznguyen/binance-futures-collector/actions/runs/43706292850) · [x86_64 artifact](https://github.com/kenznguyen/binance-futures-collector/actions/runs/43706292850). These are CI build artifacts only; they are not deployed binaries and do not prove runtime behavior.
+
+### 8.2 Security job evidence
+
+The run #661 security log reports the same dependency findings and locked versions:
+- `quinn-proto 0.11.18`: RUSTSEC-2026-0524 and RUSTSEC-2026-0523; patched >= 0.11.19.
+- `quinn-udp 0.5.15`: RUSTSEC-2026-0538; patched >= 0.5.16 and < 0.6.0, or >= 0.6.3.
+- `rustix 1.1.4`: RUSTSEC-2026-0486 (unsound warning); patched >= 1.1.6.
+
+Cargo-audit scanned 248 crate dependencies and exited with code 1. No dependency upgrade or advisory suppression was performed. The reachability qualification in sections 3 and 7.2 remains unchanged: no reverse path was reported for quinn-proto in the prior diagnostics; quinn-udp and rustix reachability remains **NOT VERIFIED**.
+
+### 8.3 Updated disposition
+
+- Rust formatting, lint and test job: **PASS**.
+- Native ARM64 build/tests and x86_64/ARM64 artifact publication: **PASS**.
+- Frontend, backend and Docker jobs: **PASS**.
+- Security audit: **BLOCKED** by the existing Rust advisories.
+- CI overall: **FAILURE** on exact source SHA `f9671e300d915c14505c6b0cb6b3fd51609164b5`.
+- P3 full acceptance: **PARTIAL / NOT ACCEPTED**; security gate remains red and the remaining contract matrix is not fully evidenced.
+- T1 runtime: **NOT VERIFIED**.
+- T1 → T2 integration: **BLOCKED**.
+
+No source implementation, dependency, T0/T2, ingestion/history, runtime secret, listener, VPS, deployment, PR merge, or branch rebase changes were made for this evidence update.
