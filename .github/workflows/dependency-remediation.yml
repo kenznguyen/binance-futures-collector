@@ -3,6 +3,10 @@ name: Dependency Security Remediation (manual)
 on:
   workflow_dispatch:
     inputs:
+      source_sha:
+        description: "Exact commit SHA to validate and remediate on the selected branch"
+        required: true
+        type: string
       confirm_update:
         description: "Set to yes to resolve the approved Rust dependency advisories"
         required: true
@@ -24,10 +28,26 @@ jobs:
     name: Resolve, audit, test, and publish review artifacts
     if: github.ref == 'refs/heads/feature/t1-connection-sidecar-integration-20261107' && inputs.confirm_update == 'yes'
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     env:
       CARGO_TERM_COLOR: always
     steps:
+      - name: Validate dispatch SHA and checkout exact revision
+        shell: bash
+        env:
+          REQUESTED_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          if ! [[ "$REQUESTED_SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo "source_sha must be a full 40-character commit SHA."
+            exit 1
+          fi
+          if [ "$REQUESTED_SHA" != "$GITHUB_SHA" ]; then
+            echo "Input SHA does not match the dispatched revision."
+            echo "requested=$REQUESTED_SHA dispatched=$GITHUB_SHA"
+            exit 1
+          fi
+
       - name: Checkout exact dispatched revision
         uses: actions/checkout@v4
         with:
@@ -39,57 +59,73 @@ jobs:
         with:
           components: rustfmt, clippy
 
-      - name: Prepare evidence directory
+      - name: Verify clean checkout and prepare evidence
         shell: bash
         run: |
           set -euo pipefail
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "Checkout is not clean; refusing to modify dependencies."
+            git status --short
+            exit 1
+          fi
           mkdir -p remediation-evidence/reports
           cp Cargo.lock remediation-evidence/Cargo.lock.before
-          printf 'repository=%s\nbranch=%s\nsource_sha=%s\n' \
-            "${GITHUB_REPOSITORY}" "${GITHUB_REF_NAME}" "${GITHUB_SHA}" \
-            > remediation-evidence/run-metadata.txt
-          rustc -Vv >> remediation-evidence/run-metadata.txt
-          cargo -V >> remediation-evidence/run-metadata.txt
+          {
+            printf 'repository=%s\nbranch=%s\nsource_sha=%s\n' \
+              "$GITHUB_REPOSITORY" "$GITHUB_REF_NAME" "$GITHUB_SHA"
+            printf 'workflow_run_id=%s\nworkflow_run_attempt=%s\n' \
+              "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT"
+            rustc -Vv
+            cargo -V
+          } > remediation-evidence/run-metadata.txt
+          git status --short > remediation-evidence/git-status-before.txt
 
-      - name: Resolve patched Rust dependency versions
+      - name: Resolve patched compatible Rust dependencies
         id: resolve
         shell: bash
         run: |
           set +e
-          cd "${GITHUB_WORKSPACE}"
           report="remediation-evidence/reports"
           overall=0
-          run_check() {
-            name="$1"
-            shift
+          run_update() {
+            package="$1"
+            name="update-$package"
             echo "::group::$name"
-            "$@" > "$report/$name.log" 2>&1
+            cargo update -p "$package" > "$report/$name.log" 2>&1
             rc=$?
             cat "$report/$name.log"
             echo "$name=$rc" | tee -a "$report/exit-codes.txt"
             if [ "$rc" -ne 0 ]; then overall=1; fi
             echo "::endgroup::"
           }
-          run_check update-quinn-proto cargo update -p quinn-proto --precise 0.11.19
-          run_check update-quinn-udp cargo update -p quinn-udp --precise 0.5.16
-          run_check update-rustix cargo update -p rustix --precise 1.1.6
+          # Let Cargo select the newest versions compatible with the workspace constraints.
+          # No manifest edits, broad workspace update, or application-source changes.
+          for package in \
+            quinn-proto quinn-udp rustix rustls rustls-webpki \
+            webpki-root-certs webpki-roots tokio chacha20; do
+            run_update "$package"
+          done
           echo "updates_ok=$((1-overall))" >> "$GITHUB_OUTPUT"
           echo "$overall" > "$report/update-status.txt"
           git diff -- Cargo.lock > remediation-evidence/Cargo.lock.patch
           cp Cargo.lock remediation-evidence/Cargo.lock.after
           exit 0
 
-      - name: Verify dependency resolution and reverse paths
+      - name: Verify resolved dependency graph and reverse paths
         if: always()
         shell: bash
         run: |
           set +e
           report="remediation-evidence/reports"
-          for package in quinn-proto quinn-udp rustix; do
+          for package in \
+            quinn-proto quinn-udp rustix rustls rustls-webpki \
+            webpki-root-certs webpki-roots tokio chacha20; do
+            name="tree-$package"
             cargo tree --locked --all-features --all-targets -e features -i "$package" \
-              > "$report/tree-$package.log" 2>&1
+              > "$report/$name.log" 2>&1
             rc=$?
-            echo "tree-$package=$rc" >> "$report/dependency-tree-status.txt"
+            echo "$name=$rc" | tee -a "$report/dependency-tree-status.txt" \
+              | tee -a "$report/exit-codes.txt"
           done
           git diff --stat > remediation-evidence/source-diff-stat.txt
           git status --short > remediation-evidence/git-status.txt
@@ -101,6 +137,7 @@ jobs:
           else
             echo "scope_violation=0" >> "$report/exit-codes.txt"
           fi
+          exit 0
 
       - name: Install cargo-audit
         if: always()
@@ -121,9 +158,12 @@ jobs:
           cargo audit > remediation-evidence/reports/cargo-audit.log 2>&1
           rc=$?
           cat remediation-evidence/reports/cargo-audit.log
-          echo "cargo-audit=$rc" >> remediation-evidence/reports/exit-codes.txt
+          echo "cargo-audit=$rc" | tee -a remediation-evidence/reports/exit-codes.txt
+          cargo audit --json > remediation-evidence/reports/cargo-audit.json 2> remediation-evidence/reports/cargo-audit-json-stderr.log
+          json_rc=$?
+          echo "cargo-audit-json=$json_rc" | tee -a remediation-evidence/reports/exit-codes.txt
 
-      - name: Format, lint, build, and test updated lockfile
+      - name: Format, lint, build, and test resolved lockfile
         if: steps.resolve.outputs.updates_ok == '1'
         shell: bash
         run: |
@@ -136,7 +176,7 @@ jobs:
             "$@" > "$report/$name.log" 2>&1
             rc=$?
             cat "$report/$name.log"
-            echo "$name=$rc" >> "$report/exit-codes.txt"
+            echo "$name=$rc" | tee -a "$report/exit-codes.txt"
             echo "::endgroup::"
           }
           run_check cargo-fmt cargo fmt --all --check
@@ -158,16 +198,17 @@ jobs:
             echo
             echo "- Source SHA: `$GITHUB_SHA`"
             echo "- Branch: `$GITHUB_REF_NAME`"
+            echo "- Workflow run: `$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID`"
             echo "- Lockfile changed: $(if git diff --quiet -- Cargo.lock; then echo no; else echo yes; fi)"
             echo "- This workflow does not commit or push changes."
-            echo "- Review `Cargo.lock.patch`, reports, and exit codes before manually applying any change."
+            echo "- Review `Cargo.lock.patch`, audit reports, dependency trees, and exit codes before manually applying any change."
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload remediation review artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: rust-dependency-remediation-${{ github.sha }}
+          name: rust-dependency-remediation-${{ github.sha }}-${{ github.run_id }}
           path: remediation-evidence/
           if-no-files-found: error
           retention-days: 14
@@ -179,7 +220,7 @@ jobs:
           set -euo pipefail
           report="remediation-evidence/reports/exit-codes.txt"
           test -f "$report"
-          if grep -Eq '=(1|[2-9][0-9]*)$' "$report"; then
+          if grep -Eq '=[1-9][0-9]*$' "$report"; then
             echo "One or more remediation checks failed; inspect uploaded evidence."
             exit 1
           fi
