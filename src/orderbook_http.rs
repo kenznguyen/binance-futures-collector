@@ -731,7 +731,10 @@ mod tests {
         )
         .await;
         assert!(reanchoring.starts_with("HTTP/1.1 503"), "{reanchoring}");
-        assert!(reanchoring.contains("snapshot_unavailable"), "{reanchoring}");
+        assert!(
+            reanchoring.contains("snapshot_unavailable"),
+            "{reanchoring}"
+        );
         assert!(!reanchoring.contains("67234.10"));
         server.abort();
 
