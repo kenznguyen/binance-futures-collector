@@ -97,6 +97,16 @@ fn log_shutdown_signal(signal_name: &str) {
     );
 }
 
+/// Return an HTTP bearer token only when the opt-in environment variable is present and non-empty.
+fn configured_orderbook_http_token(
+    value: std::result::Result<String, std::env::VarError>,
+) -> Option<String> {
+    match value {
+        Ok(token) if !token.is_empty() => Some(token),
+        _ => None,
+    }
+}
+
 // Async runtime sized for the websocket, REST, and writer task load.
 #[tokio::main(worker_threads = 8)]
 async fn main() -> Result<()> {
@@ -281,8 +291,9 @@ async fn main() -> Result<()> {
 
     // The V1 transport is opt-in and remains disabled unless a secret is
     // supplied out-of-band. Its only bind address is 127.0.0.1:8787.
-    let orderbook_http_join = match std::env::var("T1_ORDERBOOK_HTTP_TOKEN") {
-        Ok(token) if !token.is_empty() => {
+    let orderbook_http_join =
+        match configured_orderbook_http_token(std::env::var("T1_ORDERBOOK_HTTP_TOKEN")) {
+            Some(token) => {
             let listener = bind_loopback().await?;
             info!("T1 Order Book V1 HTTP enabled on 127.0.0.1:8787");
             let publisher = btc_orderbook_publisher.clone();
@@ -292,8 +303,8 @@ async fn main() -> Result<()> {
                 }
             }))
         }
-        _ => {
-            info!("T1 Order Book V1 HTTP disabled (T1_ORDERBOOK_HTTP_TOKEN is unset)");
+            None => {
+                info!("T1 Order Book V1 HTTP disabled (T1_ORDERBOOK_HTTP_TOKEN is unset)");
             None
         }
     };
@@ -634,6 +645,20 @@ async fn await_handler_drain(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn orderbook_http_listener_is_disabled_when_token_is_missing_or_empty() {
+        assert!(configured_orderbook_http_token(Err(std::env::VarError::NotPresent)).is_none());
+        assert!(configured_orderbook_http_token(Ok(String::new())).is_none());
+    }
+
+    #[test]
+    fn orderbook_http_listener_requires_a_nonempty_configured_token() {
+        assert_eq!(
+            configured_orderbook_http_token(Ok("test-token".to_string())),
+            Some("test-token".to_string())
+        );
+    }
 
     #[tokio::test]
     async fn test_config_loading() {

@@ -220,6 +220,8 @@ jobs:
           echo "DIAGNOSTIC_CLASSIFIER_FIXTURES=4/4_PASS"
           packages=(
             quinn-proto@0.11.18
+            quinn-udp@0.5.15
+            rustix@1.1.4
             rustls@0.23.46
             rustls-webpki@0.103.16
             webpki-root-certs@1.0.10
@@ -240,7 +242,7 @@ jobs:
             fi
             echo "::endgroup::"
           done
-      - name: All-target exact package reachability diagnostics
+      - name: All-features/all-targets exact package reachability diagnostics
         shell: bash
         run: |
           set -u
@@ -260,6 +262,8 @@ jobs:
           }
           packages=(
             quinn-proto@0.11.18
+            quinn-udp@0.5.15
+            rustix@1.1.4
             rustls@0.23.46
             rustls-webpki@0.103.16
             webpki-root-certs@1.0.10
@@ -269,14 +273,14 @@ jobs:
           )
           for package in "${packages[@]}"; do
             echo "::group::cargo tree all-target reverse path: $package"
-            if output="$(cargo tree --locked --color never --target all -i "$package" 2>&1)"; then
+            if output="$(cargo tree --locked --color never --all-features --all-targets -e features -i "$package" 2>&1)"; then
               printf '%s\n' "$output"
               classification="$(classify_tree_output "$output")"
-              echo "ALL_TARGET_PACKAGE_REACHABILITY[$package]=$classification"
+              echo "ALL_FEATURES_ALL_TARGETS_PACKAGE_REACHABILITY[$package]=$classification"
             else
               status=$?
               printf '%s\n' "$output"
-              echo "ALL_TARGET_PACKAGE_REACHABILITY[$package]=COMMAND_ERROR (exit $status)"
+              echo "ALL_FEATURES_ALL_TARGETS_PACKAGE_REACHABILITY[$package]=COMMAND_ERROR (exit $status)"
             fi
             echo "::endgroup::"
           done

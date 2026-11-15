@@ -174,6 +174,8 @@ impl SnapshotPublisher {
             bail!("BTCUSDT V1 exhausted three re-anchor attempts");
         }
         inner.reanchor_attempts += 1;
+        // A new REST anchor attempt invalidates the prior publication immediately.
+        inner.snapshot = None;
         inner.state = OrderbookV1State::FetchingSnapshot;
         Ok(inner.reanchor_attempts)
     }
@@ -259,10 +261,14 @@ impl SnapshotPublisher {
     }
 
     pub fn read_fresh(&self, decision_time_ms: i64) -> Result<Arc<OrderbookSnapshotV1>> {
-        let snapshot = self
+        let inner = self
             .inner
             .read()
-            .expect("snapshot publisher lock poisoned")
+            .expect("snapshot publisher lock poisoned");
+        if inner.state != OrderbookV1State::Ready {
+            bail!("BTCUSDT V1 publisher is not READY");
+        }
+        let snapshot = inner
             .snapshot
             .clone()
             .context("BTCUSDT V1 snapshot is unavailable")?;
@@ -1104,6 +1110,18 @@ mod tests {
             publisher.read().is_none(),
             "old generation must be invalidated before fetching a new anchor"
         );
+        assert!(publisher.read_fresh(NOW).is_err());
+    }
+
+    #[test]
+    fn publisher_read_fresh_rejects_a_populated_snapshot_outside_ready_state() {
+        let publisher = SnapshotPublisher::new();
+        let generation = publisher.begin_connection_generation();
+        publisher.note_reanchor_attempt().unwrap();
+        let candidate = build_snapshot(&snapshot(), &valid_updates(), generation, NOW, NOW).unwrap();
+        publisher.publish_if_current(candidate).unwrap();
+
+        publisher.inner.write().unwrap().state = OrderbookV1State::Validating;
         assert!(publisher.read_fresh(NOW).is_err());
     }
 
