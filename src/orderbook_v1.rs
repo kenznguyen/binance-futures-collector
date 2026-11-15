@@ -1093,13 +1093,17 @@ mod tests {
         let publisher = SnapshotPublisher::new();
         let generation = publisher.begin_connection_generation();
         publisher.note_reanchor_attempt().unwrap();
-        let candidate = build_snapshot(&snapshot(), &valid_updates(), generation, NOW, NOW).unwrap();
+        let candidate =
+            build_snapshot(&snapshot(), &valid_updates(), generation, NOW, NOW).unwrap();
         publisher.publish_if_current(candidate).unwrap();
         assert!(publisher.read_fresh(NOW).is_ok());
 
         publisher.note_reanchor_attempt().unwrap();
         assert_eq!(publisher.state(), OrderbookV1State::FetchingSnapshot);
-        assert!(publisher.read().is_none(), "old generation must be invalidated before fetching a new anchor");
+        assert!(
+            publisher.read().is_none(),
+            "old generation must be invalidated before fetching a new anchor"
+        );
         assert!(publisher.read_fresh(NOW).is_err());
     }
 
