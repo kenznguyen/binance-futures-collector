@@ -7,6 +7,8 @@ use crate::models::{DepthSnapshotRest, DepthUpdateWs};
 use crate::utils::{compare_normalized_decimals, validate_orderbook_level};
 
 pub const CONTRACT_VERSION: &str = "T1_T2_ORDERBOOK_V1";
+pub const CONTRACT_SYMBOL: &str = "BTCUSDT";
+pub const CONTRACT_MARKET: &str = "BINANCE_USDM_PERPETUAL";
 pub const REQUIRED_DEPTH: usize = 20;
 pub const MAX_BOOK_AGE_MS: i64 = 2_000;
 pub const MAX_FUTURE_SKEW_MS: i64 = 250;
@@ -221,6 +223,20 @@ impl SnapshotPublisher {
                 | OrderbookV1State::Ready
         ) {
             bail!("order-book publisher is not in a publishable lifecycle state");
+        }
+        if snapshot.contract_version != CONTRACT_VERSION
+            || snapshot.symbol != CONTRACT_SYMBOL
+            || snapshot.market != CONTRACT_MARKET
+        {
+            bail!("refusing to publish snapshot with noncanonical V1 contract metadata");
+        }
+        if snapshot.bids.len() < REQUIRED_DEPTH || snapshot.asks.len() < REQUIRED_DEPTH {
+            bail!("refusing to publish snapshot below the required bid/ask depth");
+        }
+        if snapshot.depth.bids != snapshot.bids.len()
+            || snapshot.depth.asks != snapshot.asks.len()
+        {
+            bail!("refusing to publish snapshot with inconsistent depth metadata");
         }
         if !snapshot.complete || snapshot.continuity != "VERIFIED" || snapshot.freshness != "FRESH"
         {
@@ -441,8 +457,8 @@ pub fn build_snapshot(
 
     Ok(OrderbookSnapshotV1 {
         contract_version: CONTRACT_VERSION.to_string(),
-        symbol: "BTCUSDT".to_string(),
-        market: "BINANCE_USDM_PERPETUAL".to_string(),
+        symbol: CONTRACT_SYMBOL.to_string(),
+        market: CONTRACT_MARKET.to_string(),
         depth: OrderbookDepthV1 {
             bids: bid_levels.len(),
             asks: ask_levels.len(),
