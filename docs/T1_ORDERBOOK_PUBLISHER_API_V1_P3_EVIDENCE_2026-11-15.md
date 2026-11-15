@@ -62,3 +62,47 @@ No T0 or T2 changes, no collector ingestion or historical data changes, no runti
 2. Re-run CI on the exact updated source SHA and retain the job evidence.
 3. Complete the remaining P3 contract matrix and diff-based isolation proof before considering P3 accepted.
 4. Keep runtime and T1 → T2 integration blocked until separately authorized and verified.
+
+
+## 7. Follow-up CI evidence — run #659
+
+Evidence update date: 2026-11-15 10:49:12Z  
+Source SHA: `ed7d871aa48c167bd91ddde6edfb609052f7fd41` (documentation-only evidence update)  
+Workflow: [CI run #659](https://github.com/kenznguyen/binance-futures-collector/actions/runs/43705640428)  
+Workflow run ID: `43705640428`  
+Event: `push`  
+Conclusion: **FAILURE**
+
+| Job | Result |
+|---|---|
+| collector · fmt · clippy · test | PASS |
+| collector · native ARM64 build · test · artifact | PASS |
+| dashboard frontend · tsc · vitest | PASS |
+| dashboard backend · pytest | PASS |
+| docker · build images | PASS |
+| security · cargo-audit · npm audit | FAIL; cargo-audit stopped the job before npm audit |
+
+### 7.1 Artifacts actually published
+
+Unlike run #658, run #659 was a push event and uploaded both collector artifacts. GitHub Actions artifact metadata confirms:
+
+| Artifact | Size | SHA-256 digest |
+|---|---:|---|
+| `t1-collector-linux-aarch64-ed7d871aa48c167bd91ddde6edfb609052f7fd41` | 4,022,090 bytes | `d92cc65cd38b1a3fa2f35ef3e81e001ef6e3cb2392a8d2d64eb40eefd74bafe0` |
+| `t1-collector-linux-x86_64-ed7d871aa48c167bd91ddde6edfb609052f7fd41` | 4,310,901 bytes | `d09f292faed5bfb5b772ca4d4ae80008b3a40501f78274a39cb78c07e20e1586` |
+
+Both artifacts were created on 2026-11-15 and had an expiry of 2026-11-22 at the time evidence was collected. These are CI artifacts only; they are not evidence of deployment or runtime operation.
+
+### 7.2 Security diagnostics and gate
+
+Run #659 reproduced the same cargo-audit findings and versions recorded above. The diagnostic commands explicitly queried `quinn-proto` in default-feature and all-target reverse trees; both emitted no dependency path. The diagnostic package list did not query `quinn-udp` or `rustix`, so reachability for those two advisories remains **NOT VERIFIED**. Do not interpret package download lines as dependency reachability.
+
+### 7.3 Updated disposition
+
+- CI build/test/dashboard/docker jobs: **PASS** on SHA `ed7d871aa48c167bd91ddde6edfb609052f7fd41`.
+- Security audit: **BLOCKED** by the same pre-existing Rust advisories.
+- x86_64 and ARM64 CI artifacts: **PUBLISHED**, with exact names, sizes and digests above.
+- P3 full acceptance: **PARTIAL / NOT ACCEPTED**. The security gate remains red and the remaining contract matrix is not yet fully evidenced.
+- T1 runtime and T1 → T2 integration: **NOT VERIFIED / BLOCKED**.
+
+No dependency changes, advisory suppressions, runtime activation, VPS deployment, T0/T2 changes, PR merge, or branch rebase were made in this evidence update.
