@@ -253,3 +253,52 @@ The log confirms cargo-audit failed and npm audit did not run. This run did not 
 - T1 → T2 integration: **BLOCKED**.
 
 No dependency, runtime, T0/T2, ingestion/history, listener, VPS deployment, PR merge, or branch rebase changes were made.
+
+
+## 11. Follow-up CI evidence — push run #667 and pull-request run #668
+
+Evidence update date: 2026-11-15 11:15Z  
+Repository branch: `feature/t1-connection-sidecar-integration-20261107`  
+Exact tested source SHA for both runs: `492ac7a8f012f74cd6f1803e14c944e8b71bfc97`  
+PR #1 base SHA: `bc4f0ef633fbeee4a49defd72827f17162693805`
+
+### 11.1 Push run #667
+
+- Workflow: [run 43707751127](https://github.com/kenznguyen/binance-futures-collector/actions/runs/43707751127)
+- Event: `push`
+- Run conclusion: **FAILURE**.
+- Jobs: collector fmt/clippy/test PASS; native ARM64 build/test/artifact PASS; dashboard backend PASS; dashboard frontend PASS; Docker build PASS; security cargo-audit/npm audit FAIL.
+- Security job stopped at `cargo-audit`; npm audit steps were SKIPPED.
+- The Rust audit scanned 248 crate dependencies and reproduced the same 3 vulnerabilities plus 1 allowed unsound warning documented in sections 3 and 10. No dependency upgrade or advisory suppression was made.
+
+Artifacts published for the exact tested SHA (GitHub artifact metadata):
+
+| Artifact | Size | SHA-256 digest | Expiry |
+|---|---:|---|---|
+| `t1-collector-linux-x86_64-492ac7a8f012f74cd6f1803e14c944e8b71bfc97` | 4,310,901 bytes | `65d265e450c074db6081650abe192bdc62dc168ca1a57ffbcc87c8cfdee72e56` | 2026-11-22 11:14:14Z |
+| `t1-collector-linux-aarch64-492ac7a8f012f74cd6f1803e14c944e8b71bfc97` | 4,022,090 bytes | `df380cc227787334f1f7abae81fef60c6d98db38886eeeca91e1432c7fa77a71` | 2026-11-22 11:14:16Z |
+
+Artifact payload bytes were not downloaded or independently re-hashed; the digests above are GitHub artifact metadata only. These artifacts are CI outputs, not deployment or runtime evidence.
+
+### 11.2 Pull-request run #668
+
+- Workflow: [run 43707756454](https://github.com/kenznguyen/binance-futures-collector/actions/runs/43707756454)
+- Event: `pull_request`, PR #1, base branch `main`.
+- PR head SHA: `492ac7a8f012f74cd6f1803e14c944e8b71bfc97`; base SHA: `bc4f0ef633fbeee4a49defd72827f17162693805`.
+- Run conclusion: **FAILURE**.
+- Jobs: collector fmt/clippy/test PASS; native ARM64 build/test PASS; dashboard backend PASS; dashboard frontend PASS; Docker build PASS; security cargo-audit/npm audit FAIL.
+- Both artifact upload paths were skipped because this was a `pull_request` event; GitHub artifact API returned no artifacts.
+- Security findings and skipped npm audit are identical to push run #667.
+
+### 11.3 Combined disposition
+
+- Build, lint, unit-test, dashboard and Docker jobs: **PASS** for their reported job scopes on exact SHA `492ac7a8f012f74cd6f1803e14c944e8b71bfc97`.
+- Security audit: **BLOCKED** by the same Rust advisories; npm audit remains NOT RUN in these runs.
+- Push artifact publication: **PASS at metadata level**; payload hash verification NOT VERIFIED.
+- Pull-request artifact publication: **NOT APPLICABLE / SKIPPED** by workflow condition.
+- CI overall: **FAILURE** for both run IDs `43707751127` and `43707756454`.
+- P3 full acceptance: **PARTIAL / NOT ACCEPTED**; security gate is red and the full contract matrix remains incomplete.
+- T1 runtime: **NOT VERIFIED**.
+- T1 → T2 integration: **BLOCKED**.
+
+No source implementation, dependency, test-spec, T0/T2, collector ingestion, historical data, listener, VPS, runtime, PR merge, branch rebase, or deployment change was made for these CI runs. Next: preserve the security blocker; separately obtain precise reverse-dependency and shipped-target reachability evidence for `quinn-udp` and `rustix`, then address the remaining P3 contract matrix under offline GitHub Actions only.
