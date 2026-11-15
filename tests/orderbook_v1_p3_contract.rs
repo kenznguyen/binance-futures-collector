@@ -105,7 +105,7 @@ fn publish_valid(publisher: &SnapshotPublisher, generation: u64) {
 }
 
 #[test]
-fn publisher_rejects_noncanonical_contract_metadata() {
+fn publisher_rejects_noncanonical_market_metadata() {
     let publisher = publisher();
     let generation = begin_publish(&publisher);
     let now = chrono::Utc::now().timestamp_millis();
@@ -115,9 +115,31 @@ fn publisher_rejects_noncanonical_contract_metadata() {
         publisher.publish_if_current(wrong_market).is_err(),
         "Publisher must reject a noncanonical V1 market identifier"
     );
+}
 
-    let wrong_version = candidate(generation, "BINANCE_USDM_PERPETUAL", 20, 20, 20, 20, now);
-    let mut wrong_version = wrong_version;
+#[test]
+fn publisher_rejects_noncanonical_symbol_metadata() {
+    let publisher = publisher();
+    let generation = begin_publish(&publisher);
+    let now = chrono::Utc::now().timestamp_millis();
+
+    let mut wrong_symbol =
+        candidate(generation, "BINANCE_USDM_PERPETUAL", 20, 20, 20, 20, now);
+    wrong_symbol.symbol = "ETHUSDT".to_string();
+    assert!(
+        publisher.publish_if_current(wrong_symbol).is_err(),
+        "BTCUSDT Publisher must reject a different symbol"
+    );
+}
+
+#[test]
+fn publisher_rejects_non_v1_contract_version() {
+    let publisher = publisher();
+    let generation = begin_publish(&publisher);
+    let now = chrono::Utc::now().timestamp_millis();
+
+    let mut wrong_version =
+        candidate(generation, "BINANCE_USDM_PERPETUAL", 20, 20, 20, 20, now);
     wrong_version.contract_version = "T1_T2_ORDERBOOK_V0".to_string();
     assert!(
         publisher.publish_if_current(wrong_version).is_err(),
@@ -126,7 +148,7 @@ fn publisher_rejects_noncanonical_contract_metadata() {
 }
 
 #[test]
-fn publisher_rejects_insufficient_or_inconsistent_depth_metadata() {
+fn publisher_rejects_insufficient_bid_depth() {
     let publisher = publisher();
     let generation = begin_publish(&publisher);
     let now = chrono::Utc::now().timestamp_millis();
@@ -134,8 +156,28 @@ fn publisher_rejects_insufficient_or_inconsistent_depth_metadata() {
     let shallow = candidate(generation, "BINANCE_USDM_PERPETUAL", 19, 20, 19, 20, now);
     assert!(
         publisher.publish_if_current(shallow).is_err(),
-        "Publisher must enforce the 20 x 20 minimum depth"
+        "Publisher must enforce the 20-level minimum bid depth"
     );
+}
+
+#[test]
+fn publisher_rejects_insufficient_ask_depth() {
+    let publisher = publisher();
+    let generation = begin_publish(&publisher);
+    let now = chrono::Utc::now().timestamp_millis();
+
+    let shallow = candidate(generation, "BINANCE_USDM_PERPETUAL", 20, 19, 20, 19, now);
+    assert!(
+        publisher.publish_if_current(shallow).is_err(),
+        "Publisher must enforce the 20-level minimum ask depth"
+    );
+}
+
+#[test]
+fn publisher_rejects_inconsistent_depth_metadata() {
+    let publisher = publisher();
+    let generation = begin_publish(&publisher);
+    let now = chrono::Utc::now().timestamp_millis();
 
     let inconsistent = candidate(generation, "BINANCE_USDM_PERPETUAL", 20, 20, 19, 20, now);
     assert!(
