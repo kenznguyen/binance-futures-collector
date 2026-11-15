@@ -2,9 +2,7 @@ use std::{collections::BTreeSet, io, sync::Arc, time::Duration};
 
 use binance_futures_collector::{
     orderbook_http::{bind_loopback, serve},
-    orderbook_v1::{
-        OrderbookDepthV1, OrderbookSnapshotV1, SnapshotPublisher, CONTRACT_VERSION,
-    },
+    orderbook_v1::{OrderbookDepthV1, OrderbookSnapshotV1, SnapshotPublisher, CONTRACT_VERSION},
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -65,9 +63,7 @@ fn begin_publish(publisher: &SnapshotPublisher) -> u64 {
     generation
 }
 
-async fn start_server(
-    publisher: Arc<SnapshotPublisher>,
-) -> (String, JoinHandle<io::Result<()>>) {
+async fn start_server(publisher: Arc<SnapshotPublisher>) -> (String, JoinHandle<io::Result<()>>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap().to_string();
     let task = tokio::spawn(serve(listener, publisher, TOKEN.to_string()));
@@ -160,7 +156,12 @@ async fn authenticated_response_matches_exact_v1_schema_market_and_depth() {
     let body = response.split("\r\n\r\n").nth(1).unwrap();
     let json: serde_json::Value = serde_json::from_str(body).unwrap();
 
-    let actual = json.as_object().unwrap().keys().cloned().collect::<BTreeSet<_>>();
+    let actual = json
+        .as_object()
+        .unwrap()
+        .keys()
+        .cloned()
+        .collect::<BTreeSet<_>>();
     let expected = [
         "contractVersion",
         "symbol",
