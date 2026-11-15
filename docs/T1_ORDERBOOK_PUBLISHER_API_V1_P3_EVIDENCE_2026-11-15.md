@@ -368,3 +368,61 @@ No source implementation, dependency, test-spec, T0/T2, collector ingestion, his
 - Preserve the T1 snapshot identity fix.
 - Obtain explicit scope approval before changing dependencies to remediate the Rust advisories. First complete the missing reverse-dependency/reachability analysis for `quinn-udp` and `rustix`; do not suppress advisories.
 - After the security disposition is resolved, finish the remaining P0 HTTP transport/fail-closed contract gaps with offline tests. Any runtime or T1→T2 activation requires separate explicit approval.
+
+
+## 13. HTTP transport/fail-closed boundary increment — exact-source CI (2026-11-15)
+
+### 13.1 Test-first RED and implementation
+
+- Added focused HTTP transport tests in commit `473aa8fce23c14a60246089d51bb9dd95f6fb519`; corrected the oversized-response fixture ordering in `2c564e5afacd57175ed40b1c159e34008adb6cc5`; formatting-only correction in `7c20bb031bafb540648a5a14922bf6f760465fe3`.
+- RED workflow #683, run ID `43710799427`, exact source SHA `7c20bb031bafb540648a5a14922bf6f760465fe3`: 110 passed, 1 failed. The only failure was `serve_rejects_empty_and_overlong_bearer_tokens_before_accepting`; the existing server rejected an empty token but accepted an overlong configured token and entered its accept loop. Other new boundary tests passed.
+- Implementation commit: `23c5bc975f3d495ec5c482a33c9c192f6a8c0c3f`.
+- Token startup now rejects empty tokens and tokens longer than the 4 KiB request bound permits.
+- Bearer comparison pads both values to a fixed 4 KiB width, folds length mismatch into the accumulator and traverses the fixed bound without early length return.
+- Active request handlers remain capped at 8. Overflow responses now use a separate 8-permit semaphore and the same I/O deadline; further overflow sockets are dropped instead of spawning unbounded response tasks.
+- Added/extended tests for content and length mismatch, empty/overlong token startup, non-loopback listener rejection, oversized request headers (413), request body/Transfer-Encoding rejection (400), incomplete-header I/O deadline, concurrent capacity rejection (503), oversized snapshot rejection without truncation (503), and JSON/security response headers.
+
+### 13.2 Push workflow #685 — exact-source results
+
+- Workflow: [#685](https://github.com/kenznguyen/binance-futures-collector/actions/runs/43711013002), run ID `43711013002`, event `push`.
+- Exact checked-out source SHA: `23c5bc975f3d495ec5c482a33c9c192f6a8c0c3f`.
+- Collector job ID `132802337835`: **SUCCESS**.
+  - `cargo fmt --all --check`: PASS.
+  - Clippy: PASS.
+  - Release build: PASS.
+  - Library tests: 111 PASS, 0 FAIL.
+  - Binary tests: 3 PASS.
+  - Additional integration targets: 12 PASS, 0 tests, 12 PASS, and P3 Order Book HTTP integration: 27 PASS.
+  - Sidecar writer format, Clippy and offline tests: PASS.
+- Native ARM64 job ID `132802337774`: **SUCCESS**; host `aarch64-unknown-linux-gnu`, AArch64 ELF verified; same 111 library tests and 27 P3 Order Book HTTP integration tests passed, plus all other targets.
+- Dashboard frontend job: SUCCESS. Dashboard backend job: SUCCESS. Docker build job: SUCCESS.
+- Security job ID `132802337819`: **FAILURE**. cargo-audit findings remain:
+  - `quinn-proto 0.11.18`: RUSTSEC-2026-0524 and RUSTSEC-2026-0523.
+  - `quinn-udp 0.5.15`: RUSTSEC-2026-0538.
+  - `rustix 1.1.4`: RUSTSEC-2026-0486 (unsound warning).
+- Default-feature and all-target diagnostics again emitted `NO_PATH_EMITTED` for `quinn-proto`. `quinn-udp` and `rustix` still have no reachability classification and remain NOT VERIFIED. npm audit steps were skipped after cargo-audit failed. No dependency upgrade or advisory suppression was made.
+- x86_64 artifact: ID `14160770490`, name `t1-collector-linux-x86_64-23c5bc975f3d495ec5c482a33c9c192f6a8c0c3f`, 4,331,413 bytes, metadata digest `sha256:b6e3bd1f8d08d5f3d597bf44bd3d3968106b9eb436bd07b551b3793648ba9f0a`, expires 2026-11-22 11:54:26Z.
+- ARM64 artifact: ID `14160044298`, name `t1-collector-linux-aarch64-23c5bc975f3d495ec5c482a33c9c192f6a8c0c3f`, 4,035,167 bytes, metadata digest `sha256:f3d2c1424d95e6968b53eeef16708b548298c7eb7fead820745748edc35f66d2`, expires 2026-11-22 11:54:34Z.
+- Artifact digests are GitHub metadata only; payload bytes were not independently downloaded/re-hashed.
+
+### 13.3 Pull-request workflow #686
+
+- Workflow [#686](https://github.com/kenznguyen/binance-futures-collector/actions/runs/43711017167), run ID `43711017167`, PR #1, head SHA `23c5bc975f3d495ec5c482a33c9c192f6a8c0c3f`.
+- Collector job checked out synthetic merge SHA `faf2b9410ef7054167946afa4d377e6eb480f01b`, merging the PR head into base `45218c694af01602e39966d4668630323b4f8333`.
+- Collector, native ARM64, dashboard backend/frontend and Docker jobs: **SUCCESS**. Security job: **FAILURE**.
+- PR #1 remains OPEN / DRAFT / NOT MERGED.
+
+### 13.4 Updated disposition
+
+- T1 V1 wire compatibility and T2 canonical `snapshotId`: **PASS at source/CI contract level** on exact T1 source SHA `23c5bc975f3d495ec5c482a33c9c192f6a8c0c3f`.
+- HTTP transport boundary tests added in this increment: **PASS** on x86_64 and native ARM64.
+- T1 P3 full acceptance: **PARTIAL / NOT ACCEPTED**. The security job remains red, and not every scenario in the P0 matrix has a dedicated exact-SHA test (including environment-disabled listener behavior and every publisher fail-closed state).
+- T1 runtime/listener activation: **NOT VERIFIED / NOT AUTHORIZED**. T1→T2 live runtime integration: **BLOCKED / NOT RUN**.
+- T0, T2 source, Core First source, strategy/risk/ledger, collector history/CSV persistence and deployment configuration remain untouched. No VPS/listener activation, exchange connectivity, persistent runtime or real orders occurred.
+
+### 13.5 Next permitted action
+
+- Preserve T1 branch and PR #1; do not merge or create a parallel branch/PR.
+- Complete the remaining P0 environment-disabled and publisher fail-closed state tests offline.
+- Obtain explicit bounded approval before changing dependencies. First establish reverse-dependency/reachability for `quinn-udp` and `rustix`; do not suppress audit findings.
+- A live T1→T2 loopback integration or any runtime activation still requires separate explicit authorization.
