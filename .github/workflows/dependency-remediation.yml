@@ -1,0 +1,193 @@
+name: Dependency Security Remediation (manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_update:
+        description: "Set to yes to resolve the approved Rust dependency advisories"
+        required: true
+        type: choice
+        options:
+          - "no"
+          - "yes"
+        default: "no"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dependency-remediation-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  remediate:
+    name: Resolve, audit, test, and publish review artifacts
+    if: github.ref == 'refs/heads/feature/t1-connection-sidecar-integration-20261107' && inputs.confirm_update == 'yes'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - name: Checkout exact dispatched revision
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Prepare evidence directory
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p remediation-evidence/reports
+          cp Cargo.lock remediation-evidence/Cargo.lock.before
+          printf 'repository=%s\nbranch=%s\nsource_sha=%s\n' \
+            "${GITHUB_REPOSITORY}" "${GITHUB_REF_NAME}" "${GITHUB_SHA}" \
+            > remediation-evidence/run-metadata.txt
+          rustc -Vv >> remediation-evidence/run-metadata.txt
+          cargo -V >> remediation-evidence/run-metadata.txt
+
+      - name: Resolve patched Rust dependency versions
+        id: resolve
+        shell: bash
+        run: |
+          set +e
+          cd "${GITHUB_WORKSPACE}"
+          report="remediation-evidence/reports"
+          overall=0
+          run_check() {
+            name="$1"
+            shift
+            echo "::group::$name"
+            "$@" > "$report/$name.log" 2>&1
+            rc=$?
+            cat "$report/$name.log"
+            echo "$name=$rc" | tee -a "$report/exit-codes.txt"
+            if [ "$rc" -ne 0 ]; then overall=1; fi
+            echo "::endgroup::"
+          }
+          run_check update-quinn-proto cargo update -p quinn-proto --precise 0.11.19
+          run_check update-quinn-udp cargo update -p quinn-udp --precise 0.5.16
+          run_check update-rustix cargo update -p rustix --precise 1.1.6
+          echo "updates_ok=$((1-overall))" >> "$GITHUB_OUTPUT"
+          echo "$overall" > "$report/update-status.txt"
+          git diff -- Cargo.lock > remediation-evidence/Cargo.lock.patch
+          cp Cargo.lock remediation-evidence/Cargo.lock.after
+          exit 0
+
+      - name: Verify dependency resolution and reverse paths
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          report="remediation-evidence/reports"
+          for package in quinn-proto quinn-udp rustix; do
+            cargo tree --locked --all-features --all-targets -e features -i "$package" \
+              > "$report/tree-$package.log" 2>&1
+            rc=$?
+            echo "tree-$package=$rc" >> "$report/exit-codes.txt"
+          done
+          git diff --stat > remediation-evidence/source-diff-stat.txt
+          git status --short > remediation-evidence/git-status.txt
+          git diff --name-only > remediation-evidence/changed-paths.txt
+          if grep -Ev '^Cargo\.lock$' remediation-evidence/changed-paths.txt | grep -q .; then
+            echo "Unexpected tracked-file change outside Cargo.lock" \
+              | tee remediation-evidence/reports/scope-violation.txt
+            echo "scope_violation=1" >> "$report/exit-codes.txt"
+          else
+            echo "scope_violation=0" >> "$report/exit-codes.txt"
+          fi
+
+      - name: Install cargo-audit
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          cargo install cargo-audit --locked \
+            > remediation-evidence/reports/install-cargo-audit.log 2>&1
+          rc=$?
+          cat remediation-evidence/reports/install-cargo-audit.log
+          echo "install-cargo-audit=$rc" >> remediation-evidence/reports/exit-codes.txt
+
+      - name: Run Rust security audit
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          cargo audit > remediation-evidence/reports/cargo-audit.log 2>&1
+          rc=$?
+          cat remediation-evidence/reports/cargo-audit.log
+          echo "cargo-audit=$rc" >> remediation-evidence/reports/exit-codes.txt
+
+      - name: Format, lint, build, and test updated lockfile
+        if: steps.resolve.outputs.updates_ok == '1'
+        shell: bash
+        run: |
+          set +e
+          report="remediation-evidence/reports"
+          run_check() {
+            name="$1"
+            shift
+            echo "::group::$name"
+            "$@" > "$report/$name.log" 2>&1
+            rc=$?
+            cat "$report/$name.log"
+            echo "$name=$rc" >> "$report/exit-codes.txt"
+            echo "::endgroup::"
+          }
+          run_check cargo-fmt cargo fmt --all --check
+          run_check cargo-clippy cargo clippy --all-targets --all-features -- -D warnings
+          run_check cargo-build cargo build --release --locked
+          run_check cargo-test cargo test --all --locked
+
+      - name: Final scope and lockfile evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff -- Cargo.lock > remediation-evidence/Cargo.lock.patch
+          cp Cargo.lock remediation-evidence/Cargo.lock.after
+          git status --short > remediation-evidence/git-status-final.txt
+          git diff --name-only > remediation-evidence/changed-paths-final.txt
+          {
+            echo "## Dependency remediation evidence"
+            echo
+            echo "- Source SHA: `$GITHUB_SHA`"
+            echo "- Branch: `$GITHUB_REF_NAME`"
+            echo "- Lockfile changed: $(if git diff --quiet -- Cargo.lock; then echo no; else echo yes; fi)"
+            echo "- This workflow does not commit or push changes."
+            echo "- Review `Cargo.lock.patch`, reports, and exit codes before manually applying any change."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload remediation review artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rust-dependency-remediation-${{ github.sha }}
+          path: remediation-evidence/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Enforce remediation result
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          report="remediation-evidence/reports/exit-codes.txt"
+          test -f "$report"
+          if grep -Eq '=(1|[2-9][0-9]*)$' "$report"; then
+            echo "One or more remediation checks failed; inspect uploaded evidence."
+            exit 1
+          fi
+          if grep -q 'scope_violation=1' "$report"; then
+            echo "Scope violation detected."
+            exit 1
+          fi
+          if [ ! -f remediation-evidence/Cargo.lock.patch ]; then
+            echo "Cargo.lock patch evidence is missing."
+            exit 1
+          fi
