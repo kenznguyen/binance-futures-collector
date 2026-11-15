@@ -1,6 +1,6 @@
 # T1 Order Book Publisher / API V1 — Test Specification
 
-Status: SPECIFICATION ONLY — tests described here have not been added or run by this document.
+Status: PARTIAL IMPLEMENTATION / EVIDENCE — the P0 matrix is not yet fully evidenced; see the exact-SHA P3 evidence document for completed runs.
 Date: 2026-11-15
 Contract: [T1 Order Book Publisher / API V1 Contract](T1_ORDERBOOK_PUBLISHER_API_V1_CONTRACT_2026-11-15.md)
 
@@ -23,7 +23,7 @@ The inspected source already contains:
 - Publisher tests for generation invalidation/fencing, immutable live-diff application, re-anchor budget, and read-time freshness.
 - HTTP tests for successful serialization, invalid token, broken-publisher fail-closed, unsupported symbol, and unsupported method.
 
-These are source-level observations, not a fresh test run in this task.
+These were source-level observations when the specification was first written. Exact-SHA CI evidence is recorded in the P3 evidence document; a specified scenario without an exact-SHA test result remains NOT RUN.
 
 ## 3. Required test matrix
 

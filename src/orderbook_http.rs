@@ -320,7 +320,7 @@ mod tests {
         task::JoinHandle,
     };
 
-    use super::serve;
+    use super::{constant_time_eq, serve};
     use crate::orderbook_v1::{
         canonical_snapshot_id, OrderbookDepthV1, OrderbookSnapshotV1, SnapshotPublisher,
         CONTRACT_VERSION,
@@ -383,6 +383,19 @@ mod tests {
         (address, task)
     }
 
+    async fn raw_request(address: &str, request: &[u8]) -> String {
+        let mut stream = TcpStream::connect(address).await.unwrap();
+        stream.write_all(request).await.unwrap();
+        stream.shutdown().await.unwrap();
+
+        let mut response = Vec::new();
+        tokio::time::timeout(Duration::from_secs(2), stream.read_to_end(&mut response))
+            .await
+            .unwrap()
+            .unwrap();
+        String::from_utf8(response).unwrap()
+    }
+
     async fn request(address: &str, method: &str, path: &str, token: Option<&str>) -> String {
         let mut stream = TcpStream::connect(address).await.unwrap();
         let authorization = token
@@ -417,7 +430,16 @@ mod tests {
         assert!(response.starts_with("HTTP/1.1 200"), "{response}");
         assert!(response
             .to_ascii_lowercase()
+            .contains("content-type: application/json"));
+        assert!(response
+            .to_ascii_lowercase()
             .contains("cache-control: no-store"));
+        assert!(response
+            .to_ascii_lowercase()
+            .contains("x-content-type-options: nosniff"));
+        assert!(response
+            .to_ascii_lowercase()
+            .contains("connection: close"));
         let body = response.split("\r\n\r\n").nth(1).unwrap();
         let json: serde_json::Value = serde_json::from_str(body).unwrap();
         assert_eq!(json["contractVersion"], CONTRACT_VERSION);
@@ -448,6 +470,143 @@ mod tests {
 
         assert!(response.starts_with("HTTP/1.1 401"), "{response}");
         assert!(!response.contains("67234.10"));
+        server.abort();
+    }
+
+    #[test]
+    fn bearer_comparison_rejects_content_and_length_mismatches() {
+        assert!(constant_time_eq(b"Bearer token", b"Bearer token"));
+        assert!(!constant_time_eq(b"Bearer token", b"Bearer tokenx"));
+        assert!(!constant_time_eq(b"Bearer token", b"Bearer tokez"));
+    }
+
+    #[tokio::test]
+    async fn serve_rejects_empty_and_overlong_bearer_tokens_before_accepting() {
+        for token in [String::new(), "x".repeat(4090)] {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let result = tokio::time::timeout(
+                Duration::from_millis(100),
+                serve(listener, Arc::new(SnapshotPublisher::new()), token),
+            )
+            .await;
+            assert!(
+                matches!(result, Ok(Err(error)) if error.kind() == io::ErrorKind::InvalidInput),
+                "empty/overlong token must fail startup immediately"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn serve_rejects_a_non_loopback_listener() {
+        let listener = TcpListener::bind("0.0.0.0:0").await.unwrap();
+        let result = serve(listener, Arc::new(SnapshotPublisher::new()), TOKEN.to_string()).await;
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::PermissionDenied);
+    }
+
+    #[tokio::test]
+    async fn oversized_request_headers_return_413() {
+        let (address, server) = start_server(ready_publisher().await).await;
+        let request = format!(
+            "GET /internal/v1/orderbook/btcusdt HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {TOKEN}\r\nX-Fill: {}\r\n\r\n",
+            "x".repeat(5000)
+        );
+        let response = raw_request(&address, request.as_bytes()).await;
+        assert!(response.starts_with("HTTP/1.1 413"), "{response}");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn request_bodies_and_transfer_encoding_are_rejected() {
+        let (address, server) = start_server(ready_publisher().await).await;
+        let body = format!(
+            "GET /internal/v1/orderbook/btcusdt HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {TOKEN}\r\nContent-Length: 1\r\n\r\nx"
+        );
+        let body_response = raw_request(&address, body.as_bytes()).await;
+        let chunked = format!(
+            "GET /internal/v1/orderbook/btcusdt HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {TOKEN}\r\nTransfer-Encoding: chunked\r\n\r\n"
+        );
+        let chunked_response = raw_request(&address, chunked.as_bytes()).await;
+        assert!(body_response.starts_with("HTTP/1.1 400"), "{body_response}");
+        assert!(chunked_response.starts_with("HTTP/1.1 400"), "{chunked_response}");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn io_deadline_closes_a_client_that_never_finishes_headers() {
+        let (address, server) = start_server(ready_publisher().await).await;
+        let mut stream = TcpStream::connect(&address).await.unwrap();
+        stream
+            .write_all(b"GET /internal/v1/orderbook/btcusdt HTTP/1.1\r\nHost: localhost\r\n")
+            .await
+            .unwrap();
+        let mut response = Vec::new();
+        tokio::time::timeout(Duration::from_secs(2), stream.read_to_end(&mut response))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(response.is_empty(), "timed-out request must not receive data");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn excess_concurrent_clients_receive_bounded_capacity_rejection() {
+        let (address, server) = start_server(ready_publisher().await).await;
+        let mut held = Vec::new();
+        for _ in 0..8 {
+            let mut stream = TcpStream::connect(&address).await.unwrap();
+            stream
+                .write_all(b"GET /internal/v1/orderbook/btcusdt HTTP/1.1\r\nHost: localhost\r\n")
+                .await
+                .unwrap();
+            held.push(stream);
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let mut excess = TcpStream::connect(&address).await.unwrap();
+        let mut response = Vec::new();
+        tokio::time::timeout(Duration::from_secs(2), excess.read_to_end(&mut response))
+            .await
+            .unwrap()
+            .unwrap();
+        let response = String::from_utf8(response).unwrap();
+        assert!(response.starts_with("HTTP/1.1 503"), "{response}");
+        assert!(response.contains("capacity_unavailable"), "{response}");
+        drop(held);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn oversized_snapshot_is_not_truncated_or_served() {
+        let publisher = ready_publisher().await;
+        let generation = publisher.begin_connection_generation();
+        publisher.note_reanchor_attempt().unwrap();
+        publisher.mark_validating(generation).unwrap();
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let mut snapshot = publisher.read_fresh(now_ms).unwrap().as_ref().clone();
+        snapshot.generation = generation;
+        snapshot.source_timestamp_ms = now_ms;
+        snapshot.observed_at_ms = now_ms;
+        snapshot.bids = (0..300)
+            .map(|index| [format!("{:080}", 500_000 - index), "1".repeat(80)])
+            .collect();
+        snapshot.asks = (0..300)
+            .map(|index| [format!("{:080}", 500_001 + index), "1".repeat(80)])
+            .collect();
+        snapshot.depth.bids = snapshot.bids.len();
+        snapshot.depth.asks = snapshot.asks.len();
+        snapshot.snapshot_id = crate::orderbook_v1::canonical_snapshot_id(&snapshot).unwrap();
+        publisher.publish_if_current(snapshot).unwrap();
+
+        let (address, server) = start_server(publisher).await;
+        let response = request(
+            &address,
+            "GET",
+            "/internal/v1/orderbook/btcusdt",
+            Some(TOKEN),
+        )
+        .await;
+        assert!(response.starts_with("HTTP/1.1 503"), "{response}");
+        assert!(response.contains("snapshot_exceeds_response_limit"), "{response}");
+        assert!(!response.contains("500000"));
         server.abort();
     }
 
