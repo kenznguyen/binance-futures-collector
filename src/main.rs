@@ -294,20 +294,20 @@ async fn main() -> Result<()> {
     let orderbook_http_join =
         match configured_orderbook_http_token(std::env::var("T1_ORDERBOOK_HTTP_TOKEN")) {
             Some(token) => {
-            let listener = bind_loopback().await?;
-            info!("T1 Order Book V1 HTTP enabled on 127.0.0.1:8787");
-            let publisher = btc_orderbook_publisher.clone();
-            Some(tokio::spawn(async move {
-                if let Err(error) = serve(listener, publisher, token).await {
-                    error!("T1 Order Book V1 HTTP server stopped: {}", error);
-                }
-            }))
-        }
+                let listener = bind_loopback().await?;
+                info!("T1 Order Book V1 HTTP enabled on 127.0.0.1:8787");
+                let publisher = btc_orderbook_publisher.clone();
+                Some(tokio::spawn(async move {
+                    if let Err(error) = serve(listener, publisher, token).await {
+                        error!("T1 Order Book V1 HTTP server stopped: {}", error);
+                    }
+                }))
+            }
             None => {
                 info!("T1 Order Book V1 HTTP disabled (T1_ORDERBOOK_HTTP_TOKEN is unset)");
-            None
-        }
-    };
+                None
+            }
+        };
 
     let orderbook_v1_publishers = Arc::new(dashmap::DashMap::new());
     orderbook_v1_publishers.insert("btcusdt".to_string(), btc_orderbook_publisher.clone());
@@ -648,7 +648,9 @@ mod tests {
 
     #[test]
     fn orderbook_http_listener_is_disabled_when_token_is_missing_or_empty() {
-        assert!(configured_orderbook_http_token(Err(std::env::VarError::NotPresent)).is_none());
+        assert!(
+            configured_orderbook_http_token(Err(std::env::VarError::NotPresent)).is_none()
+        );
         assert!(configured_orderbook_http_token(Ok(String::new())).is_none());
     }
 
