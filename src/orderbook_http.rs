@@ -577,11 +577,11 @@ mod tests {
     #[tokio::test]
     async fn oversized_snapshot_is_not_truncated_or_served() {
         let publisher = ready_publisher().await;
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let mut snapshot = publisher.read_fresh(now_ms).unwrap().as_ref().clone();
         let generation = publisher.begin_connection_generation();
         publisher.note_reanchor_attempt().unwrap();
         publisher.mark_validating(generation).unwrap();
-        let now_ms = chrono::Utc::now().timestamp_millis();
-        let mut snapshot = publisher.read_fresh(now_ms).unwrap().as_ref().clone();
         snapshot.generation = generation;
         snapshot.source_timestamp_ms = now_ms;
         snapshot.observed_at_ms = now_ms;
