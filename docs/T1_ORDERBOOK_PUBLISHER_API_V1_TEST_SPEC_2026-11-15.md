@@ -146,3 +146,23 @@ Record:
 - Explicit diff-based proof that ingestion and historical-data paths were not changed.
 
 No runtime/VPS acceptance is implied by CI. No T1 activation or T2 integration is authorized by this specification.
+
+
+## 5. Exact-SHA coverage update — 2026-11-15
+
+- Exact T1 source SHA: `23c5bc975f3d495ec5c482a33c9c192f6a8c0c3f`.
+- Push workflow [#685](https://github.com/kenznguyen/binance-futures-collector/actions/runs/43711013002): collector fmt/Clippy/release build/all tests PASS; 111 library tests and 27 P3 Order Book HTTP contract integration tests PASS. Native ARM64 job also PASS with the same test counts.
+- New HTTP test coverage in `src/orderbook_http.rs`:
+  - AU-04: equal/content/length mismatch semantics; implementation uses a fixed 4 KiB comparison loop with no early length return.
+  - AU-05: empty and overlong bearer token rejected before listener accept loop.
+  - AU-08: non-loopback listener rejected.
+  - AU-12: oversized request headers return 413.
+  - AU-13: request body and Transfer-Encoding return 400.
+  - AU-14: concurrent excess client receives 503; overflow response tasks are bounded separately from active request tasks.
+  - AU-15: incomplete headers are closed at the configured I/O deadline.
+  - AU-16: JSON content type, no-store, nosniff and connection-close headers are asserted.
+  - FC-07: oversized snapshot returns 503 and is not truncated or disclosed.
+  - FC-08: request capacity exhaustion returns 503.
+- TDD RED for AU-05: test commit `7c20bb031bafb540648a5a14922bf6f760465fe3`, workflow #683 / run ID `43710799427`, 110 passed and 1 failed because an overlong configured bearer token was not rejected. Fix commit `23c5bc975f3d495ec5c482a33c9c192f6a8c0c3f`; the corresponding test passes in run #685.
+- Full P0 matrix remains **PARTIAL / NOT ACCEPTED**. In particular, environment-disabled listener behavior and every publisher fail-closed state (no snapshot, stopped, broken, reanchor/validation, independent source/observation staleness) are not all tied to dedicated exact-SHA tests yet.
+- The security workflow in #685 remains FAIL due the recorded Rust advisories. This test evidence does not override the security gate or authorize runtime activation.
