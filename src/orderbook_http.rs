@@ -685,4 +685,44 @@ mod tests {
         assert!(wrong_method.starts_with("HTTP/1.1 405"), "{wrong_method}");
         server.abort();
     }
+
+    #[tokio::test]
+    async fn no_snapshot_and_stopped_publishers_fail_closed_over_http() {
+        let publisher = Arc::new(SnapshotPublisher::new());
+        let (address, server) = start_server(publisher).await;
+        let empty = request(&address, "GET", "/internal/v1/orderbook/btcusdt", Some(TOKEN)).await;
+        assert!(empty.starts_with("HTTP/1.1 503"), "{empty}");
+        assert!(empty.contains("snapshot_unavailable"), "{empty}");
+        assert!(!empty.contains("67234.10"));
+        server.abort();
+
+        let publisher = ready_publisher().await;
+        publisher.mark_stopped();
+        let (address, server) = start_server(publisher).await;
+        let stopped = request(&address, "GET", "/internal/v1/orderbook/btcusdt", Some(TOKEN)).await;
+        assert!(stopped.starts_with("HTTP/1.1 503"), "{stopped}");
+        assert!(stopped.contains("snapshot_unavailable"), "{stopped}");
+        assert!(!stopped.contains("67234.10"));
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn fetching_or_validating_publisher_never_serves_cached_snapshot() {
+        let publisher = ready_publisher().await;
+        publisher.note_reanchor_attempt().unwrap();
+        let (address, server) = start_server(publisher.clone()).await;
+        let fetching = request(&address, "GET", "/internal/v1/orderbook/btcusdt", Some(TOKEN)).await;
+        assert!(fetching.starts_with("HTTP/1.1 503"), "{fetching}");
+        assert!(fetching.contains("snapshot_unavailable"), "{fetching}");
+        assert!(!fetching.contains("67234.10"));
+        server.abort();
+
+        publisher.mark_validating(publisher.generation()).unwrap();
+        let (address, server) = start_server(publisher).await;
+        let validating = request(&address, "GET", "/internal/v1/orderbook/btcusdt", Some(TOKEN)).await;
+        assert!(validating.starts_with("HTTP/1.1 503"), "{validating}");
+        assert!(validating.contains("snapshot_unavailable"), "{validating}");
+        assert!(!validating.contains("67234.10"));
+        server.abort();
+    }
 }

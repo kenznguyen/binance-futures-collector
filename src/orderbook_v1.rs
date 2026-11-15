@@ -1087,4 +1087,38 @@ mod tests {
         assert!(publisher.publish_if_current(older).is_err());
         assert_eq!(publisher.read().unwrap().last_applied_u, 105);
     }
+
+    #[test]
+    fn publisher_does_not_serve_last_good_snapshot_after_reanchor_attempt_begins() {
+        let publisher = SnapshotPublisher::new();
+        let generation = publisher.begin_connection_generation();
+        publisher.note_reanchor_attempt().unwrap();
+        let candidate = build_snapshot(&snapshot(), &valid_updates(), generation, NOW, NOW).unwrap();
+        publisher.publish_if_current(candidate).unwrap();
+        assert!(publisher.read_fresh(NOW).is_ok());
+
+        publisher.note_reanchor_attempt().unwrap();
+        assert_eq!(publisher.state(), OrderbookV1State::FetchingSnapshot);
+        assert!(publisher.read().is_none(), "old generation must be invalidated before fetching a new anchor");
+        assert!(publisher.read_fresh(NOW).is_err());
+    }
+
+    #[test]
+    fn publisher_never_returns_a_snapshot_outside_ready_state() {
+        let publisher = SnapshotPublisher::new();
+        let generation = publisher.begin_connection_generation();
+        assert!(publisher.read_fresh(NOW).is_err());
+
+        publisher.note_reanchor_attempt().unwrap();
+        assert!(publisher.read_fresh(NOW).is_err());
+        publisher.mark_validating(generation).unwrap();
+        assert!(publisher.read_fresh(NOW).is_err());
+
+        publisher.begin_reanchor();
+        assert!(publisher.read_fresh(NOW).is_err());
+        publisher.mark_broken();
+        assert!(publisher.read_fresh(NOW).is_err());
+        publisher.mark_stopped();
+        assert!(publisher.read_fresh(NOW).is_err());
+    }
 }
