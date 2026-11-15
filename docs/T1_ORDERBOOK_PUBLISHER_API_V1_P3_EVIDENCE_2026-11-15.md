@@ -200,3 +200,56 @@ The evidence commit itself passed Rust formatting/lint/tests, native ARM64 build
 - T1 → T2 integration: **BLOCKED**.
 
 No source implementation, dependency, runtime, T0/T2, ingestion/history, listener, VPS deployment, PR merge, or branch rebase changes were made.
+
+
+
+## 10. CI validation of evidence commit — push run #43707256078
+
+Evidence update date: 2026-11-15 11:08:38Z  
+Source SHA tested: `20c52e8be458d413d8d2ec8ec3f1ca1684317f32`  
+Workflow: [CI run #43707256078](https://github.com/kenznguyen/binance-futures-collector/actions/runs/43707256078)  
+Workflow run ID: `43707256078`  
+Event: `push`  
+Conclusion: **FAILURE**
+
+| Job | Result |
+|---|---|
+| collector · fmt · clippy · test | PASS |
+| collector · native ARM64 build · test · artifact | PASS |
+| dashboard frontend · tsc · vitest | PASS |
+| dashboard backend · pytest | PASS |
+| docker · build images | PASS |
+| security · cargo-audit · npm audit | FAIL; cargo-audit stopped the job before npm audit |
+
+### 10.1 Artifacts published for the exact tested SHA
+
+GitHub Actions artifact metadata confirms both artifacts on SHA `20c52e8be458d413d8d2ec8ec3f1ca1684317f32`:
+
+| Artifact | Size | SHA-256 digest | Expiry |
+|---|---:|---|---|
+| `t1-collector-linux-aarch64-20c52e8be458d413d8d2ec8ec3f1ca1684317f32` | 4,022,090 bytes | `cf1ed43f5f54b0f378a95d3eda18266b507be95f67c65fd0b2fca4feb5147129` | 2026-11-22 11:08:14Z |
+| `t1-collector-linux-x86_64-20c52e8be458d413d8d2ec8ec3f1ca1684317f32` | 4,310,901 bytes | `555d7c2ddf1d85f92b6b7d62ce2a8fa1cda8ce4f69e4a887850acef055b4ec85` | 2026-11-22 11:08:02Z |
+
+These are CI artifacts only, not deployment or runtime evidence.
+
+### 10.2 Exact security audit output
+
+The security job scanned 248 crate dependencies and exited with code 1. It reported:
+- `quinn-proto 0.11.18`: RUSTSEC-2026-0524 and RUSTSEC-2026-0523; patched >= 0.11.19.
+- `quinn-udp 0.5.15`: RUSTSEC-2026-0538; patched >= 0.5.16 and < 0.6.0, or >= 0.6.3.
+- `rustix 1.1.4`: RUSTSEC-2026-0486 (unsound warning); patched >= 1.1.6.
+
+The log confirms cargo-audit failed and npm audit did not run. This run did not perform new reverse-dependency/reachability diagnostics; the previous qualification remains: quinn-proto had no reverse path in the earlier diagnostic output, while quinn-udp and rustix reachability remains **NOT VERIFIED**. No dependency upgrade or advisory suppression was made.
+
+### 10.3 Disposition
+
+- Rust formatting, lint and test job: **PASS**.
+- Native ARM64 build/tests and ARM64/x86_64 artifact publication: **PASS**.
+- Frontend, backend and Docker jobs: **PASS**.
+- Security audit: **BLOCKED** by the same Rust dependency advisories.
+- CI overall: **FAILURE** on exact source SHA `20c52e8be458d413d8d2ec8ec3f1ca1684317f32`.
+- P3 full acceptance: **PARTIAL / NOT ACCEPTED**; security gate remains red and the complete contract matrix is not fully evidenced.
+- T1 runtime: **NOT VERIFIED**.
+- T1 → T2 integration: **BLOCKED**.
+
+No dependency, runtime, T0/T2, ingestion/history, listener, VPS deployment, PR merge, or branch rebase changes were made.
