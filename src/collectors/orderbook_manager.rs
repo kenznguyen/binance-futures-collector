@@ -3,16 +3,21 @@ use dashmap::{DashMap, DashSet};
 use log::{debug, error, info, warn};
 use rustc_hash::FxHashMap;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
+use tokio::task::JoinHandle;
 use tokio::time::{interval, sleep};
 
 use crate::config::Config;
 use crate::constants;
 use crate::models::*;
+use crate::orderbook_v1::{
+    apply_live_diff_classified, build_snapshot, LiveDiffRejection, OrderbookV1State,
+    SnapshotPublisher, V1RejectionClass,
+};
 use crate::rest::RestClient;
-use crate::utils::{CsvWriter, GapRegistry};
-use crate::websocket::connection_manager::WebSocketManager;
+use crate::utils::{compare_normalized_decimals, normalize_plain_decimal, CsvWriter, GapRegistry};
+use crate::websocket::connection_manager::{BufferedDepthUpdate, WebSocketManager};
 
 /// Manages orderbook state and gap detection for all symbols
 pub struct OrderbookManager {
@@ -25,7 +30,7 @@ pub struct OrderbookManager {
     // All symbol keys are lowercase
     symbol_states: Arc<DashMap<String, OrderbookState>>,
 
-    // Uses f64 for prices/quantities, not String
+    // Orderbook levels store normalized exact decimal strings for prices and quantities.
     orderbooks: Arc<DashMap<String, Orderbook>>,
 
     // Snapshot scheduling
@@ -36,9 +41,16 @@ pub struct OrderbookManager {
     // Error recovery tracking
     resnapshot_backoff: Arc<DashMap<String, Duration>>,
 
+    // BTCUSDT-only V1 candidate state; only SnapshotPublisher exposes a complete snapshot.
+    btc_v1_publisher: Arc<SnapshotPublisher>,
+    btc_v1_rest_snapshot: Arc<DashMap<String, DepthSnapshotRest>>,
+    btc_v1_anchor_generation: Arc<DashMap<String, u64>>,
+    btc_v1_buffered_updates: Arc<DashMap<String, Vec<BufferedDepthUpdate>>>,
+
     // Symbols confirmed delisted by periodic discovery (shared with main and
     // the REST pollers). A member's manage_symbol task exits and drops state.
     delisted: Arc<DashSet<String>>,
+    tasks: Arc<StdMutex<Vec<JoinHandle<()>>>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -47,6 +59,7 @@ pub enum OrderbookState {
     FetchingSnapshot,
     Syncing,
     Live,
+    Broken,
 }
 
 /// Which rule matched when bridging buffered diffs onto a REST snapshot.
@@ -93,12 +106,33 @@ fn find_bridge(snapshot_u: u64, diffs: &[DepthUpdateWs]) -> Option<(usize, Bridg
 pub struct Orderbook {
     pub symbol: String,
     pub last_update_id: u64,
-    pub bids: HashMap<u64, f64>, // price_bits -> quantity (using float bits for fast comparison)
-    pub asks: HashMap<u64, f64>, // price_bits -> quantity
+    // Normalized exact decimal price keys and exact source quantity decimals.
+    pub bids: HashMap<String, String>,
+    pub asks: HashMap<String, String>,
+    pub raw_bids: HashMap<String, (String, String)>,
+    pub raw_asks: HashMap<String, (String, String)>,
     pub last_processed_time: Instant,
 }
 
 impl OrderbookManager {
+    fn track_task(&self, task: JoinHandle<()>) {
+        self.tasks
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(task);
+    }
+
+    pub async fn shutdown(&self) -> Result<()> {
+        let tasks = {
+            let mut tasks = self
+                .tasks
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            std::mem::take(&mut *tasks)
+        };
+        abort_and_join_tasks(tasks).await
+    }
+
     pub fn new(
         config: Arc<Config>,
         rest_client: Arc<RestClient>,
@@ -106,6 +140,7 @@ impl OrderbookManager {
         websocket_manager: Arc<WebSocketManager>,
         gap_registry: Arc<GapRegistry>,
         delisted: Arc<DashSet<String>>,
+        btc_v1_publisher: Arc<SnapshotPublisher>,
     ) -> Self {
         Self {
             config,
@@ -119,7 +154,12 @@ impl OrderbookManager {
             last_periodic_snapshot: Arc::new(DashMap::new()),
             sync_start_time: Arc::new(DashMap::new()),
             resnapshot_backoff: Arc::new(DashMap::new()),
+            btc_v1_publisher,
+            btc_v1_rest_snapshot: Arc::new(DashMap::new()),
+            btc_v1_anchor_generation: Arc::new(DashMap::new()),
+            btc_v1_buffered_updates: Arc::new(DashMap::new()),
             delisted,
+            tasks: Arc::new(StdMutex::new(Vec::new())),
         }
     }
 
@@ -178,11 +218,12 @@ impl OrderbookManager {
             info!("Batch 0: Initializing orderbook for {}...", priority_sym);
             let symbol_clone = priority_sym.clone();
             let manager = self.clone();
-            tokio::spawn(async move {
+            let task = tokio::spawn(async move {
                 if let Err(e) = manager.manage_symbol(symbol_clone.clone()).await {
                     error!("[{}] Symbol management task failed: {}", symbol_clone, e);
                 }
             });
+            self.track_task(task);
 
             // Block until it is Live: the remaining batches are paced off the
             // assumption that the priority symbol is already settled.
@@ -258,26 +299,29 @@ impl OrderbookManager {
 
         let manager_clone = self.clone();
         let symbols_clone = symbols.clone();
-        tokio::spawn(async move {
+        let task = tokio::spawn(async move {
             manager_clone.periodic_snapshot_task(symbols_clone).await;
         });
+        self.track_task(task);
 
         // Start live depth update loop (applies WebSocket updates to in-memory orderbooks)
         let manager_live = self.clone();
-        tokio::spawn(async move {
+        let task = tokio::spawn(async move {
             manager_live.run_live_depth_update_loop().await;
         });
+        self.track_task(task);
         info!("Live depth update loop started (500ms interval)");
 
         // Start periodic cleanup task (every 5 minutes)
         let manager_cleanup = self.clone();
-        tokio::spawn(async move {
+        let task = tokio::spawn(async move {
             let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(300)); // 5 min
             loop {
                 interval.tick().await;
                 manager_cleanup.cleanup_stale_symbols(std::time::Instant::now());
             }
         });
+        self.track_task(task);
         info!("Stale symbol cleanup task started (5min interval)");
 
         for (batch_idx, batch) in symbol_batches.iter().enumerate() {
@@ -315,11 +359,12 @@ impl OrderbookManager {
 
                 let symbol_clone = symbol.clone();
                 let manager = self.clone();
-                tokio::spawn(async move {
+                let task = tokio::spawn(async move {
                     if let Err(e) = manager.manage_symbol(symbol_clone.clone()).await {
                         error!("[{}] Symbol management task failed: {}", symbol_clone, e);
                     }
                 });
+                self.track_task(task);
             }
 
             // Let the batch settle before opening the next one, so a slow batch
@@ -441,6 +486,13 @@ impl OrderbookManager {
                                 "[{}] Failed to fetch snapshot: {}. Retrying with backoff.",
                                 symbol, e
                             );
+                            if symbol.eq_ignore_ascii_case("btcusdt")
+                                && self.btc_v1_publisher.state() == OrderbookV1State::Broken
+                            {
+                                self.symbol_states
+                                    .insert(symbol.clone(), OrderbookState::Broken);
+                                continue;
+                            }
 
                             let current_backoff =
                                 self.resnapshot_backoff.get(&symbol).map(|b| *b).unwrap_or(
@@ -513,9 +565,33 @@ impl OrderbookManager {
                     }
                 }
 
+                OrderbookState::Broken => {
+                    if symbol.eq_ignore_ascii_case("btcusdt")
+                        && matches!(
+                            self.btc_v1_publisher.state(),
+                            OrderbookV1State::Buffering | OrderbookV1State::Reanchoring
+                        )
+                    {
+                        self.symbol_states
+                            .insert(symbol.clone(), OrderbookState::Initializing);
+                    } else {
+                        sleep(Duration::from_secs(1)).await;
+                    }
+                }
+
                 OrderbookState::Live => {
-                    // In LIVE state, just monitor (updates are processed in background)
-                    sleep(Duration::from_secs(1)).await;
+                    if symbol.eq_ignore_ascii_case("btcusdt")
+                        && self.btc_v1_publisher.read().is_none()
+                    {
+                        self.orderbooks.remove(&symbol);
+                        self.btc_v1_rest_snapshot.remove(&symbol);
+                        self.btc_v1_anchor_generation.remove(&symbol);
+                        self.btc_v1_buffered_updates.remove(&symbol);
+                        self.symbol_states
+                            .insert(symbol.clone(), OrderbookState::Initializing);
+                    } else {
+                        sleep(Duration::from_secs(1)).await;
+                    }
                 }
             }
         }
@@ -527,6 +603,15 @@ impl OrderbookManager {
         self.symbol_states
             .insert(symbol.to_string(), OrderbookState::FetchingSnapshot);
 
+        if symbol.eq_ignore_ascii_case("btcusdt") {
+            self.btc_v1_publisher.note_reanchor_attempt()?;
+        }
+        let v1_generation_at_request = if symbol.eq_ignore_ascii_case("btcusdt") {
+            Some(self.btc_v1_publisher.generation())
+        } else {
+            None
+        };
+
         let snapshot = tokio::time::timeout(
             Duration::from_secs(self.config.orderbook.snapshot_http_timeout_seconds),
             self.rest_client
@@ -536,19 +621,39 @@ impl OrderbookManager {
         .context("Snapshot fetch timeout")?
         .context("Snapshot fetch failed")?;
 
-        // Create orderbook with float storage (not String)
+        if let Some(generation) = v1_generation_at_request {
+            if self.btc_v1_publisher.generation() != generation {
+                anyhow::bail!("discarding stale BTCUSDT REST snapshot from an old generation");
+            }
+            self.btc_v1_rest_snapshot
+                .insert(symbol.to_string(), snapshot.clone());
+            self.btc_v1_anchor_generation
+                .insert(symbol.to_string(), generation);
+            self.btc_v1_publisher.mark_validating(generation)?;
+            self.btc_v1_buffered_updates.remove(symbol);
+        }
+
+        // Keep source decimal lexemes alongside the computational book.
         let mut bids = HashMap::new();
+        let mut raw_bids = HashMap::new();
         for [price_str, qty_str] in &snapshot.bids {
-            let price: f64 = price_str.parse()?;
-            let qty: f64 = qty_str.parse()?;
-            bids.insert(price.to_bits(), qty);
+            let price_key = normalize_plain_decimal(price_str)?;
+            let quantity_key = normalize_plain_decimal(qty_str)?;
+            bids.insert(price_key.clone(), qty_str.clone());
+            if quantity_key != "0" {
+                raw_bids.insert(price_key, (price_str.clone(), qty_str.clone()));
+            }
         }
 
         let mut asks = HashMap::new();
+        let mut raw_asks = HashMap::new();
         for [price_str, qty_str] in &snapshot.asks {
-            let price: f64 = price_str.parse()?;
-            let qty: f64 = qty_str.parse()?;
-            asks.insert(price.to_bits(), qty);
+            let price_key = normalize_plain_decimal(price_str)?;
+            let quantity_key = normalize_plain_decimal(qty_str)?;
+            asks.insert(price_key.clone(), qty_str.clone());
+            if quantity_key != "0" {
+                raw_asks.insert(price_key, (price_str.clone(), qty_str.clone()));
+            }
         }
 
         let orderbook = Orderbook {
@@ -556,6 +661,8 @@ impl OrderbookManager {
             last_update_id: snapshot.last_update_id,
             bids,
             asks,
+            raw_bids,
+            raw_asks,
             last_processed_time: Instant::now(),
         };
 
@@ -567,9 +674,17 @@ impl OrderbookManager {
         Ok(())
     }
 
-    /// Try to attach to live stream after snapshot
+    /// Try to attach to live stream after snapshot.
     async fn try_attach_to_stream(&self, symbol: &str) -> Result<bool> {
+        if symbol.eq_ignore_ascii_case("btcusdt") {
+            return self.try_attach_btcusdt_v1(symbol).await;
+        }
+
         let buffered = self.websocket_manager.drain_buffer(symbol).await;
+        let buffered: Vec<DepthUpdateWs> = buffered
+            .into_iter()
+            .map(|buffered| buffered.update)
+            .collect();
 
         if buffered.is_empty() {
             debug!("[{}] No buffered updates yet for attach", symbol);
@@ -614,35 +729,35 @@ impl OrderbookManager {
                 rule.label()
             );
 
-            // Apply updates from bridge onwards
-            let mut last_u = snapshot_u;
-            let mut applied = 0;
+            // Apply updates from bridge onwards. Keep the sequence logic pure so
+            // snapshot reconciliation and missing-diff behavior can be tested offline.
+            let applied = {
+                let mut book = self
+                    .orderbooks
+                    .get_mut(symbol)
+                    .context("Orderbook disappeared during attach")?;
+                Self::apply_attach_updates_to_book(
+                    &mut book,
+                    snapshot_u,
+                    &normalized[idx..],
+                    self.config.orderbook.depth_limit as usize,
+                )?
+            };
 
-            for (i, update) in normalized[idx..].iter().enumerate() {
-                // Verify continuity using pu AFTER first message
-                if i > 0 && update.prev_update_id != last_u {
-                    warn!(
-                        "[{}] Gap during attach: expected pu={}, got pu={} (U={}, u={})",
-                        symbol,
-                        last_u,
-                        update.prev_update_id,
-                        update.first_update_id,
-                        update.final_update_id
-                    );
-                    return Ok(false);
-                }
-
-                // Skip if message is fully covered by snapshot
-                if update.final_update_id <= snapshot_u {
-                    continue;
-                }
-
-                self.apply_diff(symbol, update).await?;
-                last_u = update.final_update_id;
-                applied += 1;
-            }
+            let Some(applied) = applied else {
+                warn!(
+                    "[{}] Gap during attach; retaining partial book until resync",
+                    symbol
+                );
+                return Ok(false);
+            };
 
             if applied > 0 {
+                let last_u = self
+                    .orderbooks
+                    .get(symbol)
+                    .map(|book| book.last_update_id)
+                    .unwrap_or(snapshot_u);
                 info!(
                     "[{}] Attach successful: processed {} messages, last_u={}",
                     symbol, applied, last_u
@@ -673,6 +788,124 @@ impl OrderbookManager {
         }
 
         Ok(false)
+    }
+
+    async fn try_attach_btcusdt_v1(&self, symbol: &str) -> Result<bool> {
+        if self.websocket_manager.take_buffer_overflow(symbol) {
+            self.trigger_resnapshot("btcusdt", "v1_websocket_buffer_eviction")
+                .await?;
+            return Ok(false);
+        }
+
+        let (drained, buffer_depth_before, buffer_depth_after) =
+            self.websocket_manager.drain_buffer_with_depth(symbol).await;
+        if !drained.is_empty() {
+            self.btc_v1_buffered_updates
+                .entry(symbol.to_string())
+                .or_default()
+                .extend(drained);
+        }
+
+        let anchor = self
+            .btc_v1_rest_snapshot
+            .get(symbol)
+            .map(|snapshot| snapshot.value().clone())
+            .context("BTCUSDT V1 REST anchor is unavailable")?;
+        let anchor_generation = self
+            .btc_v1_anchor_generation
+            .get(symbol)
+            .map(|generation| *generation)
+            .context("BTCUSDT V1 REST anchor generation is unavailable")?;
+        if anchor_generation != self.btc_v1_publisher.generation() {
+            self.trigger_resnapshot("btcusdt", "v1_anchor_generation_mismatch")
+                .await?;
+            return Ok(false);
+        }
+
+        let buffered_updates = self
+            .btc_v1_buffered_updates
+            .get(symbol)
+            .map(|buffer| buffer.value().clone())
+            .unwrap_or_default();
+
+        if buffered_updates.is_empty()
+            || buffered_updates
+                .iter()
+                .all(|buffered| buffered.update.final_update_id <= anchor.last_update_id)
+        {
+            return Ok(false);
+        }
+
+        let updates: Vec<DepthUpdateWs> = buffered_updates
+            .iter()
+            .map(|buffered| buffered.update.clone())
+            .collect();
+        let batch_started = Instant::now();
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let candidate_result = build_snapshot(&anchor, &updates, anchor_generation, now_ms, now_ms);
+        let applied_at = Instant::now();
+        let receive_to_apply_max_ms = buffered_updates
+            .iter()
+            .map(|buffered| buffered.timing_at(applied_at).receive_to_apply.as_millis())
+            .max()
+            .unwrap_or(0);
+        let buffer_residence_max_ms = buffered_updates
+            .iter()
+            .map(|buffered| buffered.timing_at(applied_at).buffer_residence.as_millis())
+            .max()
+            .unwrap_or(0);
+        info!(
+            "[BTCUSDT] V1 attach batch diagnostics: size={} ring_depth_before={} ring_depth_after={} batch_processing_ms={} receive_to_apply_max_ms={} buffer_residence_max_ms={}",
+            buffered_updates.len(),
+            buffer_depth_before,
+            buffer_depth_after,
+            batch_started.elapsed().as_millis(),
+            receive_to_apply_max_ms,
+            buffer_residence_max_ms,
+        );
+        let candidate = match candidate_result {
+            Ok(candidate) => candidate,
+            Err(error) => {
+                warn!("[BTCUSDT] V1 attach rejected; re-anchoring: {error:#}");
+                self.trigger_resnapshot("btcusdt", "v1_attach_rejected")
+                    .await?;
+                return Ok(false);
+            }
+        };
+
+        self.btc_v1_publisher
+            .publish_if_current(candidate.clone())?;
+
+        let mut bids = HashMap::new();
+        let mut raw_bids = HashMap::new();
+        for [price, quantity] in &candidate.bids {
+            let key = normalize_plain_decimal(price)?;
+            bids.insert(key.clone(), quantity.clone());
+            raw_bids.insert(key, (price.clone(), quantity.clone()));
+        }
+
+        let mut asks = HashMap::new();
+        let mut raw_asks = HashMap::new();
+        for [price, quantity] in &candidate.asks {
+            let key = normalize_plain_decimal(price)?;
+            asks.insert(key.clone(), quantity.clone());
+            raw_asks.insert(key, (price.clone(), quantity.clone()));
+        }
+
+        self.orderbooks.insert(
+            symbol.to_string(),
+            Orderbook {
+                symbol: symbol.to_string(),
+                last_update_id: candidate.last_applied_u,
+                bids,
+                asks,
+                raw_bids,
+                raw_asks,
+                last_processed_time: Instant::now(),
+            },
+        );
+        self.btc_v1_buffered_updates.remove(symbol);
+        Ok(true)
     }
 
     fn normalize_messages_for_attach(msgs: Vec<DepthUpdateWs>) -> Vec<DepthUpdateWs> {
@@ -715,49 +948,63 @@ impl OrderbookManager {
         Ok(())
     }
 
-    /// Apply one diff update to a book: quantity 0 deletes the level, anything
-    /// else replaces it. Uses the pre-converted floats when present, falling
-    /// back to parsing the wire strings.
-    fn apply_update_to_book(book: &mut Orderbook, update: &DepthUpdateWs) -> Result<()> {
-        if let Some(b_floats) = &update.b_floats {
-            for (price, qty) in b_floats {
-                if *qty == 0.0 {
-                    book.bids.remove(&price.to_bits());
-                } else {
-                    book.bids.insert(price.to_bits(), *qty);
-                }
+    /// Apply a normalized attach sequence to a snapshot book.
+    ///
+    /// Returns None when a pu break is encountered. Updates before the break
+    /// remain applied, matching the existing attach lifecycle; the caller keeps
+    /// the symbol out of LIVE and lets the bounded resync path recover it.
+    fn apply_attach_updates_to_book(
+        book: &mut Orderbook,
+        snapshot_u: u64,
+        updates: &[DepthUpdateWs],
+        depth_limit: usize,
+    ) -> Result<Option<usize>> {
+        let mut last_u = snapshot_u;
+        let mut applied = 0;
+
+        for (index, update) in updates.iter().enumerate() {
+            if index > 0 && update.prev_update_id != last_u {
+                return Ok(None);
             }
-        } else {
-            // Fallback: parse from strings
-            for [price_str, qty_str] in &update.bids {
-                let price: f64 = price_str.parse()?;
-                let qty: f64 = qty_str.parse()?;
-                if qty == 0.0 {
-                    book.bids.remove(&price.to_bits());
-                } else {
-                    book.bids.insert(price.to_bits(), qty);
-                }
+
+            if update.final_update_id <= snapshot_u {
+                continue;
+            }
+
+            Self::apply_update_to_book(book, update)?;
+            Self::trim_book_to_depth(depth_limit, book);
+            last_u = update.final_update_id;
+            applied += 1;
+        }
+
+        Ok((applied > 0).then_some(applied))
+    }
+
+    /// Apply one diff update to a book while preserving exact exchange decimal strings.
+    fn apply_update_to_book(book: &mut Orderbook, update: &DepthUpdateWs) -> Result<()> {
+        for [price_str, quantity_str] in &update.bids {
+            let price_key = normalize_plain_decimal(price_str)?;
+            let quantity_key = normalize_plain_decimal(quantity_str)?;
+            if quantity_key == "0" {
+                book.bids.remove(&price_key);
+                book.raw_bids.remove(&price_key);
+            } else {
+                book.bids.insert(price_key.clone(), quantity_str.clone());
+                book.raw_bids
+                    .insert(price_key, (price_str.clone(), quantity_str.clone()));
             }
         }
 
-        if let Some(a_floats) = &update.a_floats {
-            for (price, qty) in a_floats {
-                if *qty == 0.0 {
-                    book.asks.remove(&price.to_bits());
-                } else {
-                    book.asks.insert(price.to_bits(), *qty);
-                }
-            }
-        } else {
-            // Fallback: parse from strings
-            for [price_str, qty_str] in &update.asks {
-                let price: f64 = price_str.parse()?;
-                let qty: f64 = qty_str.parse()?;
-                if qty == 0.0 {
-                    book.asks.remove(&price.to_bits());
-                } else {
-                    book.asks.insert(price.to_bits(), qty);
-                }
+        for [price_str, quantity_str] in &update.asks {
+            let price_key = normalize_plain_decimal(price_str)?;
+            let quantity_key = normalize_plain_decimal(quantity_str)?;
+            if quantity_key == "0" {
+                book.asks.remove(&price_key);
+                book.raw_asks.remove(&price_key);
+            } else {
+                book.asks.insert(price_key.clone(), quantity_str.clone());
+                book.raw_asks
+                    .insert(price_key, (price_str.clone(), quantity_str.clone()));
             }
         }
 
@@ -771,38 +1018,57 @@ impl OrderbookManager {
     /// Memory impact: 512 symbols × 10k levels × 32 bytes = ~163MB (plus HashMap overhead)
     /// After trim: 512 symbols × 100 levels × 32 bytes = ~1.6MB (99% reduction)
     fn trim_book_to_depth(depth: usize, book: &mut Orderbook) {
-        // Trim bids: keep only top N (highest prices)
-        if book.bids.len() > depth {
-            // Convert to sorted vec (descending by price)
-            let mut bid_vec: Vec<(u64, f64)> = book.bids.iter().map(|(k, v)| (*k, *v)).collect();
+        // Trim bids by exact decimal price, keeping the highest N levels.
+        Self::trim_computational_levels(depth, &mut book.bids, true);
 
-            bid_vec.sort_by(|a, b| {
-                let price_a = f64::from_bits(a.0);
-                let price_b = f64::from_bits(b.0);
-                price_b.total_cmp(&price_a)
-            });
+        // Trim asks by exact decimal price, keeping the lowest N levels.
+        Self::trim_computational_levels(depth, &mut book.asks, false);
 
-            book.bids.clear();
-            for (price_bits, qty) in bid_vec.into_iter().take(depth) {
-                book.bids.insert(price_bits, qty);
-            }
+        Self::trim_raw_levels(depth, &mut book.raw_bids, true);
+        Self::trim_raw_levels(depth, &mut book.raw_asks, false);
+    }
+
+    fn trim_computational_levels(
+        depth: usize,
+        levels: &mut HashMap<String, String>,
+        highest_first: bool,
+    ) {
+        if levels.len() <= depth {
+            return;
         }
-
-        // Trim asks: keep only top N (lowest prices)
-        if book.asks.len() > depth {
-            // Convert to sorted vec (ascending by price)
-            let mut ask_vec: Vec<(u64, f64)> = book.asks.iter().map(|(k, v)| (*k, *v)).collect();
-
-            ask_vec.sort_by(|a, b| {
-                let price_a = f64::from_bits(a.0);
-                let price_b = f64::from_bits(b.0);
-                price_a.total_cmp(&price_b)
-            });
-
-            book.asks.clear();
-            for (price_bits, qty) in ask_vec.into_iter().take(depth) {
-                book.asks.insert(price_bits, qty);
+        let mut keys: Vec<String> = levels.keys().cloned().collect();
+        keys.sort_by(|left, right| {
+            let order = compare_normalized_decimals(left, right);
+            if highest_first {
+                order.reverse()
+            } else {
+                order
             }
+        });
+        for key in keys.into_iter().skip(depth) {
+            levels.remove(&key);
+        }
+    }
+
+    fn trim_raw_levels(
+        depth: usize,
+        levels: &mut HashMap<String, (String, String)>,
+        highest_first: bool,
+    ) {
+        if levels.len() <= depth {
+            return;
+        }
+        let mut keys: Vec<String> = levels.keys().cloned().collect();
+        keys.sort_by(|left, right| {
+            let order = compare_normalized_decimals(left, right);
+            if highest_first {
+                order.reverse()
+            } else {
+                order
+            }
+        });
+        for key in keys.into_iter().skip(depth) {
+            levels.remove(&key);
         }
     }
 
@@ -843,6 +1109,12 @@ impl OrderbookManager {
     /// Drop every piece of per-symbol state this manager holds. Used by the
     /// stale-symbol sweep and by a symbol's own task when it exits on delist.
     fn remove_symbol_state(&self, symbol: &str) {
+        if symbol.eq_ignore_ascii_case("btcusdt") {
+            self.btc_v1_publisher.mark_stopped();
+            self.btc_v1_rest_snapshot.remove(symbol);
+            self.btc_v1_anchor_generation.remove(symbol);
+            self.btc_v1_buffered_updates.remove(symbol);
+        }
         self.orderbooks.remove(symbol);
         self.symbol_states.remove(symbol);
         self.last_snapshot_time.remove(symbol);
@@ -853,6 +1125,15 @@ impl OrderbookManager {
 
     async fn trigger_resnapshot(&self, symbol: &str, reason: &str) -> Result<()> {
         warn!("[{}] Triggering resnapshot: {}", symbol, reason);
+
+        if symbol.eq_ignore_ascii_case("btcusdt") {
+            // Invalidate the published decision snapshot before any async persistence.
+            self.btc_v1_publisher.begin_reanchor();
+            self.btc_v1_rest_snapshot.remove(symbol);
+            self.btc_v1_anchor_generation.remove(symbol);
+            self.btc_v1_buffered_updates.remove(symbol);
+            self.orderbooks.remove(symbol);
+        }
 
         self.gap_registry
             .record_resnapshot(symbol, reason.to_string())
@@ -869,16 +1150,15 @@ impl OrderbookManager {
     async fn write_current_orderbook_snapshot(&self, symbol: &str, event_type: &str) -> Result<()> {
         let (last_update_id, bids, asks) = match self.orderbooks.get(symbol) {
             Some(book) => {
-                // Convert back to f64 for CSV writing
-                let bids: Vec<(f64, f64)> = book
-                    .bids
+                let bids: Vec<(String, String, String)> = book
+                    .raw_bids
                     .iter()
-                    .map(|(bits, qty)| (f64::from_bits(*bits), *qty))
+                    .map(|(key, (price, quantity))| (key.clone(), price.clone(), quantity.clone()))
                     .collect();
-                let asks: Vec<(f64, f64)> = book
-                    .asks
+                let asks: Vec<(String, String, String)> = book
+                    .raw_asks
                     .iter()
-                    .map(|(bits, qty)| (f64::from_bits(*bits), *qty))
+                    .map(|(key, (price, quantity))| (key.clone(), price.clone(), quantity.clone()))
                     .collect();
                 (book.last_update_id, bids, asks)
             }
@@ -892,9 +1172,9 @@ impl OrderbookManager {
         let mut csv_rows = Vec::new();
 
         let mut bid_prices = bids;
-        bid_prices.sort_by(|a, b| b.0.total_cmp(&a.0));
+        bid_prices.sort_by(|a, b| compare_normalized_decimals(&b.0, &a.0));
 
-        for (price, qty) in bid_prices {
+        for (_, price, qty) in bid_prices {
             csv_rows.push(DepthSnapshotCsv {
                 exchange: constants::EXCHANGE.to_string(),
                 market: constants::MARKET.to_string(),
@@ -903,16 +1183,16 @@ impl OrderbookManager {
                 symbol: symbol.to_lowercase(), // Convert to lowercase for CSV
                 event_type: event_type.to_string(),
                 side: constants::SIDE_BID.to_string(),
-                price: format_decimal(price),
-                quantity: format_decimal(qty),
+                price,
+                quantity: qty,
                 last_update_id,
             });
         }
 
         let mut ask_prices = asks;
-        ask_prices.sort_by(|a, b| a.0.total_cmp(&b.0));
+        ask_prices.sort_by(|a, b| compare_normalized_decimals(&a.0, &b.0));
 
-        for (price, qty) in ask_prices {
+        for (_, price, qty) in ask_prices {
             csv_rows.push(DepthSnapshotCsv {
                 exchange: constants::EXCHANGE.to_string(),
                 market: constants::MARKET.to_string(),
@@ -921,8 +1201,8 @@ impl OrderbookManager {
                 symbol: symbol.to_lowercase(), // Convert to lowercase for CSV
                 event_type: event_type.to_string(),
                 side: constants::SIDE_ASK.to_string(),
-                price: format_decimal(price),
-                quantity: format_decimal(qty),
+                price,
+                quantity: qty,
                 last_update_id,
             });
         }
@@ -946,14 +1226,14 @@ impl OrderbookManager {
         let timestamp = chrono::Utc::now().timestamp_millis();
         let mut csv_rows = Vec::new();
 
-        let mut bid_prices: Vec<_> = snapshot.bids.iter().collect();
-        bid_prices.sort_by(|a, b| {
-            b[0].parse::<f64>()
-                .unwrap_or(0.0)
-                .total_cmp(&a[0].parse::<f64>().unwrap_or(0.0))
-        });
+        let mut bid_prices: Vec<_> = snapshot
+            .bids
+            .iter()
+            .map(|[price, quantity]| Ok((normalize_plain_decimal(price)?, price, quantity)))
+            .collect::<Result<Vec<_>>>()?;
+        bid_prices.sort_by(|a, b| compare_normalized_decimals(&b.0, &a.0));
 
-        for [price, qty] in bid_prices {
+        for (_, price, qty) in bid_prices {
             csv_rows.push(DepthSnapshotCsv {
                 exchange: constants::EXCHANGE.to_string(),
                 market: constants::MARKET.to_string(),
@@ -968,14 +1248,14 @@ impl OrderbookManager {
             });
         }
 
-        let mut ask_prices: Vec<_> = snapshot.asks.iter().collect();
-        ask_prices.sort_by(|a, b| {
-            a[0].parse::<f64>()
-                .unwrap_or(0.0)
-                .total_cmp(&b[0].parse::<f64>().unwrap_or(0.0))
-        });
+        let mut ask_prices: Vec<_> = snapshot
+            .asks
+            .iter()
+            .map(|[price, quantity]| Ok((normalize_plain_decimal(price)?, price, quantity)))
+            .collect::<Result<Vec<_>>>()?;
+        ask_prices.sort_by(|a, b| compare_normalized_decimals(&a.0, &b.0));
 
-        for [price, qty] in ask_prices {
+        for (_, price, qty) in ask_prices {
             csv_rows.push(DepthSnapshotCsv {
                 exchange: constants::EXCHANGE.to_string(),
                 market: constants::MARKET.to_string(),
@@ -1093,28 +1373,131 @@ impl OrderbookManager {
 
             // Apply updates for each live symbol
             for symbol in live_symbols {
-                // Drain new updates from WebSocket ring buffer
-                let updates = self.websocket_manager.drain_buffer(&symbol).await;
+                if symbol.eq_ignore_ascii_case("btcusdt") && self.btc_v1_publisher.read().is_none()
+                {
+                    continue;
+                }
+
+                // Drain new updates and capture exact buffer depths under the ring lock.
+                let (updates, buffer_depth_before, buffer_depth_after) = self
+                    .websocket_manager
+                    .drain_buffer_with_depth(&symbol)
+                    .await;
 
                 if updates.is_empty() {
                     continue;
                 }
 
-                // Deliberately no pu==last_update_id continuity guard or resnapshot
-                // here. A WS reconnect drops a whole batch of symbols at once, so
-                // resnapshotting on each gap would fire hundreds of REST snapshots in
-                // a burst, blowing the weight budget and cascading into a resync
-                // storm. Instead the design absorbs a reconnect three ways:
-                //   • the raw depth_updates CSV stays lossless, so a reconnect gap is
-                //     a recorded pu-break the offline validator surfaces (the
-                //     dashboard's `continuity_breaks`). It is detected, not silent;
-                //   • the in-memory book self-heals: Binance diffs carry ABSOLUTE
-                //     quantities, so every level is corrected on its next update;
-                //   • reconstruction re-anchors on the newest snapshot, not this live
-                //     book. Resync stays confined to init/bridge, rate-limited by
-                //     cooldown + backoff.
-                for update in &updates {
-                    if let Err(e) = self.apply_diff(&symbol, update).await {
+                if symbol.eq_ignore_ascii_case("btcusdt") {
+                    let batch_started = Instant::now();
+                    let mut applied_before_rejection = 0usize;
+                    let mut receive_to_apply_max_ms = 0u128;
+                    let mut buffer_residence_max_ms = 0u128;
+                    let mut rejection_class: Option<V1RejectionClass> = None;
+
+                    for buffered in &updates {
+                        let Some(current) = self.btc_v1_publisher.read() else {
+                            rejection_class = Some(V1RejectionClass::PublishFenced);
+                            break;
+                        };
+                        let now_ms = chrono::Utc::now().timestamp_millis();
+                        let apply_result = apply_live_diff_classified(
+                            &current,
+                            &buffered.update,
+                            self.config.orderbook.depth_limit as usize,
+                            now_ms,
+                            now_ms,
+                        );
+                        let applied_at = Instant::now();
+                        let timing = buffered.timing_at(applied_at);
+                        receive_to_apply_max_ms =
+                            receive_to_apply_max_ms.max(timing.receive_to_apply.as_millis());
+                        buffer_residence_max_ms =
+                            buffer_residence_max_ms.max(timing.buffer_residence.as_millis());
+                        match apply_result {
+                            Ok(candidate) => {
+                                if let Err(error) =
+                                    self.btc_v1_publisher.publish_if_current(candidate)
+                                {
+                                    rejection_class = Some(V1RejectionClass::PublishFenced);
+                                    warn!(
+                                        "[BTCUSDT][PUBLISH_FENCED] V1 publish rejected: {error:#}"
+                                    );
+                                    break;
+                                }
+                                applied_before_rejection += 1;
+                                let legacy_apply_error = {
+                                    if let Some(mut book) = self.orderbooks.get_mut(&symbol) {
+                                        match Self::apply_update_to_book(
+                                            &mut book,
+                                            &buffered.update,
+                                        ) {
+                                            Ok(()) => {
+                                                Self::trim_book_to_depth(
+                                                    self.config.orderbook.depth_limit as usize,
+                                                    &mut book,
+                                                );
+                                                None
+                                            }
+                                            Err(error) => Some(error.to_string()),
+                                        }
+                                    } else {
+                                        None
+                                    }
+                                };
+                                if let Some(error) = legacy_apply_error {
+                                    rejection_class = Some(V1RejectionClass::LegacyMirrorRejected);
+                                    warn!(
+                                        "[BTCUSDT][LEGACY_MIRROR_REJECTED] V1 legacy mirror update rejected: {error}"
+                                    );
+                                    if let Err(resync_error) = self
+                                        .trigger_resnapshot("btcusdt", "v1_live_apply_rejected")
+                                        .await
+                                    {
+                                        error!("[BTCUSDT] Failed to schedule V1 re-anchor: {resync_error:#}");
+                                    }
+                                    break;
+                                }
+                            }
+                            Err(error) => {
+                                let class = V1RejectionClass::from(&error);
+                                let reason = match &error {
+                                    LiveDiffRejection::Freshness(_) => "v1_live_freshness_rejected",
+                                    LiveDiffRejection::Sequence(_) => "v1_live_sequence_rejected",
+                                    LiveDiffRejection::Shape(_) => "v1_live_shape_rejected",
+                                };
+                                rejection_class = Some(class);
+                                warn!(
+                                    "[BTCUSDT][{}] V1 live diff rejected; re-anchoring: {error}",
+                                    class.label()
+                                );
+                                if let Err(resync_error) =
+                                    self.trigger_resnapshot("btcusdt", reason).await
+                                {
+                                    error!("[BTCUSDT] Failed to schedule V1 re-anchor: {resync_error:#}");
+                                }
+                                break;
+                            }
+                        }
+                    }
+
+                    info!(
+                        "[BTCUSDT] V1 batch diagnostics: size={} buffer_depth_before={} buffer_depth_after={} batch_processing_ms={} receive_to_apply_max_ms={} buffer_residence_max_ms={} applied_before_rejection={} rejection_class={}",
+                        updates.len(),
+                        buffer_depth_before,
+                        buffer_depth_after,
+                        batch_started.elapsed().as_millis(),
+                        receive_to_apply_max_ms,
+                        buffer_residence_max_ms,
+                        applied_before_rejection,
+                        rejection_class.map(V1RejectionClass::label).unwrap_or("NONE"),
+                    );
+                    continue;
+                }
+
+                // Non-BTCUSDT symbols retain the legacy collector path.
+                for buffered in &updates {
+                    if let Err(e) = self.apply_diff(&symbol, &buffered.update).await {
                         error!("[{}] Failed to apply live depth update: {}", symbol, e);
                     }
                 }
@@ -1163,6 +1546,26 @@ pub struct OrderbookStats {
     pub ask_levels: usize,
 }
 
+async fn abort_and_join_tasks(tasks: Vec<JoinHandle<()>>) -> Result<()> {
+    let mut join_errors = Vec::new();
+    for task in tasks {
+        task.abort();
+        if let Err(error) = task.await {
+            if !error.is_cancelled() {
+                join_errors.push(error.to_string());
+            }
+        }
+    }
+
+    if !join_errors.is_empty() {
+        anyhow::bail!(
+            "one or more orderbook tasks failed to join: {}",
+            join_errors.join("; ")
+        );
+    }
+    Ok(())
+}
+
 impl Clone for OrderbookManager {
     fn clone(&self) -> Self {
         Self {
@@ -1177,7 +1580,12 @@ impl Clone for OrderbookManager {
             last_periodic_snapshot: self.last_periodic_snapshot.clone(),
             sync_start_time: self.sync_start_time.clone(),
             resnapshot_backoff: self.resnapshot_backoff.clone(),
+            btc_v1_publisher: self.btc_v1_publisher.clone(),
+            btc_v1_rest_snapshot: self.btc_v1_rest_snapshot.clone(),
+            btc_v1_anchor_generation: self.btc_v1_anchor_generation.clone(),
+            btc_v1_buffered_updates: self.btc_v1_buffered_updates.clone(),
             delisted: self.delisted.clone(),
+            tasks: self.tasks.clone(),
         }
     }
 }
@@ -1192,6 +1600,8 @@ mod tests {
             last_update_id: 0,
             bids: HashMap::new(),
             asks: HashMap::new(),
+            raw_bids: HashMap::new(),
+            raw_asks: HashMap::new(),
             last_processed_time: Instant::now(),
         }
     }
@@ -1213,8 +1623,6 @@ mod tests {
                 .iter()
                 .map(|(p, q)| [p.to_string(), q.to_string()])
                 .collect(),
-            b_floats: None,
-            a_floats: None,
         }
     }
 
@@ -1267,18 +1675,112 @@ mod tests {
         assert_eq!(find_bridge(100, &diffs), None);
     }
 
-    fn best_bid(book: &Orderbook) -> Option<f64> {
+    fn best_bid(book: &Orderbook) -> Option<String> {
         book.bids
             .keys()
-            .map(|b| f64::from_bits(*b))
-            .max_by(|a, b| a.total_cmp(b))
+            .max_by(|a, b| compare_normalized_decimals(a, b))
+            .cloned()
     }
 
-    fn best_ask(book: &Orderbook) -> Option<f64> {
+    fn best_ask(book: &Orderbook) -> Option<String> {
         book.asks
             .keys()
-            .map(|b| f64::from_bits(*b))
-            .min_by(|a, b| a.total_cmp(b))
+            .min_by(|a, b| compare_normalized_decimals(a, b))
+            .cloned()
+    }
+
+    fn snapshot_book(last_update_id: u64) -> Orderbook {
+        let mut book = empty_book();
+        book.last_update_id = last_update_id;
+        book.bids.insert("100".to_string(), "1.0".to_string());
+        book.bids.insert("99.5".to_string(), "2.0".to_string());
+        book.asks.insert("100.5".to_string(), "1.5".to_string());
+        book.asks.insert("101".to_string(), "3.0".to_string());
+        book.raw_bids
+            .insert("100".to_string(), ("100.0".to_string(), "1.0".to_string()));
+        book.raw_bids
+            .insert("99.5".to_string(), ("99.5".to_string(), "2.0".to_string()));
+        book.raw_asks.insert(
+            "100.5".to_string(),
+            ("100.5".to_string(), "1.5".to_string()),
+        );
+        book.raw_asks
+            .insert("101".to_string(), ("101.0".to_string(), "3.0".to_string()));
+        book
+    }
+
+    #[test]
+    fn snapshot_plus_buffered_diffs_matches_independent_reconstruction() {
+        let mut actual = snapshot_book(100);
+        let diffs = [
+            bridge_diff(90, 95, 89), // already covered by snapshot
+            bridge_diff(101, 105, 100),
+        ];
+        let mut first = update(105, &[(100.0, 0.7), (98.0, 4.0)], &[(100.5, 0.0)]);
+        first.first_update_id = 101;
+        first.prev_update_id = 100;
+        let applied = OrderbookManager::apply_attach_updates_to_book(
+            &mut actual,
+            100,
+            &[diffs[0].clone(), first],
+            100,
+        )
+        .unwrap();
+
+        // Independently reconstruct the expected state from the REST snapshot
+        // plus the accepted absolute-quantity diff.
+        let mut expected = snapshot_book(100);
+        expected.bids.insert("100".to_string(), "0.7".to_string());
+        expected.bids.insert("98".to_string(), "4".to_string());
+        expected.asks.remove("100.5");
+        expected.last_update_id = 105;
+
+        assert_eq!(applied, Some(1));
+        assert_eq!(actual.last_update_id, expected.last_update_id);
+        assert_eq!(actual.bids, expected.bids);
+        assert_eq!(actual.asks, expected.asks);
+    }
+
+    #[test]
+    fn initial_attach_rejects_a_missing_diff_after_the_bridge() {
+        let mut actual = snapshot_book(100);
+        let first = bridge_diff(101, 105, 100);
+        let after_gap = bridge_diff(111, 115, 109);
+
+        let result = OrderbookManager::apply_attach_updates_to_book(
+            &mut actual,
+            100,
+            &[first, after_gap],
+            100,
+        )
+        .unwrap();
+
+        // The first bridged event is applied, but the pu break prevents the
+        // attach from being accepted as LIVE.
+        assert_eq!(result, None);
+        assert_eq!(actual.last_update_id, 105);
+    }
+
+    #[test]
+    fn reconnect_pu_break_leaves_untouched_levels_stale_in_live_book() {
+        let mut book = snapshot_book(100);
+
+        // The reconnect jumps from 100 to 120. The live loop intentionally
+        // applies absolute quantities without a pu guard: touched levels heal.
+        let mut reconnect_diff = update(125, &[(100.0, 0.4)], &[(100.5, 2.0)]);
+        reconnect_diff.first_update_id = 121;
+        reconnect_diff.prev_update_id = 120;
+
+        OrderbookManager::apply_update_to_book(&mut book, &reconnect_diff).unwrap();
+        assert_eq!(book.bids["100"], "0.4");
+        assert_eq!(book.asks["100.5"], "2");
+
+        // A quiet level changed during the outage is absent from this diff and
+        // therefore remains stale in memory until a later absolute update or
+        // snapshot reconstruction.
+        assert_eq!(book.bids["99.5"], "2.0");
+        assert_eq!(reconnect_diff.prev_update_id, 120);
+        assert_eq!(book.last_update_id, 125);
     }
 
     #[test]
@@ -1295,26 +1797,80 @@ mod tests {
         assert_eq!(book.bids.len(), 2);
         assert_eq!(book.asks.len(), 2);
         assert_eq!(book.last_update_id, 10);
-        assert_eq!(best_bid(&book), Some(100.0));
-        assert_eq!(best_ask(&book), Some(100.5));
+        assert_eq!(best_bid(&book).as_deref(), Some("100"));
+        assert_eq!(best_ask(&book).as_deref(), Some("100.5"));
 
         // Replace a quantity and delete a level with qty 0.
         let u2 = update(11, &[(100.0, 0.7), (99.5, 0.0)], &[]);
         OrderbookManager::apply_update_to_book(&mut book, &u2).unwrap();
         assert_eq!(book.bids.len(), 1);
-        assert_eq!(book.bids[&100.0f64.to_bits()], 0.7);
+        assert_eq!(book.bids["100"], "0.7");
         assert_eq!(book.last_update_id, 11);
     }
 
     #[test]
-    fn diff_prefers_preconverted_floats() {
+    fn diff_preserves_exact_wire_decimal_strings() {
         let mut book = empty_book();
-        let mut u = update(5, &[(1.0, 1.0)], &[]);
-        // When floats are present, the string levels must be ignored.
-        u.b_floats = Some(vec![(2.0, 9.0)]);
+        let mut u = update(5, &[], &[]);
+        u.bids = vec![[
+            "123456789.123456789123456789".to_string(),
+            "0.000000000000000000123456789".to_string(),
+        ]];
         OrderbookManager::apply_update_to_book(&mut book, &u).unwrap();
-        assert_eq!(book.bids.len(), 1);
-        assert_eq!(book.bids[&2.0f64.to_bits()], 9.0);
+        assert_eq!(
+            book.raw_bids.get("123456789.123456789123456789"),
+            Some(&(
+                "123456789.123456789123456789".to_string(),
+                "0.000000000000000000123456789".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn computational_orderbook_preserves_exact_quantity_decimal_values() {
+        let mut book = empty_book();
+        let quantity = "1.23456789123456789123456789";
+        let mut insert = update(5, &[], &[]);
+        insert.bids = vec![["100".to_string(), quantity.to_string()]];
+
+        OrderbookManager::apply_update_to_book(&mut book, &insert).unwrap();
+
+        assert_eq!(
+            book.bids.get("100").map(String::as_str),
+            Some(quantity),
+            "computational orderbook must not round exchange quantity decimals"
+        );
+    }
+
+    #[test]
+    fn distinct_decimal_price_levels_do_not_collide_in_the_computational_book() {
+        let mut book = empty_book();
+        let mut insert = update(5, &[], &[]);
+        insert.bids = vec![
+            ["1.00000000000000001".to_string(), "2.0".to_string()],
+            ["1.00000000000000002".to_string(), "3.0".to_string()],
+        ];
+
+        OrderbookManager::apply_update_to_book(&mut book, &insert).unwrap();
+
+        assert_eq!(
+            book.bids.len(),
+            2,
+            "distinct decimal prices must remain distinct"
+        );
+        assert_eq!(book.raw_bids.len(), 2);
+
+        let mut delete = update(6, &[], &[]);
+        delete.bids = vec![["1.00000000000000001".to_string(), "0".to_string()]];
+        OrderbookManager::apply_update_to_book(&mut book, &delete).unwrap();
+
+        assert_eq!(
+            book.bids.len(),
+            1,
+            "deleting one exact price must not delete its neighbor"
+        );
+        assert_eq!(book.raw_bids.len(), 1);
+        assert!(book.raw_bids.contains_key("1.00000000000000002"));
     }
 
     #[test]
@@ -1330,27 +1886,30 @@ mod tests {
         let mut book = empty_book();
         // 10 bids at 90..99 and 10 asks at 101..110.
         for i in 0..10 {
-            book.bids.insert((90.0 + i as f64).to_bits(), 1.0);
-            book.asks.insert((101.0 + i as f64).to_bits(), 1.0);
+            book.bids.insert((90 + i).to_string(), "1.0".to_string());
+            book.asks.insert((101 + i).to_string(), "1.0".to_string());
         }
 
         OrderbookManager::trim_book_to_depth(3, &mut book);
 
         // Bids keep the HIGHEST prices, asks the LOWEST, so the touch survives.
-        let mut bids: Vec<f64> = book.bids.keys().map(|b| f64::from_bits(*b)).collect();
-        let mut asks: Vec<f64> = book.asks.keys().map(|b| f64::from_bits(*b)).collect();
-        bids.sort_by(|a, b| a.total_cmp(b));
-        asks.sort_by(|a, b| a.total_cmp(b));
-        assert_eq!(bids, vec![97.0, 98.0, 99.0]);
-        assert_eq!(asks, vec![101.0, 102.0, 103.0]);
-        assert!(best_bid(&book).unwrap() < best_ask(&book).unwrap());
+        let mut bids: Vec<String> = book.bids.keys().cloned().collect();
+        let mut asks: Vec<String> = book.asks.keys().cloned().collect();
+        bids.sort_by(|a, b| compare_normalized_decimals(a, b));
+        asks.sort_by(|a, b| compare_normalized_decimals(a, b));
+        assert_eq!(bids, vec!["97", "98", "99"]);
+        assert_eq!(asks, vec!["101", "102", "103"]);
+        assert_eq!(
+            compare_normalized_decimals(&best_bid(&book).unwrap(), &best_ask(&book).unwrap()),
+            std::cmp::Ordering::Less
+        );
     }
 
     #[test]
     fn trim_is_noop_within_depth() {
         let mut book = empty_book();
-        book.bids.insert(100.0f64.to_bits(), 1.0);
-        book.asks.insert(101.0f64.to_bits(), 1.0);
+        book.bids.insert("100".to_string(), "1.0".to_string());
+        book.asks.insert("101".to_string(), "1.0".to_string());
         OrderbookManager::trim_book_to_depth(50, &mut book);
         assert_eq!(book.bids.len(), 1);
         assert_eq!(book.asks.len(), 1);
@@ -1383,5 +1942,14 @@ mod tests {
     #[test]
     fn normalize_empty_is_empty() {
         assert!(OrderbookManager::normalize_messages_for_attach(Vec::new()).is_empty());
+    }
+
+    #[tokio::test]
+    async fn abort_and_join_waits_for_every_orderbook_task() {
+        let task = tokio::spawn(async {
+            std::future::pending::<()>().await;
+        });
+
+        abort_and_join_tasks(vec![task]).await.unwrap();
     }
 }

@@ -9,7 +9,22 @@ use tokio::time::{interval, sleep};
 use crate::config::Config;
 use crate::models::*;
 use crate::rest::RestClient;
-use crate::utils::{time_utils, CsvWriter};
+use crate::utils::{multiply_decimal_strings, time_utils, CsvWriter};
+
+/// Extract the timestamp and four source decimal strings from a REST kline array.
+/// Invalid/missing fields are rejected instead of being fabricated as numeric zero.
+fn extract_rest_kline(data: &[serde_json::Value]) -> Option<(i64, &str, &str, &str, &str)> {
+    if data.len() < 5 {
+        return None;
+    }
+    Some((
+        data[0].as_i64()?,
+        data[1].as_str()?,
+        data[2].as_str()?,
+        data[3].as_str()?,
+        data[4].as_str()?,
+    ))
+}
 
 /// Buckets to fetch per `/futures/data` poll. These endpoints are limiter-paced
 /// (~20-min effective cadence for ~500 symbols on one IP); fetching 8× 5-min
@@ -22,6 +37,43 @@ const DATA_BUCKET_LIMIT: u32 = 8;
 const KLINE_BUCKET_LIMIT: u32 = 4;
 
 /// Collects REST-based data (funding rates, OI, ratios, etc.)
+#[derive(Clone, Default)]
+struct RestTaskGroup {
+    handles: Arc<tokio::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>>,
+}
+
+impl RestTaskGroup {
+    async fn spawn<F>(&self, future: F)
+    where
+        F: std::future::Future<Output = ()> + Send + 'static,
+    {
+        let handle = tokio::spawn(future);
+        self.handles.lock().await.push(handle);
+    }
+
+    async fn shutdown(&self) {
+        let handles = {
+            let mut guard = self.handles.lock().await;
+            std::mem::take(&mut *guard)
+        };
+        for handle in &handles {
+            handle.abort();
+        }
+        for handle in handles {
+            if let Err(error) = handle.await {
+                if !error.is_cancelled() {
+                    log::error!("REST collector task join failed: {}", error);
+                }
+            }
+        }
+    }
+
+    #[cfg(test)]
+    async fn len(&self) -> usize {
+        self.handles.lock().await.len()
+    }
+}
+
 pub struct RestCollector {
     config: Arc<Config>,
     rest_client: Arc<RestClient>,
@@ -35,6 +87,7 @@ pub struct RestCollector {
     /// the order-book manager); every per-symbol poll skips members so a dead
     /// market stops consuming retries and rate-limit budget.
     delisted: Arc<DashSet<String>>,
+    tasks: RestTaskGroup,
 }
 
 impl RestCollector {
@@ -50,6 +103,7 @@ impl RestCollector {
             csv_writer,
             last_bucket: Arc::new(DashMap::new()),
             delisted,
+            tasks: RestTaskGroup::default(),
         }
     }
 
@@ -78,75 +132,94 @@ impl RestCollector {
         // This makes 1 bulk request for all symbols, so start immediately
         let collector = self.clone();
         let symbols_clone = symbols.clone();
-        tokio::spawn(async move {
-            if let Err(e) = collector.collect_funding_rates(symbols_clone).await {
-                error!("Funding rate collector error: {}", e);
-            }
-        });
+        self.tasks
+            .spawn(async move {
+                if let Err(e) = collector.collect_funding_rates(symbols_clone).await {
+                    error!("Funding rate collector error: {}", e);
+                }
+            })
+            .await;
 
         // Start mark price klines collector (90s interval) - 10s delay
         let collector = self.clone();
         let symbols_clone = symbols.clone();
-        tokio::spawn(async move {
-            sleep(Duration::from_secs(10)).await;
-            if let Err(e) = collector.collect_mark_price_klines(symbols_clone).await {
-                error!("Mark price klines collector error: {}", e);
-            }
-        });
+        self.tasks
+            .spawn(async move {
+                sleep(Duration::from_secs(10)).await;
+                if let Err(e) = collector.collect_mark_price_klines(symbols_clone).await {
+                    error!("Mark price klines collector error: {}", e);
+                }
+            })
+            .await;
 
         // Start index price klines collector (90s interval) - 20s delay
         let collector = self.clone();
         let symbols_clone = symbols.clone();
-        tokio::spawn(async move {
-            sleep(Duration::from_secs(20)).await;
-            if let Err(e) = collector.collect_index_price_klines(symbols_clone).await {
-                error!("Index price klines collector error: {}", e);
-            }
-        });
+        self.tasks
+            .spawn(async move {
+                sleep(Duration::from_secs(20)).await;
+                if let Err(e) = collector.collect_index_price_klines(symbols_clone).await {
+                    error!("Index price klines collector error: {}", e);
+                }
+            })
+            .await;
 
         // Start premium index klines collector (60s interval) - 30s delay
         let collector = self.clone();
         let symbols_clone = symbols.clone();
-        tokio::spawn(async move {
-            sleep(Duration::from_secs(30)).await;
-            if let Err(e) = collector.collect_premium_index_klines(symbols_clone).await {
-                error!("Premium index klines collector error: {}", e);
-            }
-        });
+        self.tasks
+            .spawn(async move {
+                sleep(Duration::from_secs(30)).await;
+                if let Err(e) = collector.collect_premium_index_klines(symbols_clone).await {
+                    error!("Premium index klines collector error: {}", e);
+                }
+            })
+            .await;
 
         // Start open interest collector (300s interval) - 40s delay
         // Makes 2 requests per symbol (OI + premium index for price)
         let collector = self.clone();
         let symbols_clone = symbols.clone();
-        tokio::spawn(async move {
-            sleep(Duration::from_secs(40)).await;
-            if let Err(e) = collector.collect_open_interest(symbols_clone).await {
-                error!("Open interest collector error: {}", e);
-            }
-        });
+        self.tasks
+            .spawn(async move {
+                sleep(Duration::from_secs(40)).await;
+                if let Err(e) = collector.collect_open_interest(symbols_clone).await {
+                    error!("Open interest collector error: {}", e);
+                }
+            })
+            .await;
 
         // Start taker buy/sell ratio collector (300s interval) - 50s delay
         let collector = self.clone();
         let symbols_clone = symbols.clone();
-        tokio::spawn(async move {
-            sleep(Duration::from_secs(50)).await;
-            if let Err(e) = collector.collect_taker_buy_sell_ratios(symbols_clone).await {
-                error!("Taker buy/sell ratio collector error: {}", e);
-            }
-        });
+        self.tasks
+            .spawn(async move {
+                sleep(Duration::from_secs(50)).await;
+                if let Err(e) = collector.collect_taker_buy_sell_ratios(symbols_clone).await {
+                    error!("Taker buy/sell ratio collector error: {}", e);
+                }
+            })
+            .await;
 
         // Start long/short ratio collector (300s interval) - 60s delay
         // Makes 3 requests per symbol (global + 2 trader ratios), heaviest load
         let collector = self.clone();
         let symbols_clone = symbols.clone();
-        tokio::spawn(async move {
-            sleep(Duration::from_secs(60)).await;
-            if let Err(e) = collector.collect_long_short_ratios(symbols_clone).await {
-                error!("Long/short ratio collector error: {}", e);
-            }
-        });
+        self.tasks
+            .spawn(async move {
+                sleep(Duration::from_secs(60)).await;
+                if let Err(e) = collector.collect_long_short_ratios(symbols_clone).await {
+                    error!("Long/short ratio collector error: {}", e);
+                }
+            })
+            .await;
 
         Ok(())
+    }
+
+    /// Stop every background REST collector and wait until no task can write.
+    pub async fn shutdown(&self) {
+        self.tasks.shutdown().await;
     }
 
     /// Collect funding rates (includes mark/index prices)
@@ -321,9 +394,16 @@ impl RestCollector {
                     }
                 };
 
-                let oi_value: f64 = oi_data.open_interest.parse().unwrap_or(0.0);
-                let price: f64 = mark_price.parse().unwrap_or(0.0);
-                let value = oi_value * price;
+                let value = match multiply_decimal_strings(&oi_data.open_interest, &mark_price) {
+                    Ok(value) => value,
+                    Err(e) => {
+                        warn!(
+                            "Skipping open interest for {}: invalid source decimal: {}",
+                            symbol, e
+                        );
+                        return;
+                    }
+                };
 
                 let csv = OpenInterestCsv {
                     exchange: "binance".to_string(),
@@ -333,7 +413,7 @@ impl RestCollector {
                     symbol: oi_data.symbol.to_lowercase(),
                     price: format_decimal_str(&mark_price),
                     open_interest: format_decimal_str(&oi_data.open_interest),
-                    oi_value: format_decimal(value),
+                    oi_value: value,
                 };
 
                 if let Err(e) = self.csv_writer.write_open_interest(&csv).await {
@@ -430,15 +510,18 @@ impl RestCollector {
                         if !self.is_new_bucket(&key, ratio.timestamp) {
                             continue;
                         }
-                        let (long_ratio, short_ratio) = if let (Some(long), Some(short)) =
-                            (ratio.long_account.as_ref(), ratio.short_account.as_ref())
-                        {
-                            (long.clone(), short.clone())
-                        } else {
-                            let ls_ratio: f64 = ratio.long_short_ratio.parse().unwrap_or(1.0);
-                            let long_pct = ls_ratio / (1.0 + ls_ratio);
-                            let short_pct = 1.0 - long_pct;
-                            (format_decimal(long_pct), format_decimal(short_pct))
+                        let (long_ratio, short_ratio) = match (
+                            ratio.long_account.as_ref(),
+                            ratio.short_account.as_ref(),
+                        ) {
+                            (Some(long), Some(short)) => (long.clone(), short.clone()),
+                            _ => {
+                                warn!(
+                                    "Skipping {} ratio for {} at {}: source long/short account values are missing",
+                                    ratio_type, symbol, ratio.timestamp
+                                );
+                                continue;
+                            }
                         };
 
                         let csv = LongShortRatioCsv {
@@ -533,10 +616,11 @@ impl RestCollector {
                 // Skip the final (in-progress) bucket; write each newly-closed one.
                 let closed = klines.len().saturating_sub(1);
                 for kline_data in klines.iter().take(closed) {
-                    if kline_data.len() < 5 {
+                    let Some((timestamp, open, high, low, close)) = extract_rest_kline(kline_data)
+                    else {
+                        warn!("Skipping malformed mark price kline for {}", symbol);
                         continue;
-                    }
-                    let timestamp = kline_data[0].as_i64().unwrap_or(0);
+                    };
                     if !self.is_new_bucket(&key, timestamp) {
                         continue;
                     }
@@ -546,10 +630,10 @@ impl RestCollector {
                         datatype: "mark_price_klines".to_string(),
                         timestamp_ms: timestamp,
                         symbol: symbol.clone(),
-                        open: format_decimal_str(kline_data[1].as_str().unwrap_or("0")),
-                        high: format_decimal_str(kline_data[2].as_str().unwrap_or("0")),
-                        low: format_decimal_str(kline_data[3].as_str().unwrap_or("0")),
-                        close: format_decimal_str(kline_data[4].as_str().unwrap_or("0")),
+                        open: format_decimal_str(open),
+                        high: format_decimal_str(high),
+                        low: format_decimal_str(low),
+                        close: format_decimal_str(close),
                     };
                     if let Err(e) = self.csv_writer.write_mark_price_kline(&csv).await {
                         error!("Failed to write mark price kline for {}: {}", symbol, e);
@@ -631,10 +715,11 @@ impl RestCollector {
                 let key = format!("index_price_klines:{}", symbol);
                 let closed = klines.len().saturating_sub(1);
                 for kline_data in klines.iter().take(closed) {
-                    if kline_data.len() < 5 {
+                    let Some((timestamp, open, high, low, close)) = extract_rest_kline(kline_data)
+                    else {
+                        warn!("Skipping malformed index price kline for {}", symbol);
                         continue;
-                    }
-                    let timestamp = kline_data[0].as_i64().unwrap_or(0);
+                    };
                     if !self.is_new_bucket(&key, timestamp) {
                         continue;
                     }
@@ -644,10 +729,10 @@ impl RestCollector {
                         datatype: "index_price_klines".to_string(),
                         timestamp_ms: timestamp,
                         symbol: symbol.clone(),
-                        open: format_decimal_str(kline_data[1].as_str().unwrap_or("0")),
-                        high: format_decimal_str(kline_data[2].as_str().unwrap_or("0")),
-                        low: format_decimal_str(kline_data[3].as_str().unwrap_or("0")),
-                        close: format_decimal_str(kline_data[4].as_str().unwrap_or("0")),
+                        open: format_decimal_str(open),
+                        high: format_decimal_str(high),
+                        low: format_decimal_str(low),
+                        close: format_decimal_str(close),
                     };
                     if let Err(e) = self.csv_writer.write_index_price_kline(&csv).await {
                         error!("Failed to write index price kline for {}: {}", symbol, e);
@@ -824,10 +909,11 @@ impl RestCollector {
                 let key = format!("premium_index_klines:{}", symbol);
                 let closed = klines.len().saturating_sub(1);
                 for kline_data in klines.iter().take(closed) {
-                    if kline_data.len() < 5 {
+                    let Some((timestamp, open, high, low, close)) = extract_rest_kline(kline_data)
+                    else {
+                        warn!("Skipping malformed premium index kline for {}", symbol);
                         continue;
-                    }
-                    let timestamp = kline_data[0].as_i64().unwrap_or(0);
+                    };
                     if !self.is_new_bucket(&key, timestamp) {
                         continue;
                     }
@@ -837,10 +923,10 @@ impl RestCollector {
                         datatype: "premium_index_klines".to_string(),
                         timestamp_ms: timestamp,
                         symbol: symbol.clone(),
-                        open: format_decimal_str(kline_data[1].as_str().unwrap_or("0")),
-                        high: format_decimal_str(kline_data[2].as_str().unwrap_or("0")),
-                        low: format_decimal_str(kline_data[3].as_str().unwrap_or("0")),
-                        close: format_decimal_str(kline_data[4].as_str().unwrap_or("0")),
+                        open: format_decimal_str(open),
+                        high: format_decimal_str(high),
+                        low: format_decimal_str(low),
+                        close: format_decimal_str(close),
                     };
                     if let Err(e) = self.csv_writer.write_premium_index_kline(&csv).await {
                         error!("Failed to write premium index kline for {}: {}", symbol, e);
@@ -862,6 +948,90 @@ impl Clone for RestCollector {
             csv_writer: self.csv_writer.clone(),
             last_bucket: self.last_bucket.clone(),
             delisted: self.delisted.clone(),
+            tasks: self.tasks.clone(),
         }
+    }
+}
+
+#[cfg(test)]
+mod rest_decimal_tests {
+    use super::extract_rest_kline;
+    use serde_json::json;
+
+    #[test]
+    fn rest_kline_extract_preserves_source_decimal_strings() {
+        let data = vec![
+            json!(1_700_000_000_000i64),
+            json!("123456789.123456789123456789"),
+            json!("123456790.000000000000000001"),
+            json!("123456788.000000000000000001"),
+            json!("123456789.500000000000000001"),
+        ];
+        let (timestamp, open, high, low, close) = extract_rest_kline(&data).unwrap();
+        assert_eq!(timestamp, 1_700_000_000_000);
+        assert_eq!(open, "123456789.123456789123456789");
+        assert_eq!(high, "123456790.000000000000000001");
+        assert_eq!(low, "123456788.000000000000000001");
+        assert_eq!(close, "123456789.500000000000000001");
+    }
+
+    #[test]
+    fn rest_kline_extract_rejects_missing_or_wrongly_typed_fields() {
+        assert!(extract_rest_kline(&[json!(1), json!("1"), json!("2")]).is_none());
+        assert!(
+            extract_rest_kline(&[json!(1), json!(1.25), json!("2"), json!("1"), json!("1.5")])
+                .is_none()
+        );
+        assert!(extract_rest_kline(&[
+            json!("bad-ts"),
+            json!("1"),
+            json!("2"),
+            json!("1"),
+            json!("1.5")
+        ])
+        .is_none());
+    }
+}
+
+#[cfg(test)]
+mod rest_task_group_tests {
+    use super::RestTaskGroup;
+    use std::time::Duration;
+    use tokio::sync::oneshot;
+
+    #[tokio::test]
+    async fn shutdown_aborts_and_joins_every_registered_task() {
+        let tasks = RestTaskGroup::default();
+        let (started_tx, started_rx) = oneshot::channel();
+        tasks
+            .spawn(async move {
+                let _ = started_tx.send(());
+                std::future::pending::<()>().await;
+            })
+            .await;
+
+        tokio::time::timeout(Duration::from_secs(1), started_rx)
+            .await
+            .expect("task should start")
+            .expect("start signal should be delivered");
+
+        tasks.shutdown().await;
+        assert_eq!(tasks.len().await, 0);
+    }
+
+    #[tokio::test]
+    async fn shutdown_waits_for_task_cancellation_to_finish() {
+        let tasks = RestTaskGroup::default();
+        let (started_tx, started_rx) = oneshot::channel();
+        tasks
+            .spawn(async move {
+                let _ = started_tx.send(());
+                std::future::pending::<()>().await;
+            })
+            .await;
+
+        started_rx.await.expect("task should start");
+        tasks.shutdown().await;
+        assert_eq!(tasks.len().await, 0);
     }
 }

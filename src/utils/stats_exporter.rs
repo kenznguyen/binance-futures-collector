@@ -10,6 +10,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use tokio::fs;
+use tokio::task::JoinHandle;
 use tokio::time::interval;
 
 use crate::rest::{ProxyUsageRecord, RestClient};
@@ -236,20 +237,17 @@ impl StatsExporter {
     }
 
     /// Start background task that writes stats every 5 seconds
-    pub async fn start(self: Arc<Self>) {
+    pub async fn start(self: Arc<Self>) -> anyhow::Result<JoinHandle<()>> {
         let stats_dir = self.stats_dir.clone();
-        if let Err(e) = fs::create_dir_all(&stats_dir).await {
-            error!("Failed to create stats directory: {}", e);
-            return;
-        }
+        fs::create_dir_all(&stats_dir).await?;
 
-        tokio::spawn(async move {
+        Ok(tokio::spawn(async move {
             let mut ticker = interval(Duration::from_secs(5));
             loop {
                 ticker.tick().await;
                 self.write_stats().await;
             }
-        });
+        }))
     }
 }
 

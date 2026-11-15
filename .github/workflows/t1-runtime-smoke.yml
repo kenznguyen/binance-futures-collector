@@ -1,0 +1,178 @@
+name: T1 bounded Binance public runtime smoke
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: t1-runtime-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  public-market-data-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Download exact T1 CI artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: t1-collector-linux-x86_64-52ef58f6c8c181bd96f9aad682bcacc01c892fa4
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: 43330185333
+          path: artifact
+
+      - name: Verify artifact payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod 0755 artifact/binance-futures-collector
+          test -x artifact/binance-futures-collector
+          (cd artifact && sha256sum -c SHA256SUMS)
+          file artifact/binance-futures-collector
+          ./artifact/binance-futures-collector --version
+
+      - name: Create isolated BTCUSDT-only configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p runtime-data/logs
+          cat > config.toml <<'TOML'
+          [exchange]
+          name = "binance"
+          market = "futures"
+          websocket_url = "wss://fstream.binance.com"
+          rest_api_url = "https://fapi.binance.com"
+          rest_futures_data_url = "https://fapi.binance.com"
+
+          [collection]
+          symbol_discovery_interval_minutes = 1440
+          symbols = ["btcusdt"]
+
+          [orderbook]
+          depth_limit = 50
+          snapshot_interval_seconds = 600
+          update_speed_ms = 500
+          resync_cooldown_seconds = 30
+          resync_backoff_factor = 1.5
+          max_resync_backoff_seconds = 120
+          attach_bridge_timeout_seconds = 120
+          snapshot_http_timeout_seconds = 15
+
+          [websocket]
+          reconnect_delay_ms = 2000
+          max_reconnect_delay_ms = 10000
+          max_reconnect_attempts = 3
+          ping_interval_seconds = 20
+          heartbeat_miss_reconnect = 3
+          ring_buffer_capacity = 1024
+          ring_buffer_seconds = 60
+          ws_buffer_delay_seconds = 2
+          batch_gap_seconds = 1
+          batch_stability_min_messages = 10
+
+          [rest_intervals]
+          funding_rates_seconds = 300
+          mark_price_klines_seconds = 300
+          index_price_klines_seconds = 300
+          open_interest_seconds = 300
+          premium_index_klines_seconds = 300
+          long_short_ratio_seconds = 300
+          taker_buy_sell_ratio_seconds = 300
+          max_weight_per_min = 100
+          max_data_requests_per_5min = 30
+
+          [output]
+          base_dir = "./runtime-data/futures"
+          buffer_size_kb = 64
+          flush_interval_seconds = 1
+          max_depth_buffer_rows = 1000
+
+          [gaps]
+          base_dir = "./runtime-data/gaps"
+
+          [logging]
+          level = "info"
+          log_file = "./runtime-data/logs/collector.log"
+          max_log_files = 2
+
+          [proxy]
+          enabled = false
+          user = ""
+          password = ""
+          host = ""
+          uk_ports = []
+          au_ports = []
+          jp_ports = []
+          dk_ports = []
+          num_ws_batches = 1
+          tracking_enabled = false
+
+          [storage]
+          disable_trade_persistence_for = []
+          disable_orderbook_persistence_for = []
+          TOML
+          test ! -s config.toml || grep -q 'symbols = \["btcusdt"\]' config.toml
+          ! grep -Eq 'api_key|secret|token' config.toml
+
+      - name: Run collector for 120 seconds then require graceful shutdown
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          timeout --signal=TERM --kill-after=15s 120s ./artifact/binance-futures-collector 2>&1 | tee runtime-smoke.log
+          status=${PIPESTATUS[0]}
+          set -e
+          if [ "$status" -ne 124 ]; then
+            echo "Collector did not reach the bounded 120-second timeout; exit=$status"
+            exit 1
+          fi
+          grep -F "System started." runtime-smoke.log
+          grep -F "Shutdown complete" runtime-smoke.log
+          grep -E "Batch [0-9]+ connected" runtime-smoke.log
+          if grep -F "HTTP 451 Unavailable For Legal Reasons" runtime-smoke.log; then
+            echo "::error::Binance REST access is restricted from this runner location; runtime acceptance is BLOCKED."
+            exit 1
+          fi
+          grep -F "Orderbooks Live: 1/1" runtime-smoke.log
+          test -d runtime-data/futures/orderbooks/btcusdt
+          find runtime-data/futures/orderbooks/btcusdt -type f -name '*.csv' -size +0c | grep .
+          test -d runtime-data/futures/trades/btcusdt
+          find runtime-data/futures/trades/btcusdt -type f -name '*.csv' -size +0c | grep .
+
+      - name: Write bounded runtime evidence
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          {
+            echo "source_sha=52ef58f6c8c181bd96f9aad682bcacc01c892fa4"
+            echo "artifact_run=43330185333"
+            echo "artifact_id=13994483116"
+            echo "binary_sha256=a6cc74337cc0cad398293bd7dede05256cc3d69fb8471e6c7ae61a77e637ac57"
+            echo "api_key=ABSENT"
+            echo "trade_orders=NOT_USED"
+            echo "t0_access=NONE"
+            echo "autostart=DISABLED"
+            echo "--- collector log ---"
+            cat runtime-smoke.log 2>/dev/null
+            echo "--- output file inventory ---"
+            find runtime-data -type f -printf '%p %s bytes\\n' 2>/dev/null
+            echo "--- output checksums ---"
+            find runtime-data -type f -print0 2>/dev/null | sort -z | xargs -0 -r sha256sum
+          } > runtime-evidence.txt
+          exit 0
+
+      - name: Upload ephemeral smoke evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: t1-public-runtime-smoke-${{ github.run_id }}
+          path: |
+            runtime-evidence.txt
+            runtime-smoke.log
+          if-no-files-found: warn
+          retention-days: 3

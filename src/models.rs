@@ -22,12 +22,6 @@ pub struct DepthUpdateWs {
     pub bids: Vec<[String; 2]>, // [[price, quantity]]
     #[serde(rename = "a")]
     pub asks: Vec<[String; 2]>, // [[price, quantity]]
-
-    // Pre-converted floats (added during processing, not from the wire)
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub b_floats: Option<Vec<(f64, f64)>>, // [(price, quantity)]
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub a_floats: Option<Vec<(f64, f64)>>, // [(price, quantity)]
 }
 
 /// CSV format for depth updates
@@ -64,8 +58,8 @@ pub struct DepthSnapshotCsv {
     pub symbol: String,
     pub event_type: String, // depth_snapshot_initial, depth_snapshot, etc.
     pub side: String,       // "bid" or "ask"
-    pub price: String,      // 12 decimal places
-    pub quantity: String,   // 12 decimal places
+    pub price: String,      // exact exchange decimal lexeme
+    pub quantity: String,   // exact exchange decimal lexeme
     pub last_update_id: u64,
 }
 
@@ -422,15 +416,25 @@ pub struct PremiumIndexKlineCsv {
     pub close: String,
 }
 
-/// Format decimal string to 12 decimal places
+/// Preserve an exchange-provided decimal string exactly.
+/// Numeric syntax is validated at the CSV persistence boundary.
 pub fn format_decimal_str(value: &str) -> String {
-    match value.parse::<f64>() {
-        Ok(v) => format!("{:.12}", v),
-        Err(_) => value.to_string(),
-    }
+    value.to_string()
 }
 
-/// Format decimal to 12 decimal places
-pub fn format_decimal(value: f64) -> String {
-    format!("{:.12}", value)
+#[cfg(test)]
+mod decimal_string_tests {
+    use super::format_decimal_str;
+
+    #[test]
+    fn decimal_string_passthrough_preserves_source_lexeme_exactly() {
+        for value in [
+            "123456789.123456789123456789",
+            "0.000000000000000000000000000123",
+            "1.230000000000000000",
+            "987654321.000000000000000001",
+        ] {
+            assert_eq!(format_decimal_str(value), value);
+        }
+    }
 }

@@ -1,18 +1,81 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Timelike, Utc};
 use dashmap::DashMap;
-use log::{debug, error};
+use log::debug;
 use parking_lot::Mutex;
 use std::collections::HashMap; // Keep HashMap for CSV file grouping
 use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use tokio::sync::{watch, Mutex as AsyncMutex};
 use tokio::time::{interval, Duration};
 
 use crate::config::Config;
 use crate::constants;
 use crate::models::*;
+
+/// Validate a plain decimal lexical form without converting or normalizing it.
+/// Optional sign and exponent are accepted; the original bytes are retained for CSV.
+fn validate_decimal_string(value: &str, field: &str) -> Result<()> {
+    let bytes = value.as_bytes();
+    let mut index = 0;
+
+    if bytes.is_empty() {
+        anyhow::bail!("invalid empty decimal value for {field}");
+    }
+
+    if matches!(bytes[index], b'+' | b'-') {
+        index += 1;
+    }
+
+    let integer_start = index;
+    while index < bytes.len() && bytes[index].is_ascii_digit() {
+        index += 1;
+    }
+    let integer_digits = index - integer_start;
+
+    let mut fractional_digits = 0;
+    if index < bytes.len() && bytes[index] == b'.' {
+        index += 1;
+        let fraction_start = index;
+        while index < bytes.len() && bytes[index].is_ascii_digit() {
+            index += 1;
+        }
+        fractional_digits = index - fraction_start;
+    }
+
+    if integer_digits == 0 && fractional_digits == 0 {
+        anyhow::bail!("invalid decimal syntax for {field}");
+    }
+
+    if index < bytes.len() && matches!(bytes[index], b'e' | b'E') {
+        index += 1;
+        if index < bytes.len() && matches!(bytes[index], b'+' | b'-') {
+            index += 1;
+        }
+        let exponent_start = index;
+        while index < bytes.len() && bytes[index].is_ascii_digit() {
+            index += 1;
+        }
+        if index == exponent_start {
+            anyhow::bail!("invalid decimal exponent for {field}");
+        }
+    }
+
+    if index != bytes.len() {
+        anyhow::bail!("invalid decimal syntax for {field}");
+    }
+
+    Ok(())
+}
+
+fn validate_decimal_fields(fields: &[(&str, &str)]) -> Result<()> {
+    for (field, value) in fields {
+        validate_decimal_string(value, field)?;
+    }
+    Ok(())
+}
 
 /// Row with sortable metadata for depth updates
 #[derive(Clone)]
@@ -66,6 +129,98 @@ impl Drop for FileBuffer {
     }
 }
 
+fn collect_flush_results(results: impl IntoIterator<Item = Result<()>>) -> Result<()> {
+    let mut first_error = None;
+    for result in results {
+        if let Err(error) = result {
+            if first_error.is_none() {
+                first_error = Some(error);
+            }
+        }
+    }
+    match first_error {
+        Some(error) => Err(error.context("one or more CSV buffers failed to flush")),
+        None => Ok(()),
+    }
+}
+
+struct BlockingOperationState {
+    closed: bool,
+    in_flight: usize,
+}
+
+struct BlockingOperationTracker {
+    state: Mutex<BlockingOperationState>,
+    updates: watch::Sender<usize>,
+}
+
+struct BlockingOperationGuard {
+    tracker: Arc<BlockingOperationTracker>,
+}
+
+impl BlockingOperationTracker {
+    fn new() -> Self {
+        let (updates, _) = watch::channel(0);
+        Self {
+            state: Mutex::new(BlockingOperationState {
+                closed: false,
+                in_flight: 0,
+            }),
+            updates,
+        }
+    }
+
+    fn begin(self: &Arc<Self>) -> Result<BlockingOperationGuard> {
+        let mut state = self.state.lock();
+        if state.closed {
+            anyhow::bail!("CSV_BLOCKING_OPERATION_ADMISSION_CLOSED");
+        }
+        state.in_flight += 1;
+        self.updates.send_replace(state.in_flight);
+        Ok(BlockingOperationGuard {
+            tracker: self.clone(),
+        })
+    }
+
+    #[cfg(test)]
+    fn is_closed(&self) -> bool {
+        self.state.lock().closed
+    }
+
+    fn is_closed_and_drained(&self) -> bool {
+        let state = self.state.lock();
+        state.closed && state.in_flight == 0
+    }
+
+    async fn close_and_drain(&self) -> Result<()> {
+        let mut updates = self.updates.subscribe();
+        {
+            let mut state = self.state.lock();
+            state.closed = true;
+            self.updates.send_replace(state.in_flight);
+        }
+
+        loop {
+            if *updates.borrow_and_update() == 0 {
+                return Ok(());
+            }
+            updates
+                .changed()
+                .await
+                .context("CSV blocking-operation drain channel closed")?;
+        }
+    }
+}
+
+impl Drop for BlockingOperationGuard {
+    fn drop(&mut self) {
+        let mut state = self.tracker.state.lock();
+        debug_assert!(state.in_flight > 0);
+        state.in_flight -= 1;
+        self.tracker.updates.send_replace(state.in_flight);
+    }
+}
+
 /// Manages CSV file writing with buffering and atomic operations
 #[derive(Clone)]
 pub struct CsvWriter {
@@ -76,6 +231,9 @@ pub struct CsvWriter {
     flush_interval: std::time::Duration,
     buffer_size_bytes: usize,
     max_depth_buffer_rows: usize,
+    shutdown_tx: watch::Sender<bool>,
+    background_tasks: Arc<AsyncMutex<Vec<tokio::task::JoinHandle<()>>>>,
+    blocking_operations: Arc<BlockingOperationTracker>,
 }
 
 impl CsvWriter {
@@ -85,6 +243,8 @@ impl CsvWriter {
         // Create base directory if it doesn't exist
         std::fs::create_dir_all(&base_dir)?;
 
+        let (shutdown_tx, _) = watch::channel(false);
+
         Ok(Self {
             config: config.clone(),
             base_dir,
@@ -92,6 +252,9 @@ impl CsvWriter {
             flush_interval: std::time::Duration::from_secs(config.output.flush_interval_seconds),
             buffer_size_bytes: config.output.buffer_size_kb * 1024,
             max_depth_buffer_rows: config.output.max_depth_buffer_rows,
+            shutdown_tx,
+            background_tasks: Arc::new(AsyncMutex::new(Vec::new())),
+            blocking_operations: Arc::new(BlockingOperationTracker::new()),
         })
     }
 
@@ -115,7 +278,9 @@ impl CsvWriter {
         let buffer_size = self.buffer_size_bytes;
         let header = self.get_header_for_file(file_path).to_string();
 
+        let operation = self.blocking_operations.begin()?;
         let buffer = tokio::task::spawn_blocking(move || -> Result<FileBuffer> {
+            let _operation = operation;
             if let Some(parent) = file_path_owned.parent() {
                 debug!("spawn_blocking: Creating parent directory {:?}", parent);
                 std::fs::create_dir_all(parent)?;
@@ -343,10 +508,10 @@ impl CsvWriter {
                 snapshot.timestamp_ms,
             );
 
-            // Format price and quantity to 12 decimal places
-            let price_formatted = format!("{:.12}", snapshot.price.parse::<f64>().unwrap_or(0.0));
-            let quantity_formatted =
-                format!("{:.12}", snapshot.quantity.parse::<f64>().unwrap_or(0.0));
+            validate_decimal_fields(&[
+                ("price", &snapshot.price),
+                ("quantity", &snapshot.quantity),
+            ])?;
 
             let row = format!(
                 "{},{},{},{},{},{},{},{},{},{},{}",
@@ -358,8 +523,8 @@ impl CsvWriter {
                 snapshot.symbol,
                 snapshot.event_type,
                 snapshot.side,
-                price_formatted,
-                quantity_formatted,
+                snapshot.price,
+                snapshot.quantity,
                 snapshot.last_update_id
             );
 
@@ -383,12 +548,10 @@ impl CsvWriter {
             return Ok(());
         }
 
+        validate_decimal_fields(&[("price", &trade.price), ("quantity", &trade.quantity)])?;
+
         let file_path = self.get_daily_file_path("trades", &trade.symbol, trade.timestamp_ms);
         let buffer = self.get_or_create_buffer(&file_path).await?;
-
-        // Format price and quantity to 12 decimal places
-        let price_formatted = format!("{:.12}", trade.price.parse::<f64>().unwrap_or(0.0));
-        let quantity_formatted = format!("{:.12}", trade.quantity.parse::<f64>().unwrap_or(0.0));
 
         let row = format!(
             "{},{},{},{},{},{},{},{},{},{},{},{},{}",
@@ -400,8 +563,8 @@ impl CsvWriter {
             trade.symbol,
             trade.trade_id,
             trade.side,
-            price_formatted,
-            quantity_formatted,
+            trade.price,
+            trade.quantity,
             trade.is_buyer_maker,
             trade.first_update_id,
             trade.last_update_id
@@ -411,23 +574,19 @@ impl CsvWriter {
     }
 
     pub async fn write_kline(&self, kline: &KlineCsv) -> Result<()> {
+        // Validate every source decimal before opening/creating the destination file.
+        // Keep the original lexical representation; never round-trip through f64.
+        validate_decimal_string(&kline.open, "open")?;
+        validate_decimal_string(&kline.high, "high")?;
+        validate_decimal_string(&kline.low, "low")?;
+        validate_decimal_string(&kline.close, "close")?;
+        validate_decimal_string(&kline.volume, "volume")?;
+        validate_decimal_string(&kline.quote_volume, "quote_volume")?;
+        validate_decimal_string(&kline.taker_buy_base, "taker_buy_base")?;
+        validate_decimal_string(&kline.taker_buy_quote, "taker_buy_quote")?;
+
         let file_path = self.get_daily_file_path("klines", &kline.symbol, kline.timestamp_ms);
         let buffer = self.get_or_create_buffer(&file_path).await?;
-
-        // Format all numeric values to 12 decimal places
-        let open_formatted = format!("{:.12}", kline.open.parse::<f64>().unwrap_or(0.0));
-        let high_formatted = format!("{:.12}", kline.high.parse::<f64>().unwrap_or(0.0));
-        let low_formatted = format!("{:.12}", kline.low.parse::<f64>().unwrap_or(0.0));
-        let close_formatted = format!("{:.12}", kline.close.parse::<f64>().unwrap_or(0.0));
-        let volume_formatted = format!("{:.12}", kline.volume.parse::<f64>().unwrap_or(0.0));
-        let quote_volume_formatted =
-            format!("{:.12}", kline.quote_volume.parse::<f64>().unwrap_or(0.0));
-        let taker_buy_base_formatted =
-            format!("{:.12}", kline.taker_buy_base.parse::<f64>().unwrap_or(0.0));
-        let taker_buy_quote_formatted = format!(
-            "{:.12}",
-            kline.taker_buy_quote.parse::<f64>().unwrap_or(0.0)
-        );
 
         let row = format!(
             "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
@@ -437,33 +596,33 @@ impl CsvWriter {
             kline.timestamp_ms,
             Self::iso_utc(kline.timestamp_ms),
             kline.symbol,
-            open_formatted,
-            high_formatted,
-            low_formatted,
-            close_formatted,
-            volume_formatted,
-            quote_volume_formatted,
+            kline.open,
+            kline.high,
+            kline.low,
+            kline.close,
+            kline.volume,
+            kline.quote_volume,
             kline.trade_count,
-            taker_buy_base_formatted,
-            taker_buy_quote_formatted
+            kline.taker_buy_base,
+            kline.taker_buy_quote
         );
 
         self.write_row(buffer, &row).await
     }
 
     pub async fn write_liquidation(&self, liquidation: &LiquidationCsv) -> Result<()> {
+        validate_decimal_fields(&[
+            ("price", &liquidation.price),
+            ("quantity", &liquidation.quantity),
+            ("value", &liquidation.value),
+        ])?;
+
         let file_path = self.get_daily_file_path(
             "liquidations",
             &liquidation.symbol,
             liquidation.timestamp_ms,
         );
         let buffer = self.get_or_create_buffer(&file_path).await?;
-
-        // Format all numeric values to 12 decimal places
-        let price_formatted = format!("{:.12}", liquidation.price.parse::<f64>().unwrap_or(0.0));
-        let quantity_formatted =
-            format!("{:.12}", liquidation.quantity.parse::<f64>().unwrap_or(0.0));
-        let value_formatted = format!("{:.12}", liquidation.value.parse::<f64>().unwrap_or(0.0));
 
         let row = format!(
             "{},{},{},{},{},{},{},{},{},{}",
@@ -474,9 +633,9 @@ impl CsvWriter {
             Self::iso_utc(liquidation.timestamp_ms),
             liquidation.symbol,
             liquidation.side,
-            price_formatted,
-            quantity_formatted,
-            value_formatted
+            liquidation.price,
+            liquidation.quantity,
+            liquidation.value
         );
 
         self.write_row(buffer, &row).await
@@ -487,6 +646,8 @@ impl CsvWriter {
             "write_funding_rate() called for symbol={} at ts={}",
             funding_rate.symbol, funding_rate.timestamp_ms
         );
+        validate_decimal_fields(&[("funding_rate", &funding_rate.funding_rate)])?;
+
         let file_path = self.get_daily_file_path(
             "funding_rates",
             &funding_rate.symbol,
@@ -494,12 +655,6 @@ impl CsvWriter {
         );
         debug!("write_funding_rate() file_path={:?}", file_path);
         let buffer = self.get_or_create_buffer(&file_path).await?;
-
-        // Format funding_rate to 12 decimal places
-        let funding_rate_formatted = format!(
-            "{:.12}",
-            funding_rate.funding_rate.parse::<f64>().unwrap_or(0.0)
-        );
 
         let row = format!(
             "{},{},{},{},{},{},{},{}",
@@ -509,7 +664,7 @@ impl CsvWriter {
             funding_rate.timestamp_ms,
             Self::iso_utc(funding_rate.timestamp_ms),
             funding_rate.symbol,
-            funding_rate_formatted,
+            funding_rate.funding_rate,
             funding_rate.next_funding_time
         );
 
@@ -517,14 +672,14 @@ impl CsvWriter {
     }
 
     pub async fn write_open_interest(&self, oi: &OpenInterestCsv) -> Result<()> {
+        validate_decimal_fields(&[
+            ("price", &oi.price),
+            ("open_interest", &oi.open_interest),
+            ("oi_value", &oi.oi_value),
+        ])?;
+
         let file_path = self.get_daily_file_path("open_interest", &oi.symbol, oi.timestamp_ms);
         let buffer = self.get_or_create_buffer(&file_path).await?;
-
-        // Format all numeric values to 12 decimal places
-        let price_formatted = format!("{:.12}", oi.price.parse::<f64>().unwrap_or(0.0));
-        let open_interest_formatted =
-            format!("{:.12}", oi.open_interest.parse::<f64>().unwrap_or(0.0));
-        let oi_value_formatted = format!("{:.12}", oi.oi_value.parse::<f64>().unwrap_or(0.0));
 
         let row = format!(
             "{},{},{},{},{},{},{},{},{}",
@@ -534,28 +689,24 @@ impl CsvWriter {
             oi.timestamp_ms,
             Self::iso_utc(oi.timestamp_ms),
             oi.symbol,
-            price_formatted,
-            open_interest_formatted,
-            oi_value_formatted
+            oi.price,
+            oi.open_interest,
+            oi.oi_value
         );
 
         self.write_row(buffer, &row).await
     }
 
     pub async fn write_long_short_ratio(&self, ratio: &LongShortRatioCsv) -> Result<()> {
+        validate_decimal_fields(&[
+            ("long_ratio", &ratio.long_ratio),
+            ("short_ratio", &ratio.short_ratio),
+            ("long_short_ratio", &ratio.long_short_ratio),
+        ])?;
+
         let file_path =
             self.get_daily_file_path("long_short_ratio", &ratio.symbol, ratio.timestamp_ms);
         let buffer = self.get_or_create_buffer(&file_path).await?;
-
-        // Format all ratio values to 12 decimal places
-        let long_ratio_formatted =
-            format!("{:.12}", ratio.long_ratio.parse::<f64>().unwrap_or(0.0));
-        let short_ratio_formatted =
-            format!("{:.12}", ratio.short_ratio.parse::<f64>().unwrap_or(0.0));
-        let long_short_ratio_formatted = format!(
-            "{:.12}",
-            ratio.long_short_ratio.parse::<f64>().unwrap_or(0.0)
-        );
 
         let row = format!(
             "{},{},{},{},{},{},{},{},{},{},{}",
@@ -567,24 +718,25 @@ impl CsvWriter {
             ratio.symbol,
             ratio.period,
             ratio.ratio_type,
-            long_ratio_formatted,
-            short_ratio_formatted,
-            long_short_ratio_formatted
+            ratio.long_ratio,
+            ratio.short_ratio,
+            ratio.long_short_ratio
         );
 
         self.write_row(buffer, &row).await
     }
 
     pub async fn write_mark_price_kline(&self, kline: &MarkPriceKlineCsv) -> Result<()> {
+        validate_decimal_fields(&[
+            ("open", &kline.open),
+            ("high", &kline.high),
+            ("low", &kline.low),
+            ("close", &kline.close),
+        ])?;
+
         let file_path =
             self.get_daily_file_path("mark_price_klines", &kline.symbol, kline.timestamp_ms);
         let buffer = self.get_or_create_buffer(&file_path).await?;
-
-        // Format all numeric values to 12 decimal places
-        let open_formatted = format!("{:.12}", kline.open.parse::<f64>().unwrap_or(0.0));
-        let high_formatted = format!("{:.12}", kline.high.parse::<f64>().unwrap_or(0.0));
-        let low_formatted = format!("{:.12}", kline.low.parse::<f64>().unwrap_or(0.0));
-        let close_formatted = format!("{:.12}", kline.close.parse::<f64>().unwrap_or(0.0));
 
         let row = format!(
             "{},{},{},{},{},{},{},{},{},{}",
@@ -594,25 +746,26 @@ impl CsvWriter {
             kline.timestamp_ms,
             Self::iso_utc(kline.timestamp_ms),
             kline.symbol,
-            open_formatted,
-            high_formatted,
-            low_formatted,
-            close_formatted
+            kline.open,
+            kline.high,
+            kline.low,
+            kline.close
         );
 
         self.write_row(buffer, &row).await
     }
 
     pub async fn write_index_price_kline(&self, kline: &IndexPriceKlineCsv) -> Result<()> {
+        validate_decimal_fields(&[
+            ("open", &kline.open),
+            ("high", &kline.high),
+            ("low", &kline.low),
+            ("close", &kline.close),
+        ])?;
+
         let file_path =
             self.get_daily_file_path("index_price_klines", &kline.symbol, kline.timestamp_ms);
         let buffer = self.get_or_create_buffer(&file_path).await?;
-
-        // Format all numeric values to 12 decimal places
-        let open_formatted = format!("{:.12}", kline.open.parse::<f64>().unwrap_or(0.0));
-        let high_formatted = format!("{:.12}", kline.high.parse::<f64>().unwrap_or(0.0));
-        let low_formatted = format!("{:.12}", kline.low.parse::<f64>().unwrap_or(0.0));
-        let close_formatted = format!("{:.12}", kline.close.parse::<f64>().unwrap_or(0.0));
 
         let row = format!(
             "{},{},{},{},{},{},{},{},{},{}",
@@ -622,27 +775,25 @@ impl CsvWriter {
             kline.timestamp_ms,
             Self::iso_utc(kline.timestamp_ms),
             kline.symbol,
-            open_formatted,
-            high_formatted,
-            low_formatted,
-            close_formatted
+            kline.open,
+            kline.high,
+            kline.low,
+            kline.close
         );
 
         self.write_row(buffer, &row).await
     }
 
     pub async fn write_taker_buy_sell_ratio(&self, ratio: &TakerBuySellVolumeCsv) -> Result<()> {
+        validate_decimal_fields(&[
+            ("buy_volume", &ratio.buy_volume),
+            ("sell_volume", &ratio.sell_volume),
+            ("buy_sell_ratio", &ratio.buy_sell_ratio),
+        ])?;
+
         let file_path =
             self.get_daily_file_path("taker_buy_sell_ratio", &ratio.symbol, ratio.timestamp_ms);
         let buffer = self.get_or_create_buffer(&file_path).await?;
-
-        // Format all numeric values to 12 decimal places
-        let buy_volume_formatted =
-            format!("{:.12}", ratio.buy_volume.parse::<f64>().unwrap_or(0.0));
-        let sell_volume_formatted =
-            format!("{:.12}", ratio.sell_volume.parse::<f64>().unwrap_or(0.0));
-        let buy_sell_ratio_formatted =
-            format!("{:.12}", ratio.buy_sell_ratio.parse::<f64>().unwrap_or(0.0));
 
         let row = format!(
             "{},{},{},{},{},{},{},{},{},{}",
@@ -653,24 +804,25 @@ impl CsvWriter {
             Self::iso_utc(ratio.timestamp_ms),
             ratio.symbol,
             ratio.period,
-            buy_volume_formatted,
-            sell_volume_formatted,
-            buy_sell_ratio_formatted
+            ratio.buy_volume,
+            ratio.sell_volume,
+            ratio.buy_sell_ratio
         );
 
         self.write_row(buffer, &row).await
     }
 
     pub async fn write_premium_index_kline(&self, kline: &PremiumIndexKlineCsv) -> Result<()> {
+        validate_decimal_fields(&[
+            ("open", &kline.open),
+            ("high", &kline.high),
+            ("low", &kline.low),
+            ("close", &kline.close),
+        ])?;
+
         let file_path =
             self.get_daily_file_path("premium_index_klines", &kline.symbol, kline.timestamp_ms);
         let buffer = self.get_or_create_buffer(&file_path).await?;
-
-        // Format all numeric values to 12 decimal places
-        let open_formatted = format!("{:.12}", kline.open.parse::<f64>().unwrap_or(0.0));
-        let high_formatted = format!("{:.12}", kline.high.parse::<f64>().unwrap_or(0.0));
-        let low_formatted = format!("{:.12}", kline.low.parse::<f64>().unwrap_or(0.0));
-        let close_formatted = format!("{:.12}", kline.close.parse::<f64>().unwrap_or(0.0));
 
         let row = format!(
             "{},{},{},{},{},{},{},{},{},{}",
@@ -680,10 +832,10 @@ impl CsvWriter {
             kline.timestamp_ms,
             Self::iso_utc(kline.timestamp_ms),
             kline.symbol,
-            open_formatted,
-            high_formatted,
-            low_formatted,
-            close_formatted
+            kline.open,
+            kline.high,
+            kline.low,
+            kline.close
         );
 
         self.write_row(buffer, &row).await
@@ -701,7 +853,9 @@ impl CsvWriter {
         let max_rows = self.max_depth_buffer_rows;
         let buffer_clone = buffer.clone();
 
+        let operation = self.blocking_operations.begin()?;
         let needs_emergency_flush = tokio::task::spawn_blocking(move || -> Result<bool> {
+            let _operation = operation;
             let mut buf = buffer_clone.lock();
 
             // Add to in-memory buffer (unsorted for O(1) append)
@@ -733,8 +887,12 @@ impl CsvWriter {
 
     /// Flush a single buffer (extracted for reuse)
     async fn flush_buffer(&self, buffer: Arc<Mutex<FileBuffer>>) -> Result<()> {
-        tokio::task::spawn_blocking(move || -> Result<()> { buffer.lock().flush_locked() })
-            .await??;
+        let operation = self.blocking_operations.begin()?;
+        tokio::task::spawn_blocking(move || -> Result<()> {
+            let _operation = operation;
+            buffer.lock().flush_locked()
+        })
+        .await??;
 
         Ok(())
     }
@@ -743,8 +901,10 @@ impl CsvWriter {
     async fn write_row(&self, buffer: Arc<Mutex<FileBuffer>>, row: &str) -> Result<()> {
         let row_owned = row.to_string();
         let flush_interval = self.flush_interval;
+        let operation = self.blocking_operations.begin()?;
 
         tokio::task::spawn_blocking(move || -> Result<()> {
+            let _operation = operation;
             let mut buf = buffer.lock();
             writeln!(buf.writer, "{}", row_owned)?;
             buf.row_count += 1;
@@ -766,15 +926,36 @@ impl CsvWriter {
     pub async fn flush_all(&self) -> Result<()> {
         let buffers: Vec<_> = self.buffers.iter().map(|e| e.value().clone()).collect();
 
-        // Log-and-continue: one bad file (ENOSPC/EIO) must not skip every buffer
-        // ordered after it; that would strand their in-memory rows until a crash.
+        // Attempt every buffer, but fail closed if any flush failed. This is a
+        // publication/sealing prerequisite: callers must never infer durability
+        // from a successful return while one file still has buffered rows.
+        let mut results = Vec::with_capacity(buffers.len());
         for buffer in buffers {
-            if let Err(e) = self.flush_buffer(buffer).await {
-                error!("flush_all: a buffer failed to flush (continuing): {}", e);
-            }
+            results.push(self.flush_buffer(buffer).await);
+        }
+        collect_flush_results(results)
+    }
+
+    /// Final flush after shutdown has closed admission and drained all blocking operations.
+    /// This is the only post-barrier path allowed to start new filesystem work.
+    pub async fn flush_all_after_shutdown(&self) -> Result<()> {
+        if !self.blocking_operations.is_closed_and_drained() {
+            anyhow::bail!("CSV_BLOCKING_OPERATIONS_NOT_DRAINED");
         }
 
-        Ok(())
+        let buffers: Vec<_> = self
+            .buffers
+            .iter()
+            .map(|entry| entry.value().clone())
+            .collect();
+        let mut results = Vec::with_capacity(buffers.len());
+        for buffer in buffers {
+            let result =
+                tokio::task::spawn_blocking(move || -> Result<()> { buffer.lock().flush_locked() })
+                    .await?;
+            results.push(result);
+        }
+        collect_flush_results(results)
     }
 
     /// Flush specific symbol's buffers (uses spawn_blocking)
@@ -885,43 +1066,86 @@ impl CsvWriter {
         Ok(())
     }
 
+    async fn retain_background_task(&self, task: tokio::task::JoinHandle<()>) {
+        self.background_tasks.lock().await.push(task);
+    }
+
+    /// Stop and join every periodic writer/rotation task before final flush or sealing.
+    pub async fn shutdown_background_tasks(&self) -> Result<()> {
+        self.shutdown_tx.send_replace(true);
+
+        let tasks = {
+            let mut tasks = self.background_tasks.lock().await;
+            std::mem::take(&mut *tasks)
+        };
+
+        let mut join_errors = Vec::new();
+        for task in tasks {
+            if let Err(error) = task.await {
+                join_errors.push(error.to_string());
+            }
+        }
+
+        self.blocking_operations.close_and_drain().await?;
+
+        if !join_errors.is_empty() {
+            anyhow::bail!(
+                "one or more CSV background tasks failed to join: {}",
+                join_errors.join("; ")
+            );
+        }
+
+        Ok(())
+    }
+
     pub async fn start_periodic_flush(&self) -> Result<()> {
+        if *self.shutdown_tx.borrow() {
+            anyhow::bail!("CSV writer background tasks have already been shut down");
+        }
+
         let writer = self.clone();
         let flush_interval = self.flush_interval;
+        let mut shutdown_rx = self.shutdown_tx.subscribe();
 
-        tokio::spawn(async move {
+        let task = tokio::spawn(async move {
             let mut interval_timer = interval(flush_interval);
 
             loop {
-                interval_timer.tick().await;
-
-                if let Err(e) = writer.flush_all().await {
-                    log::error!("Periodic flush failed: {}", e);
+                tokio::select! {
+                    _ = shutdown_rx.changed() => break,
+                    _ = interval_timer.tick() => {
+                        if let Err(e) = writer.flush_all().await {
+                            log::error!("Periodic flush failed: {}", e);
+                        }
+                    }
                 }
             }
         });
+        self.retain_background_task(task).await;
 
         // Periodic cleanup task (every 2 minutes)
         let writer_cleanup = self.clone();
-        tokio::spawn(async move {
-            let mut cleanup_interval = tokio::time::interval(tokio::time::Duration::from_secs(120)); // 2 min
+        let mut shutdown_rx = self.shutdown_tx.subscribe();
+        let cleanup_task = tokio::spawn(async move {
+            let mut cleanup_interval = tokio::time::interval(tokio::time::Duration::from_secs(120));
 
             loop {
-                cleanup_interval.tick().await;
-
-                if let Err(e) = writer_cleanup.cleanup_stale_buffers().await {
-                    log::error!("CSV buffer cleanup failed: {:?}", e);
+                tokio::select! {
+                    _ = shutdown_rx.changed() => break,
+                    _ = cleanup_interval.tick() => {
+                        if let Err(e) = writer_cleanup.cleanup_stale_buffers().await {
+                            log::error!("CSV buffer cleanup failed: {:?}", e);
+                        }
+                    }
                 }
             }
         });
+        self.retain_background_task(cleanup_task).await;
 
-        // Rotation-aware cleanup: the 2-minute tick can leave the whole old
-        // day's buffer set (thousands of 64 KB writers) resident for up to two
-        // minutes past midnight while the new day's set is already being
-        // created: a double-residency burst that ratchets peak RSS. Run a
-        // cleanup seconds after each UTC midnight instead of waiting.
+        // Rotation-aware cleanup runs seconds after each UTC midnight.
         let writer_midnight = self.clone();
-        tokio::spawn(async move {
+        let mut shutdown_rx = self.shutdown_tx.subscribe();
+        let midnight_task = tokio::spawn(async move {
             loop {
                 let now = Utc::now();
                 let next = (now + chrono::Duration::days(1))
@@ -930,23 +1154,32 @@ impl CsvWriter {
                     .expect("valid time")
                     .and_utc();
                 let wait = (next - now).to_std().unwrap_or(Duration::from_secs(86_400));
-                tokio::time::sleep(wait).await;
 
-                log::info!("Midnight rotation: running immediate stale-buffer cleanup");
-                if let Err(e) = writer_midnight.cleanup_stale_buffers().await {
-                    log::error!("Midnight buffer cleanup failed: {:?}", e);
+                tokio::select! {
+                    _ = shutdown_rx.changed() => break,
+                    _ = tokio::time::sleep(wait) => {
+                        log::info!("Midnight rotation: running immediate stale-buffer cleanup");
+                        if let Err(e) = writer_midnight.cleanup_stale_buffers().await {
+                            log::error!("Midnight buffer cleanup failed: {:?}", e);
+                        }
+                    }
                 }
             }
         });
+        self.retain_background_task(midnight_task).await;
 
         Ok(())
     }
 
-    /// Start hourly rotation task for depth update files
+    /// Start hourly rotation task for depth update files.
     pub async fn start_hourly_rotation(&self) -> Result<()> {
-        let writer = self.clone();
+        if *self.shutdown_tx.borrow() {
+            anyhow::bail!("CSV writer background tasks have already been shut down");
+        }
 
-        tokio::spawn(async move {
+        let writer = self.clone();
+        let mut shutdown_rx = self.shutdown_tx.subscribe();
+        let task = tokio::spawn(async move {
             let now = Utc::now();
             let next_hour = (now + chrono::Duration::hours(1))
                 .with_minute(0)
@@ -960,46 +1193,43 @@ impl CsvWriter {
                 .to_std()
                 .unwrap_or(Duration::from_secs(3600));
 
-            tokio::time::sleep(until_next_hour).await;
+            tokio::select! {
+                _ = shutdown_rx.changed() => return,
+                _ = tokio::time::sleep(until_next_hour) => {}
+            }
 
             let mut interval = interval(Duration::from_secs(3600));
 
             loop {
-                interval.tick().await;
+                tokio::select! {
+                    _ = shutdown_rx.changed() => break,
+                    _ = interval.tick() => {
+                        let current_hour = Utc::now().hour();
+                        let prev_hour = if current_hour == 0 { 23 } else { current_hour - 1 };
 
-                // Find all depth update files for the previous hour
-                let current_hour = Utc::now().hour();
-                let prev_hour = if current_hour == 0 {
-                    23
-                } else {
-                    current_hour - 1
-                };
+                        let mut files_to_finalize = Vec::new();
+                        for entry in writer.buffers.iter() {
+                            let path_str = entry.key();
+                            if path_str.contains("depth_updates")
+                                && path_str.contains(&format!("{:02}00-to-{:02}00", prev_hour, current_hour))
+                            {
+                                files_to_finalize.push(PathBuf::from(path_str.clone()));
+                            }
+                        }
 
-                let mut files_to_finalize = Vec::new();
-
-                for entry in writer.buffers.iter() {
-                    let path_str = entry.key();
-                    // Check if it's a depth update file from previous hour
-                    if path_str.contains("depth_updates")
-                        && path_str
-                            .contains(&format!("{:02}00-to-{:02}00", prev_hour, current_hour))
-                    {
-                        files_to_finalize.push(PathBuf::from(path_str.clone()));
+                        for file_path in files_to_finalize {
+                            if let Err(e) = writer.finalize_file(&file_path).await {
+                                log::error!("Failed to finalize file {:?}: {}", file_path, e);
+                            } else {
+                                log::info!("Finalized hourly file: {:?}", file_path);
+                            }
+                        }
                     }
                 }
-
-                for file_path in files_to_finalize {
-                    if let Err(e) = writer.finalize_file(&file_path).await {
-                        log::error!("Failed to finalize file {:?}: {}", file_path, e);
-                    } else {
-                        log::info!("Finalized hourly file: {:?}", file_path);
-                    }
-                }
-                // The hour's freed buffer pages return to the OS via jemalloc's
-                // background purge (see main.rs / .cargo/config.toml).
             }
         });
 
+        self.retain_background_task(task).await;
         Ok(())
     }
 }
@@ -1077,8 +1307,8 @@ mod tests {
         );
         assert_eq!(row[6], "42"); // trade_id
         assert_eq!(row[7], "sell"); // side sits BEFORE price/quantity
-        assert!((row[8].parse::<f64>().unwrap() - 62456.60).abs() < 1e-9);
-        assert!((row[9].parse::<f64>().unwrap() - 0.017).abs() < 1e-9);
+        assert_eq!(row[8], "62456.60");
+        assert_eq!(row[9], "0.017");
     }
 
     #[tokio::test]
@@ -1113,8 +1343,8 @@ mod tests {
         assert_eq!(row.len(), constants::HEADER_KLINES.split(',').count());
         assert_eq!(row[4], "2023-11-14T22:13:20.000Z");
         // OHLC land in header order.
-        assert!((row[6].parse::<f64>().unwrap() - 3000.1).abs() < 1e-9);
-        assert!((row[9].parse::<f64>().unwrap() - 3000.4).abs() < 1e-9);
+        assert_eq!(row[6], "3000.1");
+        assert_eq!(row[9], "3000.4");
     }
 
     #[tokio::test]
@@ -1145,10 +1375,9 @@ mod tests {
         assert!(header.contains(",mark_price,"));
 
         let row: Vec<&str> = lines.next().unwrap().split(',').collect();
-        let mark: f64 = row[6].parse().unwrap();
-        let qty: f64 = row[7].parse().unwrap();
-        let value: f64 = row[8].parse().unwrap();
-        assert!((mark * qty - value).abs() < 1e-6);
+        assert_eq!(row[6], "150.0");
+        assert_eq!(row[7], "1000.0");
+        assert_eq!(row[8], "150000.0");
     }
 
     #[tokio::test]
@@ -1204,5 +1433,249 @@ mod tests {
         let p = w.get_daily_file_path("trades", "btcusdt", TS);
         let s = p.to_string_lossy();
         assert!(s.ends_with("trades/btcusdt/2023-11-14/btcusdt_trades_2023-11-14.csv"));
+    }
+    #[tokio::test]
+    async fn kline_writer_preserves_exact_source_decimal_lexemes() {
+        let dir = tempfile::tempdir().unwrap();
+        let w = test_writer(dir.path());
+        let k = KlineCsv {
+            exchange: "binance".to_string(),
+            market: "futures".to_string(),
+            datatype: "klines".to_string(),
+            timestamp_ms: TS,
+            symbol: "btcusdt".to_string(),
+            open: "123456789.123456789123456789".to_string(),
+            high: "123456789.123456789123456790".to_string(),
+            low: "0.000000000000000000000000000123".to_string(),
+            close: "1.230000000000000000".to_string(),
+            volume: "0.000000000000000000000000000001".to_string(),
+            quote_volume: "987654321.000000000000000001".to_string(),
+            trade_count: 7,
+            taker_buy_base: "0.000000000000000000000000000009".to_string(),
+            taker_buy_quote: "999999999999.000000000000000001".to_string(),
+        };
+
+        w.write_kline(&k).await.unwrap();
+        w.flush_all().await.unwrap();
+
+        let path = w.get_daily_file_path("klines", "btcusdt", TS);
+        let content = std::fs::read_to_string(path).unwrap();
+        let row: Vec<&str> = content.lines().nth(1).unwrap().split(',').collect();
+
+        assert_eq!(row[6], "123456789.123456789123456789");
+        assert_eq!(row[7], "123456789.123456789123456790");
+        assert_eq!(row[8], "0.000000000000000000000000000123");
+        assert_eq!(row[9], "1.230000000000000000");
+        assert_eq!(row[10], "0.000000000000000000000000000001");
+        assert_eq!(row[11], "987654321.000000000000000001");
+        assert_eq!(row[13], "0.000000000000000000000000000009");
+        assert_eq!(row[14], "999999999999.000000000000000001");
+    }
+
+    #[tokio::test]
+    async fn trade_writer_preserves_exact_source_decimal_precision() {
+        let dir = tempfile::tempdir().unwrap();
+        let w = test_writer(dir.path());
+        let trade = TradeCsv {
+            exchange: "binance".to_string(),
+            market: "futures".to_string(),
+            datatype: "trades".to_string(),
+            timestamp_ms: TS,
+            symbol: "btcusdt".to_string(),
+            trade_id: 43,
+            price: "62456.601234567891234567".to_string(),
+            quantity: "0.000000000000000000123456789".to_string(),
+            side: "buy".to_string(),
+            is_buyer_maker: 0,
+            first_update_id: 102,
+            last_update_id: 103,
+        };
+
+        w.write_trade(&trade).await.unwrap();
+        w.flush_all().await.unwrap();
+
+        let path = w.get_daily_file_path("trades", "btcusdt", TS);
+        let content = std::fs::read_to_string(path).unwrap();
+        let row: Vec<&str> = content.lines().nth(1).unwrap().split(',').collect();
+        assert_eq!(row[8], "62456.601234567891234567");
+        assert_eq!(row[9], "0.000000000000000000123456789");
+    }
+
+    #[tokio::test]
+    async fn trade_writer_rejects_malformed_decimal_without_writing_zero() {
+        let dir = tempfile::tempdir().unwrap();
+        let w = test_writer(dir.path());
+        let trade = TradeCsv {
+            exchange: "binance".to_string(),
+            market: "futures".to_string(),
+            datatype: "trades".to_string(),
+            timestamp_ms: TS,
+            symbol: "btcusdt".to_string(),
+            trade_id: 44,
+            price: "not-a-number".to_string(),
+            quantity: "0.01".to_string(),
+            side: "buy".to_string(),
+            is_buyer_maker: 0,
+            first_update_id: 104,
+            last_update_id: 105,
+        };
+
+        let path = w.get_daily_file_path("trades", "btcusdt", TS);
+        assert!(w.write_trade(&trade).await.is_err());
+        assert!(
+            !path.exists(),
+            "invalid source decimals must fail before file creation"
+        );
+    }
+
+    #[test]
+    fn decimal_lexical_validation_accepts_exact_decimal_and_exponent_forms() {
+        for value in ["0", "-1.2", "+0.3", "1e-8", "1.2300E+4", ".25", "5."] {
+            assert!(validate_decimal_string(value, "fixture").is_ok(), "{value}");
+        }
+    }
+
+    #[test]
+    fn decimal_lexical_validation_rejects_non_finite_and_malformed_forms() {
+        for value in [
+            "NaN",
+            "inf",
+            "-Infinity",
+            "not-a-number",
+            "1,2",
+            "1\n0",
+            "",
+            ".",
+        ] {
+            assert!(
+                validate_decimal_string(value, "fixture").is_err(),
+                "{value}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn kline_writer_rejects_non_decimal_input_without_creating_a_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let w = test_writer(dir.path());
+        let k = KlineCsv {
+            exchange: "binance".to_string(),
+            market: "futures".to_string(),
+            datatype: "klines".to_string(),
+            timestamp_ms: TS,
+            symbol: "btcusdt".to_string(),
+            open: "not-a-number".to_string(),
+            high: "3001.2".to_string(),
+            low: "2999.3".to_string(),
+            close: "3000.4".to_string(),
+            volume: "12.5".to_string(),
+            quote_volume: "37505.0".to_string(),
+            trade_count: 87,
+            taker_buy_base: "6.0".to_string(),
+            taker_buy_quote: "18002.4".to_string(),
+        };
+
+        let path = w.get_daily_file_path("klines", "btcusdt", TS);
+        assert!(w.write_kline(&k).await.is_err());
+        assert!(
+            !path.exists(),
+            "invalid numeric input must not create a CSV file"
+        );
+    }
+}
+
+#[cfg(test)]
+mod flush_all_error_tests {
+    use super::{collect_flush_results, CsvWriter};
+    use crate::config::Config;
+    use std::path::Path;
+    use std::sync::Arc;
+
+    fn test_writer(dir: &Path) -> CsvWriter {
+        let mut config = Config::from_file("config.example.toml").unwrap();
+        config.output.base_dir = dir.to_string_lossy().into_owned();
+        CsvWriter::new(Arc::new(config)).unwrap()
+    }
+
+    #[test]
+    fn flush_results_propagates_an_error_after_checking_all_buffers() {
+        let result = collect_flush_results(vec![Ok(()), Err(anyhow::anyhow!("disk full")), Ok(())]);
+        assert!(result.is_err());
+        assert!(format!("{:#}", result.unwrap_err()).contains("disk full"));
+    }
+
+    #[test]
+    fn flush_results_succeeds_when_every_buffer_flushes() {
+        assert!(collect_flush_results(vec![Ok(()), Ok(())]).is_ok());
+    }
+
+    #[test]
+    fn flush_results_succeeds_for_no_buffers() {
+        assert!(collect_flush_results(Vec::<anyhow::Result<()>>::new()).is_ok());
+    }
+
+    #[tokio::test]
+    async fn background_writer_tasks_are_joined_on_shutdown() {
+        let dir = tempfile::tempdir().unwrap();
+        let writer = test_writer(dir.path());
+
+        writer.start_periodic_flush().await.unwrap();
+        writer.start_hourly_rotation().await.unwrap();
+        writer.shutdown_background_tasks().await.unwrap();
+
+        let tasks = writer.background_tasks.lock().await;
+        assert!(tasks.is_empty(), "shutdown must take and join every task");
+    }
+}
+
+#[cfg(test)]
+mod blocking_operation_barrier_tests {
+    use super::CsvWriter;
+    use crate::config::Config;
+    use std::path::Path;
+    use std::sync::Arc;
+
+    fn test_writer(dir: &Path) -> CsvWriter {
+        let mut config = Config::from_file("config.example.toml").unwrap();
+        config.output.base_dir = dir.to_string_lossy().into_owned();
+        CsvWriter::new(Arc::new(config)).unwrap()
+    }
+
+    #[tokio::test]
+    async fn shutdown_closes_admission_waits_for_in_flight_and_gates_final_flush() {
+        let dir = tempfile::tempdir().unwrap();
+        let writer = test_writer(dir.path());
+        let file_path = writer.get_daily_file_path("trades", "btcusdt", 1_800_000_000_000);
+        let buffer = writer.get_or_create_buffer(&file_path).await.unwrap();
+        let in_flight = writer.blocking_operations.begin().unwrap();
+
+        let shutdown_writer = writer.clone();
+        let shutdown =
+            tokio::spawn(async move { shutdown_writer.shutdown_background_tasks().await });
+
+        while !writer.blocking_operations.is_closed() {
+            tokio::task::yield_now().await;
+        }
+
+        assert!(
+            writer.blocking_operations.begin().is_err(),
+            "shutdown must reject new blocking operations"
+        );
+        assert!(
+            !shutdown.is_finished(),
+            "shutdown must wait for an already-admitted blocking operation"
+        );
+        assert!(
+            writer.flush_all_after_shutdown().await.is_err(),
+            "final flush must not begin before the in-flight barrier drains"
+        );
+
+        drop(in_flight);
+        shutdown.await.unwrap().unwrap();
+        assert!(
+            writer.write_row(buffer, "late row").await.is_err(),
+            "writes must be rejected after shutdown closes blocking-operation admission"
+        );
+        writer.flush_all_after_shutdown().await.unwrap();
     }
 }
