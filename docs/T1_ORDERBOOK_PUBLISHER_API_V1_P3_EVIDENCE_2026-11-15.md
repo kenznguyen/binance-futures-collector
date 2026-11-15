@@ -158,3 +158,45 @@ Cargo-audit scanned 248 crate dependencies and exited with code 1. No dependency
 - T1 → T2 integration: **BLOCKED**.
 
 No source implementation, dependency, T0/T2, ingestion/history, runtime secret, listener, VPS, deployment, PR merge, or branch rebase changes were made for this evidence update.
+
+
+## 9. CI validation of evidence commit — push run
+
+Evidence update date: 2026-11-15 11:05Z  
+Source SHA tested: `09228764a9dc1f1934c89123a8af900442b529c0`  
+Workflow: [CI run #43706961805](https://github.com/kenznguyen/binance-futures-collector/actions/runs/43706961805)  
+Workflow run ID: `43706961805`  
+Event: `push`  
+Conclusion: **FAILURE**
+
+| Job | Result |
+|---|---|
+| collector · fmt · clippy · test | PASS |
+| collector · native ARM64 build · test · artifact | PASS |
+| dashboard frontend · tsc · vitest | PASS |
+| dashboard backend · pytest | PASS |
+| docker · build images | PASS |
+| security · cargo-audit · npm audit | FAIL |
+
+### 9.1 Artifacts published for the evidence commit
+
+GitHub Actions artifact metadata confirms both artifacts on the exact tested SHA:
+
+| Artifact | Size | SHA-256 digest | Expiry |
+|---|---:|---|---|
+| `t1-collector-linux-aarch64-09228764a9dc1f1934c89123a8af900442b529c0` | 4,022,090 bytes | `1275defa55417a69fc0f0a941a37f6b34b566ca78a67f022b9f60a45a7d3fc3d` | 2026-11-22 11:04:41Z |
+| `t1-collector-linux-x86_64-09228764a9dc1f1934c89123a8af900442b529c0` | 4,310,901 bytes | `157169ff566bf7535e576618e13d5128c097ed3d6872ca27eb13afc3534bebc6` | 2026-11-22 11:04:35Z |
+
+These are CI artifacts only, not deployment or runtime evidence.
+
+### 9.2 Disposition
+
+The evidence commit itself passed Rust formatting/lint/tests, native ARM64 build/tests, frontend, backend and Docker checks. The security audit remains the sole failing job in this workflow. The existing Rust dependency advisories remain unresolved; no dependency change or advisory suppression was made.
+
+- CI on evidence SHA: **FAILURE** (5 jobs PASS, security audit FAIL).
+- Artifact publication: **PASS** (ARM64 and x86_64; exact digests recorded).
+- P3 full acceptance: **PARTIAL / NOT ACCEPTED**.
+- T1 runtime: **NOT VERIFIED**.
+- T1 → T2 integration: **BLOCKED**.
+
+No source implementation, dependency, runtime, T0/T2, ingestion/history, listener, VPS deployment, PR merge, or branch rebase changes were made.
