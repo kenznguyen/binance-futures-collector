@@ -90,3 +90,16 @@ The security job's diagnostics ran both default-feature and `--all-features --al
 - T1→T2 loopback: BLOCKED until security gate disposition and exact-head push workflow are verified.
 
 Next: update the locked dependency versions to patched releases (or establish a narrowly scoped, continuously enforced unreachable-dependency policy), rerun cargo-audit and all CI on the exact branch head, then refresh this evidence. Do not enable the listener on VPS or run loopback before a separate approval.
+
+
+## Follow-up — dependency lockfile remediation attempt (2026-11-15)
+
+Status: **BLOCKED — no safe lockfile change made.**
+
+- Confirmed the current PR head before this note was `b95d8e8ab6241b714aac7befa3afa343f95d95f2`.
+- Re-read the current `Cargo.toml`, `Cargo.lock`, and CI workflow from the existing branch.
+- The available execution container has no `cargo` or `rustc` binary, and HTTPS access to public GitHub failed at DNS resolution. Therefore a real `cargo update`, lockfile regeneration, and local test/audit run could not be performed.
+- The GitHub repository interface available for this task supports file reads/writes and workflow result inspection, but no command execution or workflow-dispatch action. Manually editing Cargo.lock checksums/transitive package graph would be unsafe and is explicitly not done.
+- No source or dependency files were changed in this follow-up. No CI result is claimed for a regenerated lockfile.
+
+Next required execution: run Cargo's resolver in a network-enabled Rust environment against this exact branch, update the lockfile for patched QUIC packages and test-only `rustix`, inspect the complete lockfile diff, then commit the generated lockfile to this same branch and rerun the full push workflow. Until that evidence exists, security remains **BLOCKED**, and T1→T2 loopback remains **BLOCKED**.
