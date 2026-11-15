@@ -719,8 +719,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fetching_or_validating_publisher_never_serves_cached_snapshot() {
+    async fn reanchoring_fetching_or_validating_publisher_never_serves_cached_snapshot() {
         let publisher = ready_publisher().await;
+        publisher.begin_reanchor();
+        let (address, server) = start_server(publisher.clone()).await;
+        let reanchoring = request(
+            &address,
+            "GET",
+            "/internal/v1/orderbook/btcusdt",
+            Some(TOKEN),
+        )
+        .await;
+        assert!(reanchoring.starts_with("HTTP/1.1 503"), "{reanchoring}");
+        assert!(reanchoring.contains("snapshot_unavailable"), "{reanchoring}");
+        assert!(!reanchoring.contains("67234.10"));
+        server.abort();
+
         publisher.note_reanchor_attempt().unwrap();
         let (address, server) = start_server(publisher.clone()).await;
         let fetching = request(
