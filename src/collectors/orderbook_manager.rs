@@ -1944,6 +1944,24 @@ mod tests {
         assert!(OrderbookManager::normalize_messages_for_attach(Vec::new()).is_empty());
     }
 
+    #[test]
+    fn publish_rejection_recovery_reanchors_a_broken_publisher() {
+        let publisher = SnapshotPublisher::new();
+        let generation = publisher.begin_connection_generation();
+        publisher.note_reanchor_attempt().unwrap();
+        publisher.mark_validating(generation).unwrap();
+        publisher.mark_broken();
+
+        let broken_generation = publisher.generation();
+        let reanchoring_generation =
+            reanchor_publisher_after_publish_rejection(&publisher);
+
+        assert_eq!(reanchoring_generation, broken_generation + 1);
+        assert_eq!(publisher.generation(), reanchoring_generation);
+        assert_eq!(publisher.state(), OrderbookV1State::Reanchoring);
+        assert!(publisher.read().is_none());
+    }
+
     #[tokio::test]
     async fn abort_and_join_waits_for_every_orderbook_task() {
         let task = tokio::spawn(async {
