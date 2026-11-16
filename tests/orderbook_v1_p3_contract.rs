@@ -321,7 +321,6 @@ async fn stale_published_snapshot_is_never_returned_by_http() {
     server.abort();
 }
 
-
 #[test]
 fn valid_live_diff_candidate_is_canonical_and_remains_publishable() {
     let publisher = publisher();
