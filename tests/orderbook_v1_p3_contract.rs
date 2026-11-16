@@ -351,3 +351,101 @@ fn valid_live_diff_candidate_is_canonical_and_remains_publishable() {
     assert_eq!(publisher.state(), OrderbookV1State::Ready);
     assert_eq!(publisher.read().unwrap().last_applied_u, 900_011);
 }
+
+
+fn refresh_identity(snapshot: &mut OrderbookSnapshotV1) {
+    snapshot.snapshot_id = canonical_snapshot_id(snapshot).unwrap();
+}
+
+#[test]
+fn publisher_rejects_malformed_price_and_quantity_decimals() {
+    for (price, quantity) in [("NaN", "1.0"), ("10000", "Infinity")] {
+        let publisher = publisher();
+        let generation = begin_publish(&publisher);
+        let now = chrono::Utc::now().timestamp_millis();
+        let mut invalid =
+            candidate(generation, "BINANCE_USDM_PERPETUAL", 20, 20, 20, 20, now);
+        invalid.bids[0] = [price.to_string(), quantity.to_string()];
+        refresh_identity(&mut invalid);
+
+        assert!(
+            publisher.publish_if_current(invalid).is_err(),
+            "Publisher must reject malformed price/quantity decimals"
+        );
+    }
+}
+
+#[test]
+fn publisher_rejects_zero_quantity_in_a_published_snapshot() {
+    let publisher = publisher();
+    let generation = begin_publish(&publisher);
+    let now = chrono::Utc::now().timestamp_millis();
+    let mut invalid = candidate(generation, "BINANCE_USDM_PERPETUAL", 20, 20, 20, 20, now);
+    invalid.bids[0][1] = "0.000".to_string();
+    refresh_identity(&mut invalid);
+
+    assert!(
+        publisher.publish_if_current(invalid).is_err(),
+        "zero-quantity levels must be removed from a complete snapshot"
+    );
+}
+
+#[test]
+fn publisher_rejects_unsorted_bid_levels() {
+    let publisher = publisher();
+    let generation = begin_publish(&publisher);
+    let now = chrono::Utc::now().timestamp_millis();
+    let mut invalid = candidate(generation, "BINANCE_USDM_PERPETUAL", 20, 20, 20, 20, now);
+    invalid.bids.swap(0, 1);
+    refresh_identity(&mut invalid);
+
+    assert!(
+        publisher.publish_if_current(invalid).is_err(),
+        "bid levels must be strictly descending by price"
+    );
+}
+
+#[test]
+fn publisher_rejects_unsorted_ask_levels() {
+    let publisher = publisher();
+    let generation = begin_publish(&publisher);
+    let now = chrono::Utc::now().timestamp_millis();
+    let mut invalid = candidate(generation, "BINANCE_USDM_PERPETUAL", 20, 20, 20, 20, now);
+    invalid.asks.swap(0, 1);
+    refresh_identity(&mut invalid);
+
+    assert!(
+        publisher.publish_if_current(invalid).is_err(),
+        "ask levels must be strictly ascending by price"
+    );
+}
+
+#[test]
+fn publisher_rejects_crossed_best_bid_and_ask() {
+    let publisher = publisher();
+    let generation = begin_publish(&publisher);
+    let now = chrono::Utc::now().timestamp_millis();
+    let mut invalid = candidate(generation, "BINANCE_USDM_PERPETUAL", 20, 20, 20, 20, now);
+    invalid.asks[0][0] = "9999".to_string();
+    refresh_identity(&mut invalid);
+
+    assert!(
+        publisher.publish_if_current(invalid).is_err(),
+        "a crossed order book must not be published"
+    );
+}
+
+#[test]
+fn publisher_rejects_locked_best_bid_and_ask() {
+    let publisher = publisher();
+    let generation = begin_publish(&publisher);
+    let now = chrono::Utc::now().timestamp_millis();
+    let mut invalid = candidate(generation, "BINANCE_USDM_PERPETUAL", 20, 20, 20, 20, now);
+    invalid.asks[0][0] = "10000".to_string();
+    refresh_identity(&mut invalid);
+
+    assert!(
+        publisher.publish_if_current(invalid).is_err(),
+        "a locked order book must not be published as a valid decision snapshot"
+    );
+}
