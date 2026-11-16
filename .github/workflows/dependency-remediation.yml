@@ -118,10 +118,53 @@ jobs:
         shell: bash
         run: |
           set +e
-          cargo audit > remediation-evidence/reports/cargo-audit.log 2>&1
-          rc=$?
-          cat remediation-evidence/reports/cargo-audit.log
-          echo "cargo-audit=$rc" >> remediation-evidence/reports/exit-codes.txt
+          report="remediation-evidence/reports"
+          cargo audit --json > "$report/cargo-audit.json" 2> "$report/cargo-audit.stderr"
+          audit_rc=$?
+          echo "cargo-audit=$audit_rc" >> "$report/exit-codes.txt"
+
+          python3 - "$report/cargo-audit.json" <<'PY'
+          import json
+          import sys
+
+          try:
+              with open(sys.argv[1], encoding="utf-8") as report_file:
+                  report = json.load(report_file)
+              vulnerabilities = report["vulnerabilities"]
+              found = vulnerabilities["found"]
+              count = vulnerabilities["count"]
+              entries = vulnerabilities["list"]
+              warnings = report["warnings"]
+              if not isinstance(found, bool):
+                  raise ValueError("vulnerabilities.found must be a boolean")
+              if not isinstance(count, int) or isinstance(count, bool) or count < 0:
+                  raise ValueError("vulnerabilities.count must be a non-negative integer")
+              if not isinstance(entries, list) or len(entries) != count:
+                  raise ValueError("vulnerabilities.list does not match vulnerabilities.count")
+              if found != (count > 0):
+                  raise ValueError("vulnerabilities.found does not match vulnerabilities.count")
+              if not isinstance(warnings, dict):
+                  raise ValueError("warnings must be an object")
+              warning_counts = {}
+              for kind, items in warnings.items():
+                  if not isinstance(items, list):
+                      raise ValueError(f"warnings.{kind} must be an array")
+                  warning_counts[kind] = len(items)
+              print(f"Audit JSON complete: vulnerabilities_found={found}, vulnerability_count={count}")
+              print("Warning counts: " + ", ".join(f"{kind}={amount}" for kind, amount in sorted(warning_counts.items())))
+          except Exception as error:
+              print(f"Audit report validation failed: {error}", file=sys.stderr)
+              sys.exit(1)
+          PY
+          audit_validation_rc=$?
+          echo "cargo-audit-report-validation=$audit_validation_rc" >> "$report/exit-codes.txt"
+
+          if [ -s "$report/cargo-audit.stderr" ]; then
+            cat "$report/cargo-audit.stderr"
+          fi
+          if [ "$audit_validation_rc" -ne 0 ]; then
+            echo "Security audit report is missing, incomplete, or has an unexpected schema."
+          fi
 
       - name: Format, lint, build, and test updated lockfile
         if: steps.resolve.outputs.updates_ok == '1'
@@ -154,13 +197,18 @@ jobs:
           git status --short > remediation-evidence/git-status-final.txt
           git diff --name-only > remediation-evidence/changed-paths-final.txt
           {
-            echo "## Dependency remediation evidence"
-            echo
-            echo "- Source SHA: `$GITHUB_SHA`"
-            echo "- Branch: `$GITHUB_REF_NAME`"
-            echo "- Lockfile changed: $(if git diff --quiet -- Cargo.lock; then echo no; else echo yes; fi)"
-            echo "- This workflow does not commit or push changes."
-            echo "- Review `Cargo.lock.patch`, reports, and exit codes before manually applying any change."
+            printf '## Dependency remediation evidence\n\n'
+            printf -- '- Source SHA: `%s`\n' "$GITHUB_SHA"
+            printf -- '- Branch: `%s`\n' "$GITHUB_REF_NAME"
+            if git diff --quiet -- Cargo.lock; then
+              printf -- '- Lockfile changed: no\n'
+            else
+              printf -- '- Lockfile changed: yes\n'
+            fi
+            cat <<'EOF'
+          - This workflow does not commit or push changes.
+          - Review `Cargo.lock.patch`, reports, and exit codes before manually applying any change.
+          EOF
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload remediation review artifacts
@@ -179,8 +227,19 @@ jobs:
           set -euo pipefail
           report="remediation-evidence/reports/exit-codes.txt"
           test -f "$report"
-          if grep -Eq '=(1|[2-9][0-9]*)$' "$report"; then
+          if awk -F= '$2 ~ /^[0-9]+$/ && $2 != 0 { found=1 } END { exit(found ? 0 : 1) }' "$report"; then
             echo "One or more remediation checks failed; inspect uploaded evidence."
+            exit 1
+          fi
+          if ! grep -q '^cargo-audit-report-validation=0            echo "Scope violation detected."
+            exit 1
+          fi
+          if [ ! -f remediation-evidence/Cargo.lock.patch ]; then
+            echo "Cargo.lock patch evidence is missing."
+            exit 1
+          fi
+ "$report"; then
+            echo "A complete, validated cargo-audit JSON report is required."
             exit 1
           fi
           if grep -q 'scope_violation=1' "$report"; then
