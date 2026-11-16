@@ -185,6 +185,40 @@ jobs:
             cargo --version --verbose
           '
 
+      # Compare Cargo lock resolution in the complete checkout versus the exact
+      # reduced file set copied by Dockerfile. This is diagnostic-only and never
+      # writes Cargo.lock or changes build inputs.
+      - name: Diagnose Cargo lockfile context
+        shell: bash
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+          mkdir -p "$tmp/full" "$tmp/docker-context"
+          tar -C "$GITHUB_WORKSPACE" --exclude=.git --exclude=target -cf - . | tar -C "$tmp/full" -xf -
+          cp Cargo.toml Cargo.lock "$tmp/docker-context/"
+          cp -a .cargo src "$tmp/docker-context/"
+
+          probe() {
+            local label="$1" dir="$2" status
+            set +e
+            docker run --rm -v "$dir:/repro" -w /repro rust:1-slim-bookworm \\
+              sh -c 'cargo metadata --locked --format-version 1 >/dev/null'
+            status=$?
+            set -e
+            echo "CARGO_LOCK_PROBE[$label]=$status"
+            printf -v "${label}_status" '%s' "$status"
+          }
+          probe FULL_CONTEXT "$tmp/full"
+          probe DOCKER_COPY_CONTEXT "$tmp/docker-context"
+          if [[ "$FULL_CONTEXT_status" == "0" && "$DOCKER_COPY_CONTEXT_status" != "0" ]]; then
+            echo "LOCKFILE_CONTEXT_DIVERGENCE=CONFIRMED"
+          elif [[ "$FULL_CONTEXT_status" == "0" && "$DOCKER_COPY_CONTEXT_status" == "0" ]]; then
+            echo "LOCKFILE_CONTEXT_DIVERGENCE=NOT_REPRODUCED_BY_METADATA"
+          else
+            echo "LOCKFILE_CONTEXT_DIVERGENCE=INCONCLUSIVE"
+          fi
+
       # Builds both images exactly as `docker compose up --build` would, so the
       # advertised one-command install path is actually exercised in CI (the
       # native build job runs on a fat runner and can't catch a missing image
