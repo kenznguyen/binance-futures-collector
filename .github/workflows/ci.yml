@@ -185,10 +185,10 @@ jobs:
             cargo --version --verbose
           '
 
-      # Compare Cargo lock resolution in the complete checkout versus the exact
-      # reduced file set copied by Dockerfile. This is diagnostic-only and never
-      # writes Cargo.lock or changes build inputs.
-      - name: Diagnose Cargo lockfile context
+      # Re-run the exact Docker build command without --locked in isolated copies,
+      # then capture the Cargo.lock delta. This identifies the lockfile entry Cargo
+      # wants to change without modifying repository inputs.
+      - name: Diagnose Cargo lockfile delta
         shell: bash
         run: |
           set -euo pipefail
@@ -201,24 +201,27 @@ jobs:
 
           probe() {
             local label="$1" dir="$2" status
+            cp "$dir/Cargo.lock" "$dir/Cargo.lock.before"
             set +e
             docker run --rm -v "$dir:/repro" -w /repro rust:1-slim-bookworm \
-              sh -c 'apt-get update >/dev/null && apt-get install -y --no-install-recommends make >/dev/null && cargo build --release --locked'
+              sh -c 'apt-get update >/dev/null && apt-get install -y --no-install-recommends make >/dev/null && cargo build --release'
             status=$?
             set -e
-            echo "CARGO_BUILD_PROBE[$label]=$status"
+            echo "CARGO_BUILD_UNLOCKED_PROBE[$label]=$status"
+            if [[ -f "$dir/Cargo.lock" ]]; then
+              if cmp -s "$dir/Cargo.lock.before" "$dir/Cargo.lock"; then
+                echo "CARGO_LOCK_DELTA[$label]=NONE"
+              else
+                echo "CARGO_LOCK_DELTA[$label]=PRESENT"
+                diff -u "$dir/Cargo.lock.before" "$dir/Cargo.lock" || true
+              fi
+            fi
             printf -v "${label}_status" '%s' "$status"
           }
           probe FULL_CONTEXT "$tmp/full"
           probe DOCKER_COPY_CONTEXT "$tmp/docker-context"
-          if [[ "$FULL_CONTEXT_status" == "0" && "$DOCKER_COPY_CONTEXT_status" != "0" ]]; then
-            echo "LOCKFILE_CONTEXT_DIVERGENCE=CONFIRMED"
-          elif [[ "$FULL_CONTEXT_status" == "0" && "$DOCKER_COPY_CONTEXT_status" == "0" ]]; then
-            echo "LOCKFILE_CONTEXT_DIVERGENCE=NOT_REPRODUCED_BY_METADATA"
-          else
-            echo "LOCKFILE_CONTEXT_DIVERGENCE=INCONCLUSIVE"
-          fi
-
+          echo "LOCKFILE_DELTA_PROBE=COMPLETE"
+      
       # Builds both images exactly as `docker compose up --build` would, so the
       # advertised one-command install path is actually exercised in CI (the
       # native build job runs on a fat runner and can't catch a missing image
