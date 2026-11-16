@@ -317,14 +317,10 @@ impl SnapshotPublisher {
     }
 }
 
-
 /// A rejected candidate for the active generation invalidates the publication.
 /// A stale generation is fenced before this helper is reached and cannot poison
 /// a newer generation's snapshot.
-fn reject_current_publication(
-    inner: &mut PublicationState,
-    reason: &str,
-) -> Result<()> {
+fn reject_current_publication(inner: &mut PublicationState, reason: &str) -> Result<()> {
     inner.snapshot = None;
     inner.state = OrderbookV1State::Broken;
     bail!("{reason}")
@@ -1254,5 +1250,4 @@ mod tests {
         candidate.snapshot_id = canonical_snapshot_id(&candidate).unwrap();
         assert_rejected_candidate_invalidates_ready_snapshot(candidate);
     }
-
 }
