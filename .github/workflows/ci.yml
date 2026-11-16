@@ -193,7 +193,8 @@ jobs:
         run: |
           set -euo pipefail
           tmp="$(mktemp -d)"
-          trap 'rm -rf "$tmp"' EXIT
+          # Docker runs as root in the mounted probe directory. Restore runner ownership before cleanup.
+          trap 'sudo chown -R "$(id -u):$(id -g)" "$tmp" 2>/dev/null || true; rm -rf "$tmp"' EXIT
           mkdir -p "$tmp/full" "$tmp/docker-context"
           tar -C "$GITHUB_WORKSPACE" --exclude=.git --exclude=target -cf - . | tar -C "$tmp/full" -xf -
           cp Cargo.toml Cargo.lock "$tmp/docker-context/"
