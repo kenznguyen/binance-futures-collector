@@ -1188,6 +1188,9 @@ mod tests {
         let (publisher, generation) = publisher_with_ready_snapshot();
         let mut invalid = candidate;
         invalid.generation = generation;
+        if invalid.snapshot_id != "sha256:invalid" {
+            invalid.snapshot_id = canonical_snapshot_id(&invalid).unwrap();
+        }
 
         assert!(publisher.publish_if_current(invalid).is_err());
         assert_eq!(publisher.state(), OrderbookV1State::Broken);
@@ -1200,7 +1203,8 @@ mod tests {
 
     #[test]
     fn publisher_rejects_noncanonical_contract_metadata_and_invalidates_ready_snapshot() {
-        let mut candidate = build_snapshot(&snapshot(), &valid_updates(), 1, NOW - 10, NOW).unwrap();
+        let mut candidate =
+            build_snapshot(&snapshot(), &valid_updates(), 1, NOW - 10, NOW).unwrap();
         candidate.contract_version = "T1_T2_ORDERBOOK_V0".to_string();
         candidate.snapshot_id = canonical_snapshot_id(&candidate).unwrap();
         assert_rejected_candidate_invalidates_ready_snapshot(candidate);
@@ -1208,7 +1212,8 @@ mod tests {
 
     #[test]
     fn publisher_rejects_insufficient_depth_and_invalidates_ready_snapshot() {
-        let mut candidate = build_snapshot(&snapshot(), &valid_updates(), 1, NOW - 10, NOW).unwrap();
+        let mut candidate =
+            build_snapshot(&snapshot(), &valid_updates(), 1, NOW - 10, NOW).unwrap();
         candidate.bids.pop();
         candidate.depth.bids = candidate.bids.len();
         candidate.snapshot_id = canonical_snapshot_id(&candidate).unwrap();
@@ -1217,14 +1222,16 @@ mod tests {
 
     #[test]
     fn publisher_rejects_noncanonical_snapshot_id_and_invalidates_ready_snapshot() {
-        let mut candidate = build_snapshot(&snapshot(), &valid_updates(), 1, NOW - 10, NOW).unwrap();
+        let mut candidate =
+            build_snapshot(&snapshot(), &valid_updates(), 1, NOW - 10, NOW).unwrap();
         candidate.snapshot_id = "sha256:invalid".to_string();
         assert_rejected_candidate_invalidates_ready_snapshot(candidate);
     }
 
     #[test]
     fn publisher_rejects_incomplete_snapshot_and_invalidates_ready_snapshot() {
-        let mut candidate = build_snapshot(&snapshot(), &valid_updates(), 1, NOW - 10, NOW).unwrap();
+        let mut candidate =
+            build_snapshot(&snapshot(), &valid_updates(), 1, NOW - 10, NOW).unwrap();
         candidate.complete = false;
         candidate.snapshot_id = canonical_snapshot_id(&candidate).unwrap();
         assert_rejected_candidate_invalidates_ready_snapshot(candidate);
@@ -1232,7 +1239,8 @@ mod tests {
 
     #[test]
     fn publisher_rejects_unverified_continuity_and_invalidates_ready_snapshot() {
-        let mut candidate = build_snapshot(&snapshot(), &valid_updates(), 1, NOW - 10, NOW).unwrap();
+        let mut candidate =
+            build_snapshot(&snapshot(), &valid_updates(), 1, NOW - 10, NOW).unwrap();
         candidate.continuity = "UNVERIFIED".to_string();
         candidate.snapshot_id = canonical_snapshot_id(&candidate).unwrap();
         assert_rejected_candidate_invalidates_ready_snapshot(candidate);
@@ -1240,7 +1248,8 @@ mod tests {
 
     #[test]
     fn publisher_rejects_nonfresh_snapshot_and_invalidates_ready_snapshot() {
-        let mut candidate = build_snapshot(&snapshot(), &valid_updates(), 1, NOW - 10, NOW).unwrap();
+        let mut candidate =
+            build_snapshot(&snapshot(), &valid_updates(), 1, NOW - 10, NOW).unwrap();
         candidate.freshness = "STALE".to_string();
         candidate.snapshot_id = canonical_snapshot_id(&candidate).unwrap();
         assert_rejected_candidate_invalidates_ready_snapshot(candidate);
