@@ -1,10 +1,11 @@
 use std::{collections::BTreeSet, io, sync::Arc, time::Duration};
 
 use binance_futures_collector::{
+    models::DepthUpdateWs,
     orderbook_http::{bind_loopback, serve},
     orderbook_v1::{
-        canonical_snapshot_id, OrderbookDepthV1, OrderbookSnapshotV1, SnapshotPublisher,
-        CONTRACT_VERSION,
+        apply_live_diff, canonical_snapshot_id, OrderbookDepthV1, OrderbookSnapshotV1,
+        OrderbookV1State, SnapshotPublisher, CONTRACT_VERSION,
     },
 };
 use tokio::{
@@ -318,4 +319,44 @@ async fn stale_published_snapshot_is_never_returned_by_http() {
     assert!(!response.contains("10000"));
 
     server.abort();
+}
+
+
+#[test]
+fn valid_live_diff_candidate_is_canonical_and_remains_publishable() {
+    let publisher = publisher();
+    let generation = begin_publish(&publisher);
+    let now = chrono::Utc::now().timestamp_millis();
+    let initial = candidate(
+        generation,
+        "BINANCE_USDM_PERPETUAL",
+        20,
+        20,
+        20,
+        20,
+        now,
+    );
+    publisher.publish_if_current(initial.clone()).unwrap();
+
+    let update = DepthUpdateWs {
+        event_type: "depthUpdate".to_string(),
+        event_time: now,
+        transaction_time: now,
+        symbol: "BTCUSDT".to_string(),
+        first_update_id: 900_011,
+        final_update_id: 900_011,
+        prev_update_id: 900_010,
+        bids: vec![["9999".to_string(), "1.500".to_string()]],
+        asks: Vec::new(),
+    };
+    let next = apply_live_diff(&initial, &update, 20, now, now).unwrap();
+
+    assert_eq!(
+        next.snapshot_id,
+        canonical_snapshot_id(&next).unwrap(),
+        "every publishable live-diff candidate must carry its canonical content identity"
+    );
+    publisher.publish_if_current(next.clone()).unwrap();
+    assert_eq!(publisher.state(), OrderbookV1State::Ready);
+    assert_eq!(publisher.read().unwrap().last_applied_u, 900_011);
 }
