@@ -19,6 +19,10 @@ use crate::rest::RestClient;
 use crate::utils::{compare_normalized_decimals, normalize_plain_decimal, CsvWriter, GapRegistry};
 use crate::websocket::connection_manager::{BufferedDepthUpdate, WebSocketManager};
 
+fn reanchor_publisher_after_publish_rejection(publisher: &SnapshotPublisher) -> u64 {
+    publisher.begin_reanchor()
+}
+
 /// Manages orderbook state and gap detection for all symbols
 pub struct OrderbookManager {
     config: Arc<Config>,
@@ -1128,7 +1132,7 @@ impl OrderbookManager {
 
         if symbol.eq_ignore_ascii_case("btcusdt") {
             // Invalidate the published decision snapshot before any async persistence.
-            self.btc_v1_publisher.begin_reanchor();
+            reanchor_publisher_after_publish_rejection(&self.btc_v1_publisher);
             self.btc_v1_rest_snapshot.remove(symbol);
             self.btc_v1_anchor_generation.remove(symbol);
             self.btc_v1_buffered_updates.remove(symbol);
@@ -1423,6 +1427,12 @@ impl OrderbookManager {
                                     warn!(
                                         "[BTCUSDT][PUBLISH_FENCED] V1 publish rejected: {error:#}"
                                     );
+                                    if let Err(resync_error) = self
+                                        .trigger_resnapshot("btcusdt", "v1_publish_rejected")
+                                        .await
+                                    {
+                                        error!("[BTCUSDT] Failed to schedule V1 re-anchor after publish rejection: {resync_error:#}");
+                                    }
                                     break;
                                 }
                                 applied_before_rejection += 1;
