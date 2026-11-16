@@ -269,10 +269,9 @@ impl SnapshotPublisher {
             if current.generation == snapshot.generation
                 && snapshot.last_applied_u <= current.last_applied_u
             {
-                return reject_current_publication(
-                    &mut inner,
-                    "refusing to regress or repeat the published order-book watermark",
-                );
+                // A stale/repeated candidate cannot replace the current snapshot,
+                // but it also cannot invalidate the already-published newer watermark.
+                bail!("refusing to regress or repeat the published order-book watermark");
             }
         }
         inner.snapshot = Some(Arc::new(snapshot));
