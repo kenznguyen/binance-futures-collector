@@ -203,10 +203,10 @@ jobs:
             local label="$1" dir="$2" status
             set +e
             docker run --rm -v "$dir:/repro" -w /repro rust:1-slim-bookworm \
-              sh -c 'cargo metadata --locked --format-version 1 >/dev/null'
+              sh -c 'apt-get update >/dev/null && apt-get install -y --no-install-recommends make >/dev/null && cargo build --release --locked'
             status=$?
             set -e
-            echo "CARGO_LOCK_PROBE[$label]=$status"
+            echo "CARGO_BUILD_PROBE[$label]=$status"
             printf -v "${label}_status" '%s' "$status"
           }
           probe FULL_CONTEXT "$tmp/full"
