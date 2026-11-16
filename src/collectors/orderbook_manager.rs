@@ -1953,8 +1953,7 @@ mod tests {
         publisher.mark_broken();
 
         let broken_generation = publisher.generation();
-        let reanchoring_generation =
-            reanchor_publisher_after_publish_rejection(&publisher);
+        let reanchoring_generation = reanchor_publisher_after_publish_rejection(&publisher);
 
         assert_eq!(reanchoring_generation, broken_generation + 1);
         assert_eq!(publisher.generation(), reanchoring_generation);
