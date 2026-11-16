@@ -231,14 +231,7 @@ jobs:
             echo "One or more remediation checks failed; inspect uploaded evidence."
             exit 1
           fi
-          if ! grep -q '^cargo-audit-report-validation=0            echo "Scope violation detected."
-            exit 1
-          fi
-          if [ ! -f remediation-evidence/Cargo.lock.patch ]; then
-            echo "Cargo.lock patch evidence is missing."
-            exit 1
-          fi
- "$report"; then
+          if ! grep -q '^cargo-audit-report-validation=0$' "$report"; then
             echo "A complete, validated cargo-audit JSON report is required."
             exit 1
           fi
