@@ -202,7 +202,7 @@ jobs:
           probe() {
             local label="$1" dir="$2" status
             set +e
-            docker run --rm -v "$dir:/repro" -w /repro rust:1-slim-bookworm \\
+            docker run --rm -v "$dir:/repro" -w /repro rust:1-slim-bookworm \
               sh -c 'cargo metadata --locked --format-version 1 >/dev/null'
             status=$?
             set -e
