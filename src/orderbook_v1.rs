@@ -231,27 +231,48 @@ impl SnapshotPublisher {
             || snapshot.symbol != CONTRACT_SYMBOL
             || snapshot.market != CONTRACT_MARKET
         {
-            bail!("refusing to publish snapshot with noncanonical V1 contract metadata");
+            return reject_current_publication(
+                &mut inner,
+                "refusing to publish snapshot with noncanonical V1 contract metadata",
+            );
         }
         if snapshot.bids.len() < REQUIRED_DEPTH || snapshot.asks.len() < REQUIRED_DEPTH {
-            bail!("refusing to publish snapshot below the required bid/ask depth");
+            return reject_current_publication(
+                &mut inner,
+                "refusing to publish snapshot below the required bid/ask depth",
+            );
         }
         if snapshot.depth.bids != snapshot.bids.len() || snapshot.depth.asks != snapshot.asks.len()
         {
-            bail!("refusing to publish snapshot with inconsistent depth metadata");
+            return reject_current_publication(
+                &mut inner,
+                "refusing to publish snapshot with inconsistent depth metadata",
+            );
         }
-        if snapshot.snapshot_id != canonical_snapshot_id(&snapshot)? {
-            bail!("refusing to publish snapshot with a noncanonical T2 snapshot identity");
+        if canonical_snapshot_id(&snapshot)
+            .map(|expected| snapshot.snapshot_id != expected)
+            .unwrap_or(true)
+        {
+            return reject_current_publication(
+                &mut inner,
+                "refusing to publish snapshot with a noncanonical T2 snapshot identity",
+            );
         }
         if !snapshot.complete || snapshot.continuity != "VERIFIED" || snapshot.freshness != "FRESH"
         {
-            bail!("refusing to publish an incomplete or unverified snapshot");
+            return reject_current_publication(
+                &mut inner,
+                "refusing to publish an incomplete or unverified snapshot",
+            );
         }
         if let Some(current) = inner.snapshot.as_ref() {
             if current.generation == snapshot.generation
                 && snapshot.last_applied_u <= current.last_applied_u
             {
-                bail!("refusing to regress or repeat the published order-book watermark");
+                return reject_current_publication(
+                    &mut inner,
+                    "refusing to regress or repeat the published order-book watermark",
+                );
             }
         }
         inner.snapshot = Some(Arc::new(snapshot));
@@ -295,6 +316,19 @@ impl SnapshotPublisher {
             .expect("snapshot publisher lock poisoned")
             .generation
     }
+}
+
+
+/// A rejected candidate for the active generation invalidates the publication.
+/// A stale generation is fenced before this helper is reached and cannot poison
+/// a newer generation's snapshot.
+fn reject_current_publication(
+    inner: &mut PublicationState,
+    reason: &str,
+) -> Result<()> {
+    inner.snapshot = None;
+    inner.state = OrderbookV1State::Broken;
+    bail!("{reason}")
 }
 
 /// Compute the deterministic snapshot identity shared with T2's Python contract.
@@ -1141,4 +1175,76 @@ mod tests {
         publisher.mark_stopped();
         assert!(publisher.read_fresh(NOW).is_err());
     }
+    fn publisher_with_ready_snapshot() -> (SnapshotPublisher, u64) {
+        let publisher = SnapshotPublisher::new();
+        let generation = publisher.begin_connection_generation();
+        publisher.note_reanchor_attempt().unwrap();
+        let candidate =
+            build_snapshot(&snapshot(), &valid_updates(), generation, NOW - 10, NOW).unwrap();
+        publisher.publish_if_current(candidate).unwrap();
+        (publisher, generation)
+    }
+
+    fn assert_rejected_candidate_invalidates_ready_snapshot(candidate: OrderbookSnapshotV1) {
+        let (publisher, generation) = publisher_with_ready_snapshot();
+        let mut invalid = candidate;
+        invalid.generation = generation;
+
+        assert!(publisher.publish_if_current(invalid).is_err());
+        assert_eq!(publisher.state(), OrderbookV1State::Broken);
+        assert!(
+            publisher.read().is_none(),
+            "a rejected candidate must not leave a previously published snapshot readable"
+        );
+        assert!(publisher.read_fresh(NOW).is_err());
+    }
+
+    #[test]
+    fn publisher_rejects_noncanonical_contract_metadata_and_invalidates_ready_snapshot() {
+        let mut candidate = build_snapshot(&snapshot(), &valid_updates(), 1, NOW - 10, NOW).unwrap();
+        candidate.contract_version = "T1_T2_ORDERBOOK_V0".to_string();
+        candidate.snapshot_id = canonical_snapshot_id(&candidate).unwrap();
+        assert_rejected_candidate_invalidates_ready_snapshot(candidate);
+    }
+
+    #[test]
+    fn publisher_rejects_insufficient_depth_and_invalidates_ready_snapshot() {
+        let mut candidate = build_snapshot(&snapshot(), &valid_updates(), 1, NOW - 10, NOW).unwrap();
+        candidate.bids.pop();
+        candidate.depth.bids = candidate.bids.len();
+        candidate.snapshot_id = canonical_snapshot_id(&candidate).unwrap();
+        assert_rejected_candidate_invalidates_ready_snapshot(candidate);
+    }
+
+    #[test]
+    fn publisher_rejects_noncanonical_snapshot_id_and_invalidates_ready_snapshot() {
+        let mut candidate = build_snapshot(&snapshot(), &valid_updates(), 1, NOW - 10, NOW).unwrap();
+        candidate.snapshot_id = "sha256:invalid".to_string();
+        assert_rejected_candidate_invalidates_ready_snapshot(candidate);
+    }
+
+    #[test]
+    fn publisher_rejects_incomplete_snapshot_and_invalidates_ready_snapshot() {
+        let mut candidate = build_snapshot(&snapshot(), &valid_updates(), 1, NOW - 10, NOW).unwrap();
+        candidate.complete = false;
+        candidate.snapshot_id = canonical_snapshot_id(&candidate).unwrap();
+        assert_rejected_candidate_invalidates_ready_snapshot(candidate);
+    }
+
+    #[test]
+    fn publisher_rejects_unverified_continuity_and_invalidates_ready_snapshot() {
+        let mut candidate = build_snapshot(&snapshot(), &valid_updates(), 1, NOW - 10, NOW).unwrap();
+        candidate.continuity = "UNVERIFIED".to_string();
+        candidate.snapshot_id = canonical_snapshot_id(&candidate).unwrap();
+        assert_rejected_candidate_invalidates_ready_snapshot(candidate);
+    }
+
+    #[test]
+    fn publisher_rejects_nonfresh_snapshot_and_invalidates_ready_snapshot() {
+        let mut candidate = build_snapshot(&snapshot(), &valid_updates(), 1, NOW - 10, NOW).unwrap();
+        candidate.freshness = "STALE".to_string();
+        candidate.snapshot_id = canonical_snapshot_id(&candidate).unwrap();
+        assert_rejected_candidate_invalidates_ready_snapshot(candidate);
+    }
+
 }
