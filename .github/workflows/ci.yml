@@ -167,6 +167,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Capture the exact floating Rust builder image toolchain before Compose
+      # builds the Dockerfile that uses the same local image tag.
+      - name: Diagnose Rust builder image toolchain
+        run: |
+          set -euo pipefail
+          docker pull rust:1-slim-bookworm
+          docker image inspect rust:1-slim-bookworm --format 'RUST_BUILDER_IMAGE_ID={{.Id}}'
+          docker run --rm rust:1-slim-bookworm sh -lc '
+            rustc --version --verbose
+            cargo --version --verbose
+          '
+
       # Builds both images exactly as `docker compose up --build` would, so the
       # advertised one-command install path is actually exercised in CI (the
       # native build job runs on a fat runner and can't catch a missing image
