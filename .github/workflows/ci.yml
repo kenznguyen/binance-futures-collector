@@ -174,7 +174,13 @@ jobs:
           set -euo pipefail
           docker pull rust:1-slim-bookworm
           docker image inspect rust:1-slim-bookworm --format 'RUST_BUILDER_IMAGE_ID={{.Id}}'
-          docker run --rm rust:1-slim-bookworm sh -lc '
+          # Use a non-login shell so the image-provided PATH (including
+          # /usr/local/cargo/bin) is preserved for rustc and cargo.
+          docker run --rm rust:1-slim-bookworm sh -c '
+            set -eu
+            printf "BUILDER_PATH=%s\\n" "$PATH"
+            command -v rustc
+            command -v cargo
             rustc --version --verbose
             cargo --version --verbose
           '
