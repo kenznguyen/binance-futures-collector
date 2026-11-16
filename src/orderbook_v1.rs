@@ -641,10 +641,8 @@ pub fn apply_live_diff_classified(
     next.decision_watermark = update.final_update_id;
     next.source_timestamp_ms = update.event_time;
     next.observed_at_ms = observed_at_ms;
-    next.snapshot_id = format!(
-        "btcusdt-{}-{}-{}-{}",
-        next.generation, next.last_applied_u, next.source_timestamp_ms, next.observed_at_ms
-    );
+    next.snapshot_id = canonical_snapshot_id(&next)
+        .map_err(|error| LiveDiffRejection::Shape(format!("canonical snapshot identity failed: {error:#}")))?;
     next.freshness = "FRESH".to_string();
     next.complete = true;
     Ok(next)
