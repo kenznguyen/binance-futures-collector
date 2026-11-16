@@ -1,6 +1,6 @@
 # T1 P0 Publisher Fail-Closed Evidence
 
-Status: **P0 publisher tests PASS; overall CI/security gate BLOCKED**.
+Status: **P0 publisher tests PASS; exact-head CI/security/Docker gate PASS on 2026-11-16 SHA `49606c1f74fe4b1727c5c6b80ec549e9104acd3c`; runtime and integration remain NOT VERIFIED.**
 
 ## Scope
 
@@ -115,3 +115,41 @@ Next required execution: run Cargo's resolver in a network-enabled Rust environm
 - `rustix 1.1.4` remains an allowed unsoundness warning (RUSTSEC-2026-0486; patched >=1.1.6).
 - This is a PR-triggered run, not an exact-head push run or a regenerated-lockfile verification.
 - No source, dependency manifest, or lockfile changes were made. Security remains **BLOCKED**; exact-head push build remains **NOT VERIFIED**; T1→T2 loopback remains **BLOCKED**.
+
+
+## Follow-up — exact-head CI/security/Docker gate PASS (2026-11-16)
+
+### Source and workflow identity
+
+- Repository: `kenznguyen/binance-futures-collector`.
+- Existing branch: `feature/t1-connection-sidecar-integration-20261107`.
+- Exact source SHA: `49606c1f74fe4b1727c5c6b80ec549e9104acd3c`.
+- Push workflow [#736](https://github.com/kenznguyen/binance-futures-collector/actions/runs/43827738059), run ID `43827738059`, completed with conclusion **SUCCESS**.
+- All 6/6 jobs succeeded: Rust collector fmt/Clippy/build/tests and sidecar writer checks; dashboard frontend TypeScript/Vitest; native ARM64 build/tests; Docker collector + dashboard image build; cargo-audit + npm audit; dashboard backend pytest.
+- The Docker job's Rust builder diagnostic, Cargo lockfile delta diagnostic, and both image builds completed successfully. The lockfile remediation removed the stale `ryu 1.0.23` entry; the diagnostic cleanup safely restored ownership before removing its temporary workspace.
+
+### Artifacts published by exact-head push run
+
+| Target | Artifact ID | Artifact name | Archive SHA-256 |
+|---|---:|---|---|
+| Linux x86_64 | `14206954650` | `t1-collector-linux-x86_64-49606c1f74fe4b1727c5c6b80ec549e9104acd3c` | `767378d3d6295914abb749be5c9211e531c8a6c81acf2472f3f97e22515d9b77` |
+| Linux aarch64 | `14206949330` | `t1-collector-linux-aarch64-49606c1f74fe4b1727c5c6b80ec549e9104acd3c` | `580a3d2c409e3f91b5d8fa7eb56dce497244724314fbcafed4c4b279bea8afe8` |
+
+Both artifacts were created on 2026-11-16 and expire 2026-11-23. Digests are GitHub Actions artifact archive metadata, not independently computed checksums of extracted executables. These artifacts prove CI publication only, not deployment or runtime operation.
+
+### Updated disposition
+
+- P0 publisher fail-closed source tests: **PASS** (prior exact test evidence remains in this document).
+- Exact-head source CI, security audit, native ARM64 and Docker image build: **PASS** on `49606c1f74fe4b1727c5c6b80ec549e9104acd3c`.
+- Previous Cargo audit findings are no longer present in this exact-head run; no advisory suppression was introduced as part of this increment.
+- T1 HTTP endpoint socket-level runtime behavior: **NOT VERIFIED**.
+- T1 live API / VPS operation: **NOT VERIFIED**.
+- T0→T1→T2 live integration: **NOT VERIFIED / NOT AUTHORIZED**.
+- PR #1: **OPEN / DRAFT / NOT MERGED**. Existing review finding on the Sidecar post-hard-link manifest publication failure path remains a merge blocker until explicitly resolved or the merge gate is changed by the owner.
+- No runtime, Binance capture, database, T0/T2/Core First source, VPS, deployment, or live order was activated or changed. `ai_execution_enabled=false` remains required.
+
+### Next permitted work
+
+1. Conduct independent review of the complete accumulated PR #1 diff, including the existing unresolved Sidecar review finding and the newly added P0 publisher/HTTP changes.
+2. Reconcile and document any remaining review findings on this same branch; do not create a parallel branch/PR.
+3. Keep runtime and T1→T2 live integration disabled until separately approved and backed by explicit readiness evidence.
