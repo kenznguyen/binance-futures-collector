@@ -326,15 +326,7 @@ fn valid_live_diff_candidate_is_canonical_and_remains_publishable() {
     let publisher = publisher();
     let generation = begin_publish(&publisher);
     let now = chrono::Utc::now().timestamp_millis();
-    let initial = candidate(
-        generation,
-        "BINANCE_USDM_PERPETUAL",
-        20,
-        20,
-        20,
-        20,
-        now,
-    );
+    let initial = candidate(generation, "BINANCE_USDM_PERPETUAL", 20, 20, 20, 20, now);
     publisher.publish_if_current(initial.clone()).unwrap();
 
     let update = DepthUpdateWs {
