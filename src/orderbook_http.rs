@@ -1015,7 +1015,6 @@ mod tests {
         assert!(!validating.contains("67234.10"));
         server.abort();
     }
-}
 
     #[tokio::test]
     async fn repeated_authenticated_gets_do_not_mutate_publisher_state() {
