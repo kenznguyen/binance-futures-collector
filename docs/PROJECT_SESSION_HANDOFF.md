@@ -4,9 +4,9 @@ Updated: 2026-11-17
 Repository: `kenznguyen/binance-futures-collector`
 Active branch: `feature/t1-connection-sidecar-integration-20261107`
 Pull request: [#1 — Add durable pre-handshake connection failure evidence](https://github.com/kenznguyen/binance-futures-collector/pull/1)
-Reviewed source SHA: `6566969632ac5c5ecc04303d6be3fb25dc1c3a30`
-Latest source SHA: `6566969632ac5c5ecc04303d6be3fb25dc1c3a30`
-Latest evidence/docs commits: test spec `3f7f632e47ff497c5aadef6d565b4554889619c9`; contract `ee6ad175784bbaf832ff7ec3b0f05de5d789d460`
+Reviewed source SHA: `b005a7c1fe2ba555f5bebebee4c453d07d6f20ac`
+Latest source SHA: `b005a7c1fe2ba555f5bebebee4c453d07d6f20ac`
+Latest evidence/docs commits: FR-08 handoff `98e1444027cf69fbb80ca46c35ee9a78b0125e95`; CT-10 contract `779eb72ff9aefa9a0c55acbdd828c95b970d2799`; test spec `49d1c0849e6f4be59a45aece7e0222f1cac59163`
 
 ## 1. Current disposition
 
@@ -242,3 +242,16 @@ These are review findings, not approved source changes:
 - FR-08: PASS for the tested offline publication-boundary cases only. Runtime/listener acceptance is not implied.
 - HTTP V1 full acceptance remains PARTIAL / NOT VERIFIED. FC-10 NOT VERIFIED; AU-09 NOT EXERCISED; NR-05 FAIL for PR #1 as written; NR-01..03 NOT VERIFIED; NR-04 PARTIAL.
 - Boundaries unchanged: branch `feature/t1-connection-sidecar-integration-20261107`; PR #1 OPEN / DRAFT / NOT MERGED; no listener activation, token injection, VPS deployment, T0/T2 changes, T1→T2 integration or real orders.
+
+
+
+## 6I. CT-10 closed-world schema policy; FC-10 consumer boundary (2026-11-17)
+
+- Contract policy commit: `779eb72ff9aefa9a0c55acbdd828c95b970d2799`, message `docs(t1): define closed V1 schema compatibility policy`.
+- Test-spec reconciliation commit: `49d1c0849e6f4be59a45aece7e0222f1cac59163`, message `docs(t1): record CT-10 schema compatibility policy`.
+- CT-10: PASS for the documented V1 compatibility policy and producer-side exact-schema evidence. `T1_T2_ORDERBOOK_V1` is closed-world: required fields/types/invariants are mandatory; unknown top-level/nested fields and unknown versions are rejected; additive or semantic changes require a separately reviewed contract version.
+- Producer exact-schema test `authenticated_response_matches_exact_v1_schema_market_and_depth` was verified on source SHA `6566969632ac5c5ecc04303d6be3fb25dc1c3a30`, CI #785, and rerun in CI #790. This does not prove consumer parser enforcement; that remains a T2-side requirement.
+- FC-10: NOT VERIFIED / BLOCKED at this repository boundary. The T1 repository contains no V1 HTTP consumer client. Dashboard backend reads local collector CSV/stats and is not the V1 consumer. Do not add a mock client to T1 or claim stale-cache protection. Obtain the actual T2 consumer repository and add a transport-failure/cache-invalidation regression there before integration.
+- Latest T1 source SHA remains `b005a7c1fe2ba555f5bebebee4c453d07d6f20ac`; CT-10 documentation commits do not change production source.
+- Overall HTTP V1 acceptance remains PARTIAL / NOT VERIFIED. AU-09 NOT EXERCISED; NR-05 FAIL for PR #1 as written; NR-01..03 NOT VERIFIED; NR-04 PARTIAL. Runtime NOT VERIFIED; T1→T2 integration BLOCKED.
+- Boundaries unchanged: keep branch `feature/t1-connection-sidecar-integration-20261107`; PR #1 OPEN / DRAFT / NOT MERGED. No listener activation, token injection, VPS deployment, T0/T2 changes, T1→T2 connection or real orders.
