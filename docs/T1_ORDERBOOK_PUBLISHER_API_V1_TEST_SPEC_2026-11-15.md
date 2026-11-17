@@ -1,6 +1,6 @@
 # T1 Order Book Publisher / API V1 — Test Specification
 
-Status: PARTIAL IMPLEMENTATION / EVIDENCE — the P0 matrix is not yet fully evidenced; see the exact-SHA P3 evidence document for completed runs.
+Status: PARTIAL IMPLEMENTATION / EVIDENCE — the P0 matrix is not yet fully evidenced. Exact-SHA CI #761 covers strict HTTP/1.1 framing and production bind behavior; see the coverage update below.
 Date: 2026-11-15
 Contract: [T1 Order Book Publisher / API V1 Contract](T1_ORDERBOOK_PUBLISHER_API_V1_CONTRACT_2026-11-15.md)
 
@@ -93,6 +93,9 @@ These were source-level observations when the specification was first written. E
 | AU-14 | More than 8 concurrent clients | Excess request receives 503; bounded resource use |
 | AU-15 | I/O deadline exceeded | Connection closes within bounded deadline |
 | AU-16 | Successful response headers | application/json, no-store, nosniff, connection close |
+| AU-17 | HTTP/1.1 Host header missing, empty, or duplicated | 400; no snapshot disclosure |
+| AU-18 | Duplicate Content-Length headers, including two zero values | 400; no snapshot disclosure |
+| AU-19 | Duplicate Authorization headers in either order | 400; no snapshot disclosure |
 
 ### E. Fail-closed behavior
 
@@ -126,7 +129,7 @@ P0 — must pass before API V1 implementation acceptance:
 - CT-01, CT-04, CT-05, CT-08, CT-09
 - SQ-01 through SQ-08, SQ-10 through SQ-12
 - FR-01 through FR-07
-- AU-01 through AU-08, AU-10 through AU-16
+- AU-01 through AU-08, AU-10 through AU-19
 - FC-01 through FC-08
 - NR-01 through NR-06
 
@@ -166,3 +169,16 @@ No runtime/VPS acceptance is implied by CI. No T1 activation or T2 integration i
 - TDD RED for AU-05: test commit `7c20bb031bafb540648a5a14922bf6f760465fe3`, workflow #683 / run ID `43710799427`, 110 passed and 1 failed because an overlong configured bearer token was not rejected. Fix commit `23c5bc975f3d495ec5c482a33c9c192f6a8c0c3f`; the corresponding test passes in run #685.
 - Full P0 matrix remains **PARTIAL / NOT ACCEPTED**. In particular, environment-disabled listener behavior and every publisher fail-closed state (no snapshot, stopped, broken, reanchor/validation, independent source/observation staleness) are not all tied to dedicated exact-SHA tests yet.
 - The security workflow in #685 remains FAIL due the recorded Rust advisories. This test evidence does not override the security gate or authorize runtime activation.
+
+## 6. Exact-SHA coverage update — 2026-11-17
+
+- Exact source SHA: `2c44f3a38ead3dccaf6c37e61a354681a48b243b`.
+- Workflow [#761](https://github.com/kenznguyen/binance-futures-collector/actions/runs/44042222048): all 6/6 jobs PASS (x86_64 Collector, native ARM64 Collector, Dashboard frontend/backend, Security, Docker).
+- On both architectures: Collector 128/128, additional 5/5, Publisher/HTTP integration 19/19, Sidecar unit 12/12, Sidecar integration 27/27; Format, Clippy and Build PASS.
+- AU-07 production bind helper regression `production_bind_helper_uses_only_the_documented_loopback_socket`: PASS on x86_64 and ARM64.
+- AU-17 `http_11_requires_exactly_one_nonempty_host_header`: PASS on x86_64 and ARM64. Covers missing, empty and duplicate Host with HTTP 400 and no snapshot disclosure.
+- AU-18 `duplicate_content_length_headers_are_rejected_even_when_both_are_zero`: PASS on x86_64 and ARM64.
+- AU-19 `duplicate_authorization_headers_are_rejected_regardless_of_order`: retained and PASS on x86_64 and ARM64.
+- The contract now defines 8 active request handlers + up to 8 bounded rejection writers; further sockets are dropped without response. The existing concurrency test verifies an excess client receives bounded 503 while rejection capacity is available.
+- CI artifacts: x86_64 ID `14309522571`, ZIP SHA256 `4d1422fee72385cadd3a81a36da02ef8a3623c92f48a43736f3ac18271807352`; ARM64 ID `14309772626`, ZIP SHA256 `20a6aa9448e6dcf917354c385e5f70aae3769790c1f1ace4769d8158e798eaea` (7-day retention).
+- Still NOT VERIFIED: AU-09 non-loopback peer test, FC-09 publisher read-lock poison/internal read failure test, and any other unexecuted rows in the required matrix. Full V1 acceptance remains PARTIAL / NOT VERIFIED; no runtime acceptance is implied.
