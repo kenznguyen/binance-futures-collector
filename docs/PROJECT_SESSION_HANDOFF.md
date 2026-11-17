@@ -4,8 +4,8 @@ Updated: 2026-11-17
 Repository: `kenznguyen/binance-futures-collector`
 Active branch: `feature/t1-connection-sidecar-integration-20261107`
 Pull request: [#1 — Add durable pre-handshake connection failure evidence](https://github.com/kenznguyen/binance-futures-collector/pull/1)
-Reviewed source SHA: `cb1ccc0df79584d1b84f257b033a7872b6d409dc`
-Latest source SHA: `cb1ccc0df79584d1b84f257b033a7872b6d409dc`
+Reviewed source SHA: `6566969632ac5c5ecc04303d6be3fb25dc1c3a30`
+Latest source SHA: `6566969632ac5c5ecc04303d6be3fb25dc1c3a30`
 Latest evidence/docs commits: test spec `3f7f632e47ff497c5aadef6d565b4554889619c9`; contract `ee6ad175784bbaf832ff7ec3b0f05de5d789d460`
 
 ## 1. Current disposition
@@ -199,3 +199,19 @@ These are review findings, not approved source changes:
 - CI artifacts (7-day retention; CI evidence only, not deployed binaries): x86_64 ID `14327642353`, name `t1-collector-linux-x86_64-ca224427245268365d6a3c79558f006dfb808865`, size 4,335,457 bytes, ZIP SHA-256 `f601845339855bc16c2ed443ffef5494035b38241bce95ed883627ff3aba4c18`; ARM64 ID `14326669712`, name `t1-collector-linux-aarch64-ca224427245268365d6a3c79558f006dfb808865`, size 4,037,419 bytes, ZIP SHA-256 `b4ea716f33d6dd6bbefb70d87af63d88b455d02c94e4943660f96df6ac059107`. ARM64 ELF header verified AArch64.
 - Status: freshness regression group PASS on both Collector architectures. Overall HTTP V1 full contract acceptance remains PARTIAL / NOT VERIFIED. Wire-schema and strict-parser groups remain next, in that order. AU-09 non-loopback TCP remains NOT EXERCISED under loopback-only harness.
 - Boundaries unchanged: PR #1 OPEN / DRAFT / NOT MERGED; no listener activation, runtime token injection, Binance smoke test, VPS deployment, T0/T2 changes, T1→T2 integration or real orders.
+
+
+## 6F. HTTP V1 regression sequence — wire schema PASS (2026-11-17)
+
+- Test-only source commit: `e92919f696653140c28879dd79d74cbe6c7d8395`, message `test(http): assert complete V1 wire schema and identity`. It added an exact HTTP response assertion for the required top-level field set, field types, 20 bid/ask levels, two-string level tuples, exact depth metadata and recomputation of `snapshotId` from the response body.
+- Formatting-only correction: `6566969632ac5c5ecc04303d6be3fb25dc1c3a30`, message `style(test): format HTTP V1 schema assertions`. No production source or test semantics changed.
+- Exact-head CI #785: [run 44085612119](https://github.com/kenznguyen/binance-futures-collector/actions/runs/44085612119), workflow conclusion SUCCESS, all 6/6 jobs, exact SHA `6566969632ac5c5ecc04303d6be3fb25dc1c3a30`.
+- x86_64 Collector: 131/131; additional suite 5/5; HTTP/P3 contract 22/22; Sidecar unit 12/12; Sidecar integration 27/27. Native ARM64 passed the same test suites and build/format/Clippy checks. The test `authenticated_response_matches_exact_v1_schema_market_and_depth` explicitly passed on both architectures; it includes snapshot identity recomputation.
+- Dashboard backend, Dashboard frontend, Security and Docker image build: PASS. Overall workflow: 6/6 jobs SUCCESS.
+- CI artifacts (7-day retention; CI evidence only, not deployed binaries):
+  - x86_64 ID `14328309241`, name `t1-collector-linux-x86_64-6566969632ac5c5ecc04303d6be3fb25dc1c3a30`, size 4,335,457 bytes, ZIP SHA-256 `db2ff69e181ecadfce40e498de6018907b9f52faf29bf0cc65a3d2a8d655c7e9`.
+  - ARM64 ID `14329536648`, name `t1-collector-linux-aarch64-6566969632ac5c5ecc04303d6be3fb25dc1c3a30`, size 4,037,419 bytes, ZIP SHA-256 `dde327a444d16672e67fa488b76bd1558f1b6f1d1743f90ff8a6f208026b9560`; native ARM64 build and ELF verification passed.
+- Regression sequence: token/request-size PASS; authentication PASS; freshness PASS; wire schema PASS. Next group is strict HTTP parser (tab-separated request line and invalid header-name syntax), test-first.
+- AU-09 non-loopback peer TCP remains NOT EXERCISED under loopback-only harness. Do not weaken loopback binding or substitute fabricated-address tests as TCP evidence.
+- HTTP V1 full contract acceptance remains PARTIAL / NOT VERIFIED. T1 runtime remains NOT VERIFIED; T1→T2 integration remains BLOCKED.
+- PR #1 remains OPEN / DRAFT / NOT MERGED. No listener activation, runtime token injection, Binance connection, VPS deployment, T0/T2 changes, T1→T2 integration or real orders.
