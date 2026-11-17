@@ -194,3 +194,55 @@ No runtime/VPS acceptance is implied by CI. No T1 activation or T2 integration i
 - Artifacts (7-day retention; CI evidence only): x86_64 ID `14313036815`, ZIP SHA256 `71179ce9cf5310411b0c4830b2f44a6280b1c007c4dcb8f7e8b32898cb1a2242`; ARM64 ID `14313091850`, ZIP SHA256 `9864f3cd2de65fb5552c5210361127f0a6610170d16769d2c3cf05c2973f440c`. ARM64 ELF machine verified as AArch64.
 - FC-09: PASS for the tested publisher `read_fresh` poisoned-lock path. This does not claim every possible internal publisher error or full HTTP V1 acceptance.
 - AU-09: NOT EXERCISED at TCP level for the loopback-only reason above. Full V1 acceptance remains PARTIAL / NOT VERIFIED.
+
+
+## 8. Exact-SHA matrix reconciliation — 2026-11-17
+
+Scope: source/test-to-requirement mapping only; no production code changed.
+- Exact HTTP/parser source SHA: `29667927d944e3e20db4d7e3c1ca6e2b30eb7975`.
+- Exact-source CI #790: [run 44095989717](https://github.com/kenznguyen/binance-futures-collector/actions/runs/44095989717), SUCCESS 6/6 jobs. x86_64 and native ARM64 each report Collector 133/133, additional suite 5/5, HTTP/P3 contract 22/22, Sidecar unit 12/12 and Sidecar integration 27/27. Format, Clippy, Build, Dashboard backend/frontend, Security and Docker PASS.
+- The following mapping is based on test names present in the exact source SHA and the complete test-suite result in #790. Unless explicitly stated, it is not a separately named workflow step per matrix row.
+
+| Matrix IDs | Exact-source test evidence | Disposition |
+|---|---|---|
+| CT-01, CT-04, CT-05 | `ready_snapshot_is_returned_as_one_exact_v1_document_without_numeric_coercion`; `serialized_snapshot_matches_t2_v1_wire_field_names_and_string_levels` | PASS |
+| CT-02 | `publisher_rejects_noncanonical_contract_metadata_and_invalidates_ready_snapshot` | PASS |
+| CT-03, AU-10, AU-11 | `only_get_for_the_published_symbol_is_accepted` | PASS for tested method/symbol route cases |
+| CT-06, CT-07 | `duplicate_normalized_levels_and_unsorted_snapshot_are_rejected`; live duplicate/crossed-book rejection tests | PASS |
+| CT-08 | `insufficient_depth_and_crossed_books_are_rejected`; `publisher_rejects_insufficient_depth_and_invalidates_ready_snapshot` | PASS |
+| CT-09 | `live_diff_requires_exact_pu_and_publishes_a_new_immutable_watermark`; exact wire serialization assertion | PASS |
+| CT-11 | `publisher_rejects_noncanonical_snapshot_id_and_invalidates_ready_snapshot`; canonical identity is also asserted by exact-schema HTTP test group 4 | PASS |
+| SQ-01, SQ-03 | `exact_bridge_and_pu_chain_build_a_complete_snapshot` | PASS |
+| SQ-02 | `legacy_pu_attach_bridge_is_rejected`; `rest_anchor_without_exchange_timestamped_bridge_is_not_publishable` | PASS |
+| SQ-04, SQ-05 | `sequence_gap_duplicate_or_regression_is_rejected`; `publisher_rejects_same_generation_watermark_regression` | PASS |
+| SQ-06, SQ-07 | `publisher_invalidates_old_snapshot_and_fences_late_generation`; `publisher_does_not_serve_last_good_snapshot_after_reanchor_attempt_begins` | PASS |
+| SQ-08, SQ-09 | `reanchor_budget_stops_after_three_attempts_and_resets_on_new_connection` | PASS |
+| SQ-10 | `live_diff_requires_exact_pu_and_publishes_a_new_immutable_watermark`; `live_zero_quantity_deletes_level_without_mutating_prior_snapshot` | PASS |
+| SQ-11 | `publisher_rejects_same_generation_watermark_regression` | PASS |
+| SQ-12 | `insufficient_depth_and_crossed_books_are_rejected`; `live_duplicate_normalized_prices_and_crossed_book_are_rejected` | PASS |
+| FR-01 through FR-06 | `source_and_observation_exact_freshness_boundaries_are_accepted`; `source_and_observation_freshness_boundaries_are_enforced`; `classified_live_diff_maps_source_observation_and_future_skew_to_freshness` | PASS for source-observation age and future-skew boundaries |
+| FR-07 | `publisher_read_rechecks_freshness_at_decision_time`; HTTP stale-source/stale-observation/age-after-publication regressions from group 3 | PASS |
+| FR-08 | Header validation rejects event_time <= 0, but no dedicated exact-SHA test was identified for non-positive/malformed source timestamps at the publication boundary | NOT VERIFIED |
+| AU-01 through AU-05 | HTTP bearer-auth tests, including constant-time comparison, missing/wrong/duplicate Authorization and empty/overlong configured token tests | PASS |
+| AU-06 | `orderbook_http_listener_is_disabled_when_token_is_missing_or_empty` and main startup gate test | PASS in exact-source unit suite |
+| AU-07, AU-08 | `production_bind_helper_uses_only_the_documented_loopback_socket`; `serve_rejects_a_non_loopback_listener` | PASS; AU-07 also explicitly passed in exact-head CI #761 |
+| AU-09 | No real non-loopback TCP peer can reach the loopback-only listener in the mandated offline harness | NOT EXERCISED |
+| AU-12 through AU-16 | Oversize request, body/Transfer-Encoding, I/O deadline, bounded concurrency, and response-header tests | PASS |
+| AU-17 through AU-19 | Exact tests for missing/empty/duplicate Host, duplicate Content-Length, duplicate Authorization | PASS; also explicitly reported on both architectures in exact-head CI #761 |
+| FC-01 through FC-08 | No-snapshot/stopped, broken, reanchor/fetching/validating, stale-source/observation, oversized response and capacity tests | PASS |
+| FC-09 | `publisher_read_fresh_returns_error_when_lock_is_poisoned`; RED #766 and fix GREEN #767 | PASS on exact fix SHA `cb1ccc0df79584d1b84f257b033a7872b6d409dc`; #790 also reruns the suite on later source SHA |
+| FC-10 | No HTTP consumer/client integration test proves transport failure prevents stale cached response reuse | NOT VERIFIED |
+| NR-01 through NR-03 | No dedicated filesystem/collector-state immutability assertions identified for build, repeated GET and HTTP error paths | NOT VERIFIED |
+| NR-04 | Existing `cargo test --all` suite passes on both architectures in #790; no baseline-vs-feature result comparison recorded here | PARTIAL |
+| NR-05 | Requires explicit changed-file/diff audit against ingestion, CSV writer, persistence and gap-registry paths; not established by test counts alone | NOT VERIFIED |
+| NR-06 | Exact source SHA and repository branch were checked for CI #790; exact handoff SHA separately verified by CI #791 | PASS |
+
+### Remaining matrix work and gates
+
+1. Add a deterministic offline regression for FR-08: zero/negative/malformed source timestamp must be rejected before publication and must not expose a snapshot. Use TDD RED/GREEN on the existing branch, then exact-head CI on x86_64 and native ARM64.
+2. Resolve CT-10 by explicitly documenting the wire compatibility policy. The current HTTP response exact-key assertion proves the emitted schema, but does not alone define consumer behavior for unknown additive fields or future contract versions.
+3. Keep AU-09 NOT EXERCISED unless a genuinely valid isolated TCP topology can test a non-loopback peer without weakening the production loopback bind. Do not substitute a fabricated peer address.
+4. Keep FC-10 NOT VERIFIED until a consumer-side test demonstrates transport failure invalidates/ages out cached data and cannot be treated as current.
+5. Complete NR-01..05 with explicit read-only/diff-based evidence. Do not infer data isolation from successful compilation or unit-test counts.
+
+Current acceptance: HTTP V1 full P0/P1 matrix **PARTIAL / NOT VERIFIED**. CI #790 is exact-source PASS; CI #791 is handoff/docs SHA PASS, not runtime acceptance. No listener activation, runtime token injection, VPS deployment, T0/T2 changes, T1→T2 connection, or real orders.
