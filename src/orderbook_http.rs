@@ -622,7 +622,7 @@ mod tests {
     #[tokio::test]
     async fn missing_authorization_header_is_rejected_without_snapshot_disclosure() {
         let (address, server) = start_server(ready_publisher().await).await;
-        let request = "GET /internal/v1/orderbook/btcusdt HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n";
+        let request = "GET /internal/v1/orderbook/btcusdt HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
         let response = raw_request(&address, request.as_bytes()).await;
 
         assert!(response.starts_with("HTTP/1.1 401"), "{response}");
