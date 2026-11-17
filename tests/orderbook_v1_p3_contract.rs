@@ -479,15 +479,8 @@ async fn stale_observation_timestamp_returns_503_without_snapshot_disclosure() {
     let publisher = publisher();
     let generation = begin_publish(&publisher);
     let now = chrono::Utc::now().timestamp_millis();
-    let mut stale_observation = candidate(
-        generation,
-        "BINANCE_USDM_PERPETUAL",
-        20,
-        20,
-        20,
-        20,
-        now,
-    );
+    let mut stale_observation =
+        candidate(generation, "BINANCE_USDM_PERPETUAL", 20, 20, 20, 20, now);
     stale_observation.observed_at_ms = now - 2_001;
     refresh_identity(&mut stale_observation);
     publisher.publish_if_current(stale_observation).unwrap();
@@ -524,4 +517,3 @@ async fn snapshot_that_ages_after_publication_returns_503_without_snapshot_discl
 
     server.abort();
 }
-
