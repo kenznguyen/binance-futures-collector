@@ -520,6 +520,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn http_11_requires_exactly_one_nonempty_host_header() {
+        let (address, server) = start_server(ready_publisher().await).await;
+        let cases = [
+            (
+                "missing Host",
+                format!("GET /internal/v1/orderbook/btcusdt HTTP/1.1\r\nAuthorization: Bearer {TOKEN}\r\nConnection: close\r\n\r\n"),
+                "missing_host",
+            ),
+            (
+                "empty Host",
+                format!("GET /internal/v1/orderbook/btcusdt HTTP/1.1\r\nHost: \r\nAuthorization: Bearer {TOKEN}\r\nConnection: close\r\n\r\n"),
+                "invalid_host",
+            ),
+            (
+                "duplicate Host",
+                format!("GET /internal/v1/orderbook/btcusdt HTTP/1.1\r\nHost: localhost\r\nHost: localhost\r\nAuthorization: Bearer {TOKEN}\r\nConnection: close\r\n\r\n"),
+                "duplicate_host",
+            ),
+        ];
+
+        for (label, request, error) in cases {
+            let response = raw_request(&address, request.as_bytes()).await;
+            assert!(response.starts_with("HTTP/1.1 400"), "{label}: {response}");
+            assert!(response.contains(error), "{label}: {response}");
+            assert!(!response.contains("67234.10"), "{label}: {response}");
+        }
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn duplicate_content_length_headers_are_rejected_even_when_both_are_zero() {
+        let (address, server) = start_server(ready_publisher().await).await;
+        let request = format!(
+            "GET /internal/v1/orderbook/btcusdt HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\nContent-Length: 0\r\nAuthorization: Bearer {TOKEN}\r\nConnection: close\r\n\r\n"
+        );
+        let response = raw_request(&address, request.as_bytes()).await;
+        assert!(response.starts_with("HTTP/1.1 400"), "{response}");
+        assert!(response.contains("duplicate_content_length"), "{response}");
+        assert!(!response.contains("67234.10"), "{response}");
+        server.abort();
+    }
+
+    #[tokio::test]
     async fn missing_or_invalid_local_token_is_rejected_without_snapshot_disclosure() {
         let publisher = ready_publisher().await;
         let (address, server) = start_server(publisher).await;
