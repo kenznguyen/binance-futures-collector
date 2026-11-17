@@ -231,3 +231,14 @@ These are review findings, not approved source changes:
 - Regression sequence complete: token/request-size PASS; authentication PASS; freshness PASS; wire schema PASS; strict parser PASS.
 - Remaining limitations: AU-09 non-loopback peer TCP remains NOT EXERCISED under the loopback-only listener/harness. HTTP V1 full acceptance remains PARTIAL / NOT VERIFIED until the remaining contract acceptance matrix and AU-09 disposition are closed. T1 runtime NOT VERIFIED; T1→T2 integration BLOCKED.
 - Boundaries unchanged: branch remains `feature/t1-connection-sidecar-integration-20261107`; PR #1 OPEN / DRAFT / NOT MERGED. No listener activation, runtime token injection, Binance smoke test, VPS deployment, T0/T2 changes, T1→T2 integration or real orders.
+
+
+## 6H. FR-08 non-positive source timestamp rejection — PASS (2026-11-17)
+
+- Test-only source commit: `b005a7c1fe2ba555f5bebebee4c453d07d6f20ac`, message `test(t1): cover non-positive V1 source timestamps`.
+- Added `non_positive_exchange_event_timestamps_are_rejected_before_publication` in `src/orderbook_v1.rs`. Cases `event_time = 0` and `event_time = -1` both fail snapshot construction; publisher exposes no snapshot, `read_fresh` errors, and state remains `FetchingSnapshot`.
+- Exact-head CI #796: [run 44113367744](https://github.com/kenznguyen/binance-futures-collector/actions/runs/44113367744), SUCCESS, all 6/6 jobs on exact source SHA `b005a7c1fe2ba555f5bebebee4c453d07d6f20ac`.
+- x86_64 and native ARM64 Collector format/Clippy/build/tests PASS; Dashboard backend/frontend, Security and Docker PASS.
+- FR-08: PASS for the tested offline publication-boundary cases only. Runtime/listener acceptance is not implied.
+- HTTP V1 full acceptance remains PARTIAL / NOT VERIFIED. FC-10 NOT VERIFIED; AU-09 NOT EXERCISED; NR-05 FAIL for PR #1 as written; NR-01..03 NOT VERIFIED; NR-04 PARTIAL.
+- Boundaries unchanged: branch `feature/t1-connection-sidecar-integration-20261107`; PR #1 OPEN / DRAFT / NOT MERGED; no listener activation, token injection, VPS deployment, T0/T2 changes, T1→T2 integration or real orders.
