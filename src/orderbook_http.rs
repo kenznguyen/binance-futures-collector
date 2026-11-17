@@ -650,11 +650,7 @@ mod tests {
         let token = "x".repeat(super::MAX_BEARER_TOKEN_BYTES);
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap().to_string();
-        let server = tokio::spawn(serve(
-            listener,
-            ready_publisher().await,
-            token.clone(),
-        ));
+        let server = tokio::spawn(serve(listener, ready_publisher().await, token.clone()));
 
         let request = format!(
             "GET /internal/v1/orderbook/btcusdt HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {token}\r\n\r\n"
