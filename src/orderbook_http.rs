@@ -493,6 +493,27 @@ mod tests {
         server.abort();
     }
 
+    #[tokio::test]
+    async fn duplicate_authorization_headers_are_rejected_regardless_of_order() {
+        let (address, server) = start_server(ready_publisher().await).await;
+        let requests = [
+            format!(
+                "GET /internal/v1/orderbook/btcusdt HTTP/1.1\\r\\nHost: localhost\\r\\nAuthorization: Bearer wrong-token\\r\\nAuthorization: Bearer {TOKEN}\\r\\nConnection: close\\r\\n\\r\\n"
+            ),
+            format!(
+                "GET /internal/v1/orderbook/btcusdt HTTP/1.1\\r\\nHost: localhost\\r\\nAuthorization: Bearer {TOKEN}\\r\\nAuthorization: Bearer wrong-token\\r\\nConnection: close\\r\\n\\r\\n"
+            ),
+        ];
+
+        for request in requests {
+            let response = raw_request(&address, request.as_bytes()).await;
+            assert!(response.starts_with("HTTP/1.1 400"), "{response}");
+            assert!(!response.contains("67234.10"));
+        }
+
+        server.abort();
+    }
+
     #[test]
     fn bearer_comparison_rejects_content_and_length_mismatches() {
         assert!(constant_time_eq(b"Bearer token", b"Bearer token"));
