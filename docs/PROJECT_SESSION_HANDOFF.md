@@ -186,3 +186,16 @@ These are review findings, not approved source changes:
 - CI artifacts (CI evidence only; not deployed binaries): x86_64 artifact ID `14320707388`, name `t1-collector-linux-x86_64-60fc9b3a228222b78fe72d34f4456c1c17d57944`, size 4,335,457 bytes; ARM64 artifact ID `14320439477`, name `t1-collector-linux-aarch64-60fc9b3a228222b78fe72d34f4456c1c17d57944`, size 4,037,419 bytes.
 - Status: token/request-size regression PASS. Authentication, freshness, wire-schema and strict-parser regression groups remain pending in that order. HTTP V1 full contract acceptance remains PARTIAL / NOT VERIFIED; T1 runtime NOT VERIFIED; T1-to-T2 integration BLOCKED.
 - Boundaries unchanged: remain on this branch; PR #1 OPEN / DRAFT / NOT MERGED. No listener activation, secret injection, Binance smoke test, VPS deployment, T0/T2 changes or real orders.
+
+
+## 6E. HTTP V1 regression sequence — freshness PASS (2026-11-17)
+
+- Freshness test commit: `913ff54eaa43fa511895af794d82f0251c2d3d4a`, message `test(http): cover independent freshness boundaries`. It added three HTTP integration regressions: stale source timestamp, stale observation timestamp, and a snapshot that becomes stale after publication. Each asserts HTTP 503 and no stale bid-price disclosure.
+- The first exact-head CI attempt stopped at `cargo fmt --all --check` on both x86_64 and ARM64 because of formatting in the new test. This was a formatting-only failure; it did not establish RED/GREEN behavior.
+- Formatting-only correction commit: `ca224427245268365d6a3c79558f006dfb808865`, message `style(test): format freshness boundary regressions`. No production source or test semantics changed in this correction.
+- Exact SHA workflow: [CI #782 / run 44082443503](https://github.com/kenznguyen/binance-futures-collector/actions/runs/44082443503), source SHA `ca224427245268365d6a3c79558f006dfb808865`.
+- On both x86_64 and native ARM64: Format, Clippy, Build PASS; Collector 131/131; additional suite 5/5; HTTP/P3 contract 22/22; Sidecar unit 12/12; Sidecar integration 27/27. All three new freshness regressions explicitly PASS on both architectures.
+- Dashboard backend, Dashboard frontend and Security jobs PASS. Docker image build job was still IN_PROGRESS at this handoff checkpoint; therefore the complete workflow was not yet terminal and must not be represented as 6/6 PASS.
+- CI artifacts (7-day retention; CI evidence only, not deployed binaries): x86_64 ID `14327642353`, name `t1-collector-linux-x86_64-ca224427245268365d6a3c79558f006dfb808865`, size 4,335,457 bytes, ZIP SHA-256 `f601845339855bc16c2ed443ffef5494035b38241bce95ed883627ff3aba4c18`; ARM64 ID `14326669712`, name `t1-collector-linux-aarch64-ca224427245268365d6a3c79558f006dfb808865`, size 4,037,419 bytes, ZIP SHA-256 `b4ea716f33d6dd6bbefb70d87af63d88b455d02c94e4943660f96df6ac059107`. ARM64 ELF header verified AArch64.
+- Status: freshness regression group PASS on both Collector architectures. Overall HTTP V1 full contract acceptance remains PARTIAL / NOT VERIFIED. Wire-schema and strict-parser groups remain next, in that order. AU-09 non-loopback TCP remains NOT EXERCISED under loopback-only harness.
+- Boundaries unchanged: PR #1 OPEN / DRAFT / NOT MERGED; no listener activation, runtime token injection, Binance smoke test, VPS deployment, T0/T2 changes, T1→T2 integration or real orders.
