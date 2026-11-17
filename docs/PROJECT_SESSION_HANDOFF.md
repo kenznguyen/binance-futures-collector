@@ -5,6 +5,7 @@ Repository: `kenznguyen/binance-futures-collector`
 Active branch: `feature/t1-connection-sidecar-integration-20261107`
 Pull request: [#1 — Add durable pre-handshake connection failure evidence](https://github.com/kenznguyen/binance-futures-collector/pull/1)
 Reviewed source SHA: `2c44f3a38ead3dccaf6c37e61a354681a48b243b`
+Latest branch documentation SHA: `aa205aa86221860f6d687b9c9b281860c02df721`
 
 ## 1. Current disposition
 
@@ -124,6 +125,7 @@ These are review findings, not approved source changes:
 |---|---|
 | Exact-capacity boundary test | PASS |
 | Strict HTTP/1.1 Host / Content-Length framing | PASS — CI #761, x86_64 + ARM64 |
+| Contract error table / capacity semantics synchronized | PASS — docs commits `cdc199e` / `aa205aa` |
 | Production loopback bind helper regression | PASS — CI #761, x86_64 + ARM64 |
 | x86_64 Collector / Sidecar tests | PASS |
 | Native ARM64 Collector / Sidecar tests | PASS |
