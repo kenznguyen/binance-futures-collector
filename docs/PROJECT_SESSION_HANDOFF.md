@@ -255,3 +255,15 @@ These are review findings, not approved source changes:
 - Latest T1 source SHA remains `b005a7c1fe2ba555f5bebebee4c453d07d6f20ac`; CT-10 documentation commits do not change production source.
 - Overall HTTP V1 acceptance remains PARTIAL / NOT VERIFIED. AU-09 NOT EXERCISED; NR-05 FAIL for PR #1 as written; NR-01..03 NOT VERIFIED; NR-04 PARTIAL. Runtime NOT VERIFIED; T1→T2 integration BLOCKED.
 - Boundaries unchanged: keep branch `feature/t1-connection-sidecar-integration-20261107`; PR #1 OPEN / DRAFT / NOT MERGED. No listener activation, token injection, VPS deployment, T0/T2 changes, T1→T2 connection or real orders.
+
+
+## 6J. Documentation CI terminal reconciliation (2026-11-17)
+
+- Contract policy SHA `779eb72ff9aefa9a0c55acbdd828c95b970d2799`: CI run [44115673509](https://github.com/kenznguyen/binance-futures-collector/actions/runs/44115673509), exact SHA, completed SUCCESS, all 6/6 jobs.
+- Test-spec SHA `49d1c0849e6f4be59a45aece7e0222f1cac59163`: CI run [44115703070](https://github.com/kenznguyen/binance-futures-collector/actions/runs/44115703070), exact SHA, completed SUCCESS, all 6/6 jobs.
+- Handoff SHA `bea1e61c2aca8b7e98835bbfa467031306bcc665`: CI run [44115745388](https://github.com/kenznguyen/binance-futures-collector/actions/runs/44115745388), exact SHA, completed SUCCESS, all 6/6 jobs.
+- All three runs passed x86_64 Collector, native ARM64 Collector, Dashboard frontend/backend, Security and Docker jobs. No runtime or deployment evidence is implied.
+- Current docs/source branch HEAD before this reconciliation: `bea1e61c2aca8b7e98835bbfa467031306bcc665`. Latest production/source SHA remains `b005a7c1fe2ba555f5bebebee4c453d07d6f20ac`.
+- Matrix disposition unchanged: FR-08 PASS only for offline publication-boundary cases; CT-10 PASS for documented closed-world policy and producer exact-schema output; FC-10 NOT VERIFIED / BLOCKED pending actual T2 consumer repo; AU-09 NOT EXERCISED; NR-01..03 NOT VERIFIED; NR-04 PARTIAL; NR-05 FAIL for PR #1 as written; NR-06 PASS.
+- Overall HTTP V1 acceptance remains PARTIAL / NOT VERIFIED; T1 runtime NOT VERIFIED; T1→T2 integration BLOCKED.
+- Next safe work: inspect NR-01..03 definitions and existing offline tests, then propose narrowly scoped test-only TDD changes on this branch. Do not alter collector ingestion/persistence, waive NR-05, activate listener, deploy, connect T2, or place real orders.
