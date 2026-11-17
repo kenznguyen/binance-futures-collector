@@ -171,12 +171,12 @@ Resolved by exact-source tests at SHA `2c44f3a38ead3dccaf6c37e61a354681a48b243b`
 5. Capacity semantics are explicitly bounded as 8 active handlers + up to 8 short-lived rejection writers; further sockets are dropped without response.
 
 Remaining contract/test boundaries:
-- AU-09 non-loopback peer rejection is implemented by dropping a peer whose address is not loopback, but a deterministic test has not yet been evidenced. Because the production listener itself is loopback-only, the test strategy needs careful design rather than weakening the bind guard.
-- FC-09 publisher read-lock poison/internal read failure coverage remains NOT VERIFIED.
+- AU-09 non-loopback peer rejection remains a defensive accept-loop check (`!peer.ip().is_loopback()`). It is NOT EXERCISED at TCP integration level under the mandated loopback-only test harness: a listener bound to `127.0.0.1` cannot accept a connection routed from a non-loopback peer. Do not weaken the production bind guard or substitute a fabricated-address unit test as socket-level evidence.
+- FC-09 poisoned read-lock handling is verified on exact fix SHA `cb1ccc0df79584d1b84f257b033a7872b6d409dc`, CI [#767](https://github.com/kenznguyen/binance-futures-collector/actions/runs/44049288867), x86_64 and native ARM64. `read_fresh` returns an error for poisoned lock state; HTTP maps the error to bounded 503 `snapshot_unavailable`.
 - The absence of a status endpoint and non-restarting listener task remain intentional V1 boundaries; consumer connection failure must remain fail-closed.
 - These results do not establish full V1 acceptance. The test matrix in the companion specification remains the acceptance authority.
 
-HTTP V1 full contract acceptance therefore remains PARTIAL / NOT VERIFIED.
+HTTP V1 full contract acceptance therefore remains PARTIAL / NOT VERIFIED; AU-09 is not exercised at TCP level under the current loopback-only harness.
 
 ## 10. Change control
 
