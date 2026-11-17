@@ -683,6 +683,24 @@ mod tests {
         assert!(writer.exceeded);
     }
 
+    #[test]
+    fn bounded_response_writer_accepts_exact_limit_then_rejects_next_byte() {
+        let mut writer = BoundedResponseWriter {
+            bytes: Vec::new(),
+            limit: 4,
+            exceeded: false,
+        };
+
+        std::io::Write::write_all(&mut writer, b"1234").unwrap();
+        assert_eq!(writer.bytes, b"1234");
+        assert!(!writer.exceeded);
+
+        let result = std::io::Write::write_all(&mut writer, b"5");
+        assert!(result.is_err());
+        assert_eq!(writer.bytes, b"1234");
+        assert!(writer.exceeded);
+    }
+
     #[tokio::test]
     async fn oversized_snapshot_is_not_truncated_or_served() {
         let publisher = ready_publisher().await;
