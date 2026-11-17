@@ -987,6 +987,26 @@ mod tests {
     }
 
     #[test]
+    fn non_positive_exchange_event_timestamps_are_rejected_before_publication() {
+        for event_time in [0, -1] {
+            let publisher = SnapshotPublisher::new();
+            let generation = publisher.begin_connection_generation();
+            publisher.note_reanchor_attempt().unwrap();
+
+            let mut updates = valid_updates();
+            updates[1].event_time = event_time;
+
+            assert!(
+                build_snapshot(&snapshot(), &updates, generation, NOW, NOW).is_err(),
+                "event_time={event_time} must not produce a publishable snapshot"
+            );
+            assert!(publisher.read().is_none());
+            assert!(publisher.read_fresh(NOW).is_err());
+            assert_eq!(publisher.state(), OrderbookV1State::FetchingSnapshot);
+        }
+    }
+
+    #[test]
     fn rest_anchor_without_exchange_timestamped_bridge_is_not_publishable() {
         assert!(build_snapshot(&snapshot(), &[], 1, NOW, NOW).is_err());
     }
