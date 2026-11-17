@@ -267,3 +267,12 @@ These are review findings, not approved source changes:
 - Matrix disposition unchanged: FR-08 PASS only for offline publication-boundary cases; CT-10 PASS for documented closed-world policy and producer exact-schema output; FC-10 NOT VERIFIED / BLOCKED pending actual T2 consumer repo; AU-09 NOT EXERCISED; NR-01..03 NOT VERIFIED; NR-04 PARTIAL; NR-05 FAIL for PR #1 as written; NR-06 PASS.
 - Overall HTTP V1 acceptance remains PARTIAL / NOT VERIFIED; T1 runtime NOT VERIFIED; T1→T2 integration BLOCKED.
 - Next safe work: inspect NR-01..03 definitions and existing offline tests, then propose narrowly scoped test-only TDD changes on this branch. Do not alter collector ingestion/persistence, waive NR-05, activate listener, deploy, connect T2, or place real orders.
+
+
+## 6K. NR-02/NR-03 test syntax correction (2026-11-17)
+
+- Initial test commit `6f29adba27fcb67da6ddc2a8ec8ae5025486796f` failed exact-head CI run [44118264186](https://github.com/kenznguyen/binance-futures-collector/actions/runs/44118264186). The Rust parser reported an unexpected closing delimiter at `src/orderbook_http.rs:1074`; root cause: the tests had been appended after the existing test module's closing brace. x86_64 Collector fmt/test, native ARM64 fmt/test, and Docker Collector build failed from this same syntax error; Security and Dashboard jobs passed.
+- Corrective commit: `29c50795ccd7500fe7f5352a18b3877ad00cd4c6`, moving the two tests inside the existing test module without production-code changes.
+- Exact-source CI run [44120275289](https://github.com/kenznguyen/binance-futures-collector/actions/runs/44120275289) is QUEUED on corrective SHA `29c50795ccd7500fe7f5352a18b3877ad00cd4c6`. NR-02/NR-03 remain NOT VERIFIED pending terminal SUCCESS.
+- Handoff documentation commit `7a44e3ea41cc43e40371a1cc608618d481a4112b` CI run [44117997841](https://github.com/kenznguyen/binance-futures-collector/actions/runs/44117997841) completed SUCCESS 6/6 on its exact SHA.
+- NR-01 remains NOT VERIFIED. Do not proceed to add further tests until the corrective exact-source CI result is known.
