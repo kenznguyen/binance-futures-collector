@@ -352,7 +352,6 @@ fn valid_live_diff_candidate_is_canonical_and_remains_publishable() {
     assert_eq!(publisher.read().unwrap().last_applied_u, 900_011);
 }
 
-
 fn refresh_identity(snapshot: &mut OrderbookSnapshotV1) {
     snapshot.snapshot_id = canonical_snapshot_id(snapshot).unwrap();
 }
@@ -363,8 +362,7 @@ fn publisher_rejects_malformed_price_and_quantity_decimals() {
         let publisher = publisher();
         let generation = begin_publish(&publisher);
         let now = chrono::Utc::now().timestamp_millis();
-        let mut invalid =
-            candidate(generation, "BINANCE_USDM_PERPETUAL", 20, 20, 20, 20, now);
+        let mut invalid = candidate(generation, "BINANCE_USDM_PERPETUAL", 20, 20, 20, 20, now);
         invalid.bids[0] = [price.to_string(), quantity.to_string()];
         refresh_identity(&mut invalid);
 
