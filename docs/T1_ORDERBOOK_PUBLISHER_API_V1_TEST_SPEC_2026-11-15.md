@@ -40,7 +40,7 @@ These were source-level observations when the specification was first written. E
 | CT-07 | Ask ordering | Strict ascending prices |
 | CT-08 | Depth metadata | Counts equal array lengths; minimum 20 each side for a built production snapshot |
 | CT-09 | Watermarks | decisionWatermark equals lastAppliedU; firstAppliedU and lastAppliedU are valid |
-| CT-10 | Unknown/missing/extra required field policy | Required fields cannot disappear; additive compatibility policy documented |
+| CT-10 | Unknown/missing/extra required field policy | Required fields cannot disappear; closed-world compatibility policy documented; unknown/additive fields and unknown versions rejected |
 | CT-11 | Snapshot identity | `snapshotId` matches the T2 SHA-256 canonical JSON algorithm; any payload mutation invalidates the identity |
 
 ### B. Continuity and generation fencing
@@ -262,4 +262,16 @@ The PR-wide changed-file list and inspected patches confirm modifications to col
 - FR-08: PASS for the tested non-positive timestamp publication-boundary cases. This is offline unit-test evidence; it does not imply runtime/listener acceptance or malformed wire parsing beyond the tested integer values.
 - FC-10 remains NOT VERIFIED: no consumer-side transport-failure/cache invalidation test is present in this repository's V1 acceptance evidence. Do not claim stale-cache prevention from publisher-side fail-closed tests.
 - Overall HTTP V1 full acceptance remains PARTIAL / NOT VERIFIED. AU-09 remains NOT EXERCISED; NR-05 remains FAIL for PR #1 as written; NR-01..03 NOT VERIFIED and NR-04 PARTIAL.
+- No listener activation, runtime token injection, VPS deployment, T0/T2 changes, T1→T2 integration or real orders.
+
+
+
+## 10. Exact-SHA coverage update — CT-10 compatibility policy (2026-11-17)
+
+- Contract commit: `779eb72ff9aefa9a0c55acbdd828c95b970d2799`, message `docs(t1): define closed V1 schema compatibility policy`.
+- Contract §4.1 defines a closed-world schema for `T1_T2_ORDERBOOK_V1`: required fields/types/invariants are mandatory; unknown top-level or nested fields and unknown contract versions are rejected; additive or semantic changes require a separately reviewed contract version.
+- Producer exact-schema regression `authenticated_response_matches_exact_v1_schema_market_and_depth` was already verified on exact source SHA `6566969632ac5c5ecc04303d6be3fb25dc1c3a30`, CI #785, and rerun in later exact-source CI #790. It proves emitted field set, types, depth metadata and snapshot identity.
+- CT-10: PASS for policy documentation and producer-side exact output. Consumer parser enforcement is NOT VERIFIED here and remains a T2 acceptance requirement; do not infer T2 behavior from T1 producer tests.
+- FC-10 remains NOT VERIFIED / BLOCKED on this repository boundary: no T1 V1 consumer client exists in this repository. The dashboard backend reads collector CSV/stats and is not a V1 HTTP consumer. A transport-failure/cache-invalidation test must be added in the actual T2 consumer repository before T1→T2 integration.
+- Overall HTTP V1 acceptance remains PARTIAL / NOT VERIFIED. AU-09 remains NOT EXERCISED; NR-05 remains FAIL for PR #1 as written; NR-01..03 NOT VERIFIED; NR-04 PARTIAL.
 - No listener activation, runtime token injection, VPS deployment, T0/T2 changes, T1→T2 integration or real orders.
