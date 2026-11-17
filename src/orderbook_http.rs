@@ -18,7 +18,9 @@ use crate::orderbook_v1::SnapshotPublisher;
 pub const LOOPBACK_ADDR: &str = "127.0.0.1:8787";
 const ROUTE_PREFIX: &str = "/internal/v1/orderbook/";
 const MAX_REQUEST_BYTES: usize = 4 * 1024;
-const MAX_BEARER_TOKEN_BYTES: usize = MAX_REQUEST_BYTES - "Bearer ".len();
+const MIN_REQUEST_OVERHEAD_BYTES: usize =
+    "GET /internal/v1/orderbook/btcusdt HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer \r\n\r\n".len();
+const MAX_BEARER_TOKEN_BYTES: usize = MAX_REQUEST_BYTES - MIN_REQUEST_OVERHEAD_BYTES;
 const MAX_RESPONSE_BYTES: usize = 64 * 1024;
 const MAX_CONNECTIONS: usize = 8;
 const MAX_REJECTED_CONNECTIONS: usize = 8;
