@@ -291,13 +291,7 @@ async fn handle_connection(
     }
 
     if !host_seen {
-        return write_response(
-            stream,
-            400,
-            "Bad Request",
-            &json!({"error":"missing_host"}),
-        )
-        .await;
+        return write_response(stream, 400, "Bad Request", &json!({"error":"missing_host"})).await;
     }
 
     let expected = format!("Bearer {expected_token}");
