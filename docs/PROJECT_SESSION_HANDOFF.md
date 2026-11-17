@@ -5,7 +5,7 @@ Repository: `kenznguyen/binance-futures-collector`
 Active branch: `feature/t1-connection-sidecar-integration-20261107`
 Pull request: [#1 — Add durable pre-handshake connection failure evidence](https://github.com/kenznguyen/binance-futures-collector/pull/1)
 Reviewed source SHA: `2c44f3a38ead3dccaf6c37e61a354681a48b243b`
-Latest branch source/test SHA: `13ab62841a4c28b410c22caa8c9dbe8bf67be4af`
+Latest branch source/test SHA: `cb1ccc0df79584d1b84f257b033a7872b6d409dc`
 
 ## 1. Current disposition
 
@@ -110,12 +110,14 @@ These are review findings, not approved source changes:
 - Do not activate the HTTP listener, inject runtime token secrets, run collector/Binance smoke tests, deploy to VPS, or connect T2 without separate approval.
 - No T0 data, T0 source, T2 integration, collector live ingestion, CSV historical output, or execution behavior may be changed as part of this handoff.
 
-## 6A. Publisher poisoned read-lock regression — pending exact-head CI
+## 6A. Publisher poisoned read-lock regression — RED confirmed; fix CI pending
 
 - Test-only commit: `13ab62841a4c28b410c22caa8c9dbe8bf67be4af`, message `test(publisher): cover poisoned read lock failure`.
 - Added `publisher_read_fresh_returns_error_when_lock_is_poisoned`, which poisons the `std::sync::RwLock` on a dedicated thread and asserts `read_fresh` returns an error rather than panicking.
-- Exact-head CI [#766](https://github.com/kenznguyen/binance-futures-collector/actions/runs/44048337134) is running on this test-only SHA. RED/GREEN result is pending; do not claim FC-09 coverage or implementation correctness until the exact run completes.
-- Intended production fix, if RED is confirmed: make `read_fresh` convert lock poison into an ordinary error; existing HTTP handler maps any `read_fresh` error to bounded 503 `snapshot_unavailable`. Preserve fail-closed behavior and do not recover/unwrap poisoned state.
+- Exact-head CI [#766](https://github.com/kenznguyen/binance-futures-collector/actions/runs/44048337134) confirmed genuine RED on x86_64 and native ARM64: each had 128 passed / 1 failed; the only failing test was `publisher_read_fresh_returns_error_when_lock_is_poisoned`. Format, Clippy and Build passed both architectures; Dashboard, Security and Docker passed.
+- Logs confirm the panic came from `src/orderbook_v1.rs` at the `expect("snapshot publisher lock poisoned")` in `read_fresh`, not from the deliberate poisoning thread.
+- Minimal fix commit: `cb1ccc0df79584d1b84f257b033a7872b6d409dc`, message `fix(publisher): fail closed on poisoned read lock`. Only `read_fresh` changed: lock poison now maps to `anyhow::anyhow!("snapshot publisher lock poisoned")` and returns `Err`; it does not recover poisoned state. The existing HTTP handler should map this error to bounded 503 `snapshot_unavailable`.
+- Exact-head CI [#767](https://github.com/kenznguyen/binance-futures-collector/actions/runs/44049288867) is running on fix SHA `cb1ccc0df79584d1b84f257b033a7872b6d409dc`. GREEN and artifact evidence remain pending; do not mark FC-09 PASS until this run completes.
 
 ## 7. Next actions
 
@@ -123,7 +125,8 @@ These are review findings, not approved source changes:
 2. Update the PR checkpoint comment with CI #761 test counts, artifacts and checksums, and link this handoff commit.
 3. Resolve remaining HTTP contract discrepancies through tests first, in a separately scoped increment on this branch. In particular, document the 8 active + up to 8 rejection-handler capacity semantics and update the contract error table for `duplicate_authorization`, `missing_host`, `invalid_host`, `duplicate_host`, and `duplicate_content_length`.
 4. Add evidence for non-loopback peer rejection and publisher lock-poison failure paths if applicable to the intended V1 contract.
-5. Re-run exact-head CI for every subsequent source or contract change and record exact SHA, run ID, test counts and artifacts.
+5. Complete exact-head CI #767 on fix SHA `cb1ccc0df79584d1b84f257b033a7872b6d409dc`; record test counts, artifact IDs and ZIP SHA-256 if published. FC-09 is PASS only if the new regression passes on both architectures.
+6. Re-run exact-head CI for every subsequent source or contract change and record exact SHA, run ID, test counts and artifacts.
 6. Only after the remaining V1 acceptance matrix is evidenced should T1 API acceptance or T1-to-T2 integration be reconsidered.
 
 ## 8. Status summary
@@ -134,6 +137,7 @@ These are review findings, not approved source changes:
 | Strict HTTP/1.1 Host / Content-Length framing | PASS — CI #761, x86_64 + ARM64 |
 | Contract error table / capacity semantics synchronized | PASS — docs commits `cdc199e` / `aa205aa` |
 | Production loopback bind helper regression | PASS — CI #761, x86_64 + ARM64 |
+| Publisher poisoned read-lock regression | RED confirmed — CI #766; fix verification pending CI #767 |
 | x86_64 Collector / Sidecar tests | PASS |
 | Native ARM64 Collector / Sidecar tests | PASS |
 | Dashboard frontend/backend | PASS |
