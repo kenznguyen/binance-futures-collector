@@ -12,7 +12,7 @@ Reviewed source SHA: `ded4cdef160746a9d683a6792fc7b990ffaf4317`
 - CI #756: [run 44034675130](https://github.com/kenznguyen/binance-futures-collector/actions/runs/44034675130), exact source SHA `ded4cdef160746a9d683a6792fc7b990ffaf4317`.
 - Boundary test `bounded_response_writer_accepts_exact_limit_then_rejects_next_byte`: PASS on x86_64 and native ARM64.
 - Collector, Sidecar, Dashboard and Security jobs: PASS.
-- Docker image build: IN PROGRESS at handoff creation. Overall workflow: NOT YET VERIFIED; do not report CI #756 as fully green until Docker concludes.
+- Docker image build: PASS. All 6/6 jobs in CI #756 completed successfully; overall workflow: PASS.
 - HTTP contract review: PARTIAL; implementation review completed for the current source, with documentation/strictness discrepancies listed below.
 - T1 runtime: NOT VERIFIED.
 - T1 to T2 integration: BLOCKED / not authorized.
@@ -85,8 +85,8 @@ These are review findings, not approved source changes:
 
 ## 7. Next actions
 
-1. Poll CI #756 Docker job and record its terminal conclusion. If it fails, inspect the Docker job log and fix only the demonstrated issue.
-2. Update this handoff and the PR checkpoint comment with the final #756 workflow conclusion; retain exact source SHA and artifact metadata.
+1. CI #756 terminal conclusion: SUCCESS, all 6/6 jobs PASS including Docker image build. Exact source SHA: `ded4cdef160746a9d683a6792fc7b990ffaf4317`; workflow run: [44034675130](https://github.com/kenznguyen/binance-futures-collector/actions/runs/44034675130).
+2. PR checkpoint comment updated after the final Docker result; see comment [6941175909](https://github.com/kenznguyen/binance-futures-collector/pull/1#issuecomment-6941175909) for the preceding evidence checkpoint. This handoff update records the terminal CI status.
 3. Resolve HTTP contract discrepancies through tests first, in a separately scoped increment on this branch. In particular, decide the 8+8 capacity semantics and strict header parsing policy.
 4. Re-run exact-head CI for any subsequent source or contract change and record exact SHA, run ID, test counts and artifacts.
 5. Only after the remaining V1 acceptance matrix is evidenced should T1 API acceptance or T1-to-T2 integration be reconsidered.
@@ -100,7 +100,7 @@ These are review findings, not approved source changes:
 | Native ARM64 Collector / Sidecar tests | PASS |
 | Dashboard frontend/backend | PASS |
 | Security job | PASS |
-| Docker / full CI #756 | IN PROGRESS at handoff creation |
+| Docker / full CI #756 | PASS — 6/6 jobs |
 | HTTP V1 full contract acceptance | PARTIAL / NOT VERIFIED |
 | T1 runtime readiness | NOT VERIFIED |
 | T1 to T2 integration | BLOCKED |
