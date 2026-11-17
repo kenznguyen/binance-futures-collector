@@ -26,12 +26,14 @@ const IO_TIMEOUT: Duration = Duration::from_millis(750);
 
 /// Bounded response buffer used to serialize snapshots without an unbounded
 /// intermediate allocation.
+#[cfg(test)]
 struct BoundedResponseWriter {
     bytes: Vec<u8>,
     limit: usize,
     exceeded: bool,
 }
 
+#[cfg(test)]
 impl std::io::Write for BoundedResponseWriter {
     fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
         // RED scaffold: the regression test below must reject this unbounded
