@@ -26,18 +26,23 @@ const IO_TIMEOUT: Duration = Duration::from_millis(750);
 
 /// Bounded response buffer used to serialize snapshots without an unbounded
 /// intermediate allocation.
-#[cfg(test)]
 struct BoundedResponseWriter {
     bytes: Vec<u8>,
     limit: usize,
     exceeded: bool,
 }
 
-#[cfg(test)]
 impl std::io::Write for BoundedResponseWriter {
     fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
-        // RED scaffold: the regression test below must reject this unbounded
-        // append before the writer is wired into the HTTP response path.
+        let remaining = self.limit.saturating_sub(self.bytes.len());
+        if buffer.len() > remaining {
+            self.exceeded = true;
+            return Err(io::Error::new(
+                io::ErrorKind::WriteZero,
+                "serialized response exceeds configured limit",
+            ));
+        }
+
         self.bytes.extend_from_slice(buffer);
         Ok(buffer.len())
     }
@@ -304,19 +309,25 @@ async fn handle_connection(
         .await;
     }
 
-    let body = serde_json::to_vec(snapshot.as_ref())
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-    if body.len() > MAX_RESPONSE_BYTES {
-        return write_response(
-            stream,
-            503,
-            "Service Unavailable",
-            &json!({"error":"snapshot_exceeds_response_limit"}),
-        )
-        .await;
+    let mut writer = BoundedResponseWriter {
+        bytes: Vec::with_capacity(MAX_RESPONSE_BYTES),
+        limit: MAX_RESPONSE_BYTES,
+        exceeded: false,
+    };
+    if let Err(error) = serde_json::to_writer(&mut writer, snapshot.as_ref()) {
+        if writer.exceeded {
+            return write_response(
+                stream,
+                503,
+                "Service Unavailable",
+                &json!({"error":"snapshot_exceeds_response_limit"}),
+            )
+            .await;
+        }
+        return Err(io::Error::new(io::ErrorKind::InvalidData, error));
     }
 
-    write_raw_response(stream, 200, "OK", "application/json", &body).await
+    write_raw_response(stream, 200, "OK", "application/json", &writer.bytes).await
 }
 
 fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
