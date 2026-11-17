@@ -4,8 +4,8 @@ Updated: 2026-11-17
 Repository: `kenznguyen/binance-futures-collector`
 Active branch: `feature/t1-connection-sidecar-integration-20261107`
 Pull request: [#1 — Add durable pre-handshake connection failure evidence](https://github.com/kenznguyen/binance-futures-collector/pull/1)
-Reviewed source SHA: `b005a7c1fe2ba555f5bebebee4c453d07d6f20ac`
-Latest source SHA: `b005a7c1fe2ba555f5bebebee4c453d07d6f20ac`
+Reviewed source SHA: `162557e4c53ad7ac6f5a11264f05cab5138e442f`
+Latest source SHA: `162557e4c53ad7ac6f5a11264f05cab5138e442f`
 Latest evidence/docs commits: FR-08 handoff `98e1444027cf69fbb80ca46c35ee9a78b0125e95`; CT-10 contract `779eb72ff9aefa9a0c55acbdd828c95b970d2799`; test spec `49d1c0849e6f4be59a45aece7e0222f1cac59163`
 
 ## 1. Current disposition
@@ -276,3 +276,16 @@ These are review findings, not approved source changes:
 - Exact-source CI run [44120275289](https://github.com/kenznguyen/binance-futures-collector/actions/runs/44120275289) is QUEUED on corrective SHA `29c50795ccd7500fe7f5352a18b3877ad00cd4c6`. NR-02/NR-03 remain NOT VERIFIED pending terminal SUCCESS.
 - Handoff documentation commit `7a44e3ea41cc43e40371a1cc608618d481a4112b` CI run [44117997841](https://github.com/kenznguyen/binance-futures-collector/actions/runs/44117997841) completed SUCCESS 6/6 on its exact SHA.
 - NR-01 remains NOT VERIFIED. Do not proceed to add further tests until the corrective exact-source CI result is known.
+
+
+## 6L. Publisher immutability regression tests — NR-02 / NR-03 PASS (2026-11-17)
+
+- Test-only commits: `6f29adba27fcb67da6ddc2a8ec8ae5025486796f` (initial placement), `29c50795ccd7500fe7f5352a18b3877ad00cd4c6` (move tests inside the test module), and formatting-only correction `162557e4c53ad7ac6f5a11264f05cab5138e442f`.
+- The first attempt CI #793 / run `44118264186` failed at Rust parsing because the tests were appended outside the module; no assertions ran. The corrective placement then reached CI #794 / run `44120275289`, which failed only `cargo fmt --check` because one tuple was not rustfmt-compliant. The final commit changed formatting only.
+- Exact-head CI #795: [run 44120909299](https://github.com/kenznguyen/binance-futures-collector/actions/runs/44120909299), conclusion SUCCESS, all 6/6 jobs on exact SHA `162557e4c53ad7ac6f5a11264f05cab5138e442f`.
+- x86_64 and native ARM64 Collector format, Clippy and tests PASS. Dashboard backend pytest, Dashboard frontend tsc/vitest, Security cargo-audit/npm audit, and Docker image build all PASS.
+- NR-02 test `repeated_authenticated_gets_do_not_mutate_publisher_state`: five authenticated GETs each return HTTP 200; Publisher state and generation remain unchanged, and the same snapshot Arc remains published.
+- NR-03 test `http_error_paths_do_not_mutate_publisher_state`: 401, 405 and 404 paths leave Publisher state/generation and published snapshot Arc unchanged.
+- Verdict: NR-02 and NR-03 PASS for the tested offline Publisher state/generation/snapshot-identity invariants. This does not prove filesystem-wide Collector CSV/gap-tree immutability (NR-01), runtime listener behavior, T1 deployment, or T1-to-T2 integration.
+- PR #1 remains OPEN / DRAFT / NOT MERGED. No listener activation, token injection, VPS deployment, T0/T2 changes, T1-to-T2 integration or real orders.
+
