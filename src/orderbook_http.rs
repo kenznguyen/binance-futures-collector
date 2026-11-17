@@ -498,10 +498,10 @@ mod tests {
         let (address, server) = start_server(ready_publisher().await).await;
         let requests = [
             format!(
-                "GET /internal/v1/orderbook/btcusdt HTTP/1.1\\r\\nHost: localhost\\r\\nAuthorization: Bearer wrong-token\\r\\nAuthorization: Bearer {TOKEN}\\r\\nConnection: close\\r\\n\\r\\n"
+                "GET /internal/v1/orderbook/btcusdt HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer wrong-token\r\nAuthorization: Bearer {TOKEN}\r\nConnection: close\r\n\r\n"
             ),
             format!(
-                "GET /internal/v1/orderbook/btcusdt HTTP/1.1\\r\\nHost: localhost\\r\\nAuthorization: Bearer {TOKEN}\\r\\nAuthorization: Bearer wrong-token\\r\\nConnection: close\\r\\n\\r\\n"
+                "GET /internal/v1/orderbook/btcusdt HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {TOKEN}\r\nAuthorization: Bearer wrong-token\r\nConnection: close\r\n\r\n"
             ),
         ];
 
