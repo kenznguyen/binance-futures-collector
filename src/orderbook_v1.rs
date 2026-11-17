@@ -257,31 +257,26 @@ impl SnapshotPublisher {
                 "refusing to publish malformed or unsorted order-book levels",
             );
         }
-        let has_zero_quantity = snapshot
-            .bids
-            .iter()
-            .chain(snapshot.asks.iter())
-            .any(|[price, quantity]| {
-                validate_orderbook_level(price, quantity)
-                    .map(|(_, quantity_key)| quantity_key == "0")
-                    .unwrap_or(true)
-            });
+        let has_zero_quantity =
+            snapshot
+                .bids
+                .iter()
+                .chain(snapshot.asks.iter())
+                .any(|[price, quantity]| {
+                    validate_orderbook_level(price, quantity)
+                        .map(|(_, quantity_key)| quantity_key == "0")
+                        .unwrap_or(true)
+                });
         if has_zero_quantity {
             return reject_current_publication(
                 &mut inner,
                 "refusing to publish invalid or zero-quantity order-book levels",
             );
         }
-        let best_bid = validate_orderbook_level(
-            &snapshot.bids[0][0],
-            &snapshot.bids[0][1],
-        )
-        .map(|(price, _)| price);
-        let best_ask = validate_orderbook_level(
-            &snapshot.asks[0][0],
-            &snapshot.asks[0][1],
-        )
-        .map(|(price, _)| price);
+        let best_bid = validate_orderbook_level(&snapshot.bids[0][0], &snapshot.bids[0][1])
+            .map(|(price, _)| price);
+        let best_ask = validate_orderbook_level(&snapshot.asks[0][0], &snapshot.asks[0][1])
+            .map(|(price, _)| price);
         match (best_bid, best_ask) {
             (Ok(bid), Ok(ask)) if compare_normalized_decimals(&bid, &ask).is_lt() => {}
             _ => {
