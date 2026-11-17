@@ -4,12 +4,14 @@ Updated: 2026-11-17
 Repository: `kenznguyen/binance-futures-collector`
 Active branch: `feature/t1-connection-sidecar-integration-20261107`
 Pull request: [#1 — Add durable pre-handshake connection failure evidence](https://github.com/kenznguyen/binance-futures-collector/pull/1)
-Reviewed source SHA: `ded4cdef160746a9d683a6792fc7b990ffaf4317`
+Reviewed source SHA: `2c44f3a38ead3dccaf6c37e61a354681a48b243b`
 
 ## 1. Current disposition
 
 - PR #1: OPEN / DRAFT / NOT MERGED. Do not merge without explicit approval.
-- CI #756: [run 44034675130](https://github.com/kenznguyen/binance-futures-collector/actions/runs/44034675130), exact source SHA `ded4cdef160746a9d683a6792fc7b990ffaf4317`.
+- CI #756: [run 44034675130](https://github.com/kenznguyen/binance-futures-collector/actions/runs/44034675130), exact source SHA `ded4cdef160746a9d683a6792fc7b990ffaf4317` (historical checkpoint).
+- CI #761: [run 44042222048](https://github.com/kenznguyen/binance-futures-collector/actions/runs/44042222048), exact source SHA `2c44f3a38ead3dccaf6c37e61a354681a48b243b`; all 6/6 jobs PASS, including x86_64/native ARM64 Collector, Dashboard frontend/backend, Security and Docker.
+- Strict HTTP/1.1 framing parser fix: PASS in exact-head CI #761 on both architectures. HTTP/1.1 requires exactly one non-empty Host; duplicate Host and duplicate Content-Length (including duplicate zero values) are rejected with HTTP 400; existing duplicate Authorization and Transfer-Encoding/body rejection remain.
 - Boundary test `bounded_response_writer_accepts_exact_limit_then_rejects_next_byte`: PASS on x86_64 and native ARM64.
 - Collector, Sidecar, Dashboard and Security jobs: PASS.
 - Docker image build: PASS. All 6/6 jobs in CI #756 completed successfully; overall workflow: PASS.
@@ -38,9 +40,33 @@ Artifacts published by run #756:
 
 These are CI artifacts, not deployed binaries or runtime evidence. Artifact expiry reported by GitHub: 2026-11-24 UTC.
 
+## 2A. Exact CI #761 evidence — strict HTTP/1.1 framing headers
+
+Workflow run: [44042222048](https://github.com/kenznguyen/binance-futures-collector/actions/runs/44042222048)
+Exact source SHA: `2c44f3a38ead3dccaf6c37e61a354681a48b243b`
+
+The test-first sequence is preserved:
+- Test-only SHA `cffb8717aaa20bb7efe032eddb86ae40897cfb23` produced genuine RED in CI #759: x86_64 and native ARM64 each had 126 passed / 2 failed. The two intended failures were `http_11_requires_exactly_one_nonempty_host_header` and `duplicate_content_length_headers_are_rejected_even_when_both_are_zero`.
+- Parser fix SHA `2b9103c61ddcf25433efaad07c1e211a65afa045` implemented unique/non-empty Host and unique Content-Length enforcement. CI #760 stopped at `cargo fmt --check` on both Collector architecture jobs; this was formatting-only and did not establish behavioral GREEN.
+- Formatting-only follow-up SHA `2c44f3a38ead3dccaf6c37e61a354681a48b243b` passed exact-head CI #761, all 6/6 jobs.
+
+Per architecture in CI #761:
+- Collector test suite: 128 passed, 0 failed.
+- Additional test suite: 5 passed, 0 failed.
+- Publisher/HTTP contract integration: 19 passed, 0 failed. Includes `production_bind_helper_uses_only_the_documented_loopback_socket`.
+- Sidecar unit tests: 12 passed, 0 failed.
+- Sidecar integration tests: 27 passed, 0 failed.
+- Format, Clippy, build, and sidecar format/Clippy passed.
+
+Artifacts published by CI #761:
+- x86_64: artifact ID `14309522571`, name `t1-collector-linux-x86_64-2c44f3a38ead3dccaf6c37e61a354681a48b243b`, size 4,335,201 bytes, GitHub artifact ZIP SHA-256 `4d1422fee72385cadd3a81a36da02ef8a3623c92f48a43736f3ac18271807352`.
+- ARM64: artifact ID `14309772626`, name `t1-collector-linux-aarch64-2c44f3a38ead3dccaf6c37e61a354681a48b243b`, size 4,037,368 bytes, GitHub artifact ZIP SHA-256 `20a6aa9448e6dcf917354c385e5f70aae3769790c1f1ace4769d8158e798eaea`. ELF header verification reported `Machine: AArch64`.
+
+These are CI artifacts, not deployed binaries or runtime evidence. GitHub artifact retention is 7 days; do not treat artifacts as permanent backups.
+
 ## 3. HTTP V1 implementation review
 
-Reviewed at source SHA `ded4cdef160746a9d683a6792fc7b990ffaf4317`:
+Reviewed baseline at source SHA `ded4cdef160746a9d683a6792fc7b990ffaf4317`; strict framing and production bind follow-up verified at `2c44f3a38ead3dccaf6c37e61a354681a48b243b`:
 - `src/orderbook_http.rs`
 - `src/orderbook_v1.rs`
 - `src/main.rs`
@@ -64,10 +90,10 @@ Confirmed in source:
 These are review findings, not approved source changes:
 1. Contract error table does not yet list the implemented `400 duplicate_authorization` response.
 2. Contract says at most 8 concurrent connections; implementation allows 8 active handlers plus up to 8 bounded rejection-response handlers. Clarify whether the contract means active request capacity or total accepted sockets.
-3. Strict HTTP parsing policy is not fully defined/tested for missing or duplicate `Host` and repeated `Content-Length: 0` headers. Decide and test the policy; do not silently assume a proxy is present.
-4. The production bind helper's exact `127.0.0.1:8787` behavior should have a direct deterministic test; current tests exercise an ephemeral loopback listener and rejection of a non-loopback listener.
+3. Strict HTTP/1.1 framing policy for Host and Content-Length is now tested and enforced at SHA `2c44f3a38ead3dccaf6c37e61a354681a48b243b`; CI #761 passed both architectures.
+4. Production bind helper loopback behavior now has a direct regression test (`production_bind_helper_uses_only_the_documented_loopback_socket`), passing in CI #761.
 5. Non-loopback peer rejection and publisher lock-poison failure paths remain additional hardening coverage items unless separately evidenced by later exact-SHA tests.
-6. The contract/test matrix is broader than the current test counts. Do not equate CI #756 with complete V1 contract acceptance.
+6. The contract/test matrix is broader than the current test counts. Do not equate CI #761 with complete V1 contract acceptance.
 
 ## 5. Prior verified T1 work retained
 
@@ -85,22 +111,26 @@ These are review findings, not approved source changes:
 
 ## 7. Next actions
 
-1. CI #756 terminal conclusion: SUCCESS, all 6/6 jobs PASS including Docker image build. Exact source SHA: `ded4cdef160746a9d683a6792fc7b990ffaf4317`; workflow run: [44034675130](https://github.com/kenznguyen/binance-futures-collector/actions/runs/44034675130).
-2. PR checkpoint comment updated after the final Docker result; see comment [6941175909](https://github.com/kenznguyen/binance-futures-collector/pull/1#issuecomment-6941175909) for the preceding evidence checkpoint. This handoff update records the terminal CI status.
-3. Resolve HTTP contract discrepancies through tests first, in a separately scoped increment on this branch. In particular, decide the 8+8 capacity semantics and strict header parsing policy.
-4. Re-run exact-head CI for any subsequent source or contract change and record exact SHA, run ID, test counts and artifacts.
-5. Only after the remaining V1 acceptance matrix is evidenced should T1 API acceptance or T1-to-T2 integration be reconsidered.
+1. CI #761 terminal conclusion: SUCCESS, all 6/6 jobs PASS on exact source SHA `2c44f3a38ead3dccaf6c37e61a354681a48b243b`; workflow run: [44042222048](https://github.com/kenznguyen/binance-futures-collector/actions/runs/44042222048).
+2. Update the PR checkpoint comment with CI #761 test counts, artifacts and checksums, and link this handoff commit.
+3. Resolve remaining HTTP contract discrepancies through tests first, in a separately scoped increment on this branch. In particular, document the 8 active + up to 8 rejection-handler capacity semantics and update the contract error table for `duplicate_authorization`, `missing_host`, `invalid_host`, `duplicate_host`, and `duplicate_content_length`.
+4. Add evidence for non-loopback peer rejection and publisher lock-poison failure paths if applicable to the intended V1 contract.
+5. Re-run exact-head CI for every subsequent source or contract change and record exact SHA, run ID, test counts and artifacts.
+6. Only after the remaining V1 acceptance matrix is evidenced should T1 API acceptance or T1-to-T2 integration be reconsidered.
 
 ## 8. Status summary
 
 | Area | Status |
 |---|---|
 | Exact-capacity boundary test | PASS |
+| Strict HTTP/1.1 Host / Content-Length framing | PASS — CI #761, x86_64 + ARM64 |
+| Production loopback bind helper regression | PASS — CI #761, x86_64 + ARM64 |
 | x86_64 Collector / Sidecar tests | PASS |
 | Native ARM64 Collector / Sidecar tests | PASS |
 | Dashboard frontend/backend | PASS |
 | Security job | PASS |
 | Docker / full CI #756 | PASS — 6/6 jobs |
+| Docker / full CI #761 | PASS — 6/6 jobs |
 | HTTP V1 full contract acceptance | PARTIAL / NOT VERIFIED |
 | T1 runtime readiness | NOT VERIFIED |
 | T1 to T2 integration | BLOCKED |
