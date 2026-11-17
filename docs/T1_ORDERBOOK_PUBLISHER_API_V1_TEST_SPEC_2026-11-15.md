@@ -134,7 +134,8 @@ P0 — must pass before API V1 implementation acceptance:
 - NR-01 through NR-06
 
 P1 — hardening:
-- AU-09, FC-09, FC-10, CT-10
+- AU-09, FC-10, CT-10
+- FC-09 has since been verified on exact-head CI #767 (see the 2026-11-17 update below).
 
 A test that has only been specified is NOT RUN. Existing source tests are not counted as passing until a workflow run on the exact source SHA proves them.
 
@@ -181,4 +182,15 @@ No runtime/VPS acceptance is implied by CI. No T1 activation or T2 integration i
 - AU-19 `duplicate_authorization_headers_are_rejected_regardless_of_order`: retained and PASS on x86_64 and ARM64.
 - The contract now defines 8 active request handlers + up to 8 bounded rejection writers; further sockets are dropped without response. The existing concurrency test verifies an excess client receives bounded 503 while rejection capacity is available.
 - CI artifacts: x86_64 ID `14309522571`, ZIP SHA256 `4d1422fee72385cadd3a81a36da02ef8a3623c92f48a43736f3ac18271807352`; ARM64 ID `14309772626`, ZIP SHA256 `20a6aa9448e6dcf917354c385e5f70aae3769790c1f1ace4769d8158e798eaea` (7-day retention).
-- Still NOT VERIFIED: AU-09 non-loopback peer test, FC-09 publisher read-lock poison/internal read failure test, and any other unexecuted rows in the required matrix. Full V1 acceptance remains PARTIAL / NOT VERIFIED; no runtime acceptance is implied.
+- AU-09 is NOT EXERCISED at the TCP integration level under the mandated loopback-only offline harness: the production listener is bound to 127.0.0.1, so a non-loopback remote peer cannot establish a TCP connection to it. A fabricated SocketAddr unit test would only retest the standard-library address predicate and would not prove a socket-level drop; do not weaken the loopback bind or claim such a test as network evidence. The accept loop retains a defensive `!peer.ip().is_loopback()` drop check.
+- FC-09 was subsequently verified on exact fix SHA `cb1ccc0df79584d1b84f257b033a7872b6d409dc`, CI #767 (see below).
+- Other unexecuted rows remain subject to the required matrix. Full V1 acceptance remains PARTIAL / NOT VERIFIED; no runtime acceptance is implied.
+
+## 7. Exact-SHA coverage update — 2026-11-17 FC-09
+
+- Test-only SHA: `13ab62841a4c28b410c22caa8c9dbe8bf67be4af`; exact-head CI [#766](https://github.com/kenznguyen/binance-futures-collector/actions/runs/44048337134) confirmed genuine RED on x86_64 and native ARM64 (128 passed / 1 failed on each; the only failing test was `publisher_read_fresh_returns_error_when_lock_is_poisoned`).
+- Fix SHA: `cb1ccc0df79584d1b84f257b033a7872b6d409dc`; `SnapshotPublisher::read_fresh` now maps poisoned read-lock state to an ordinary error and does not recover the poisoned lock.
+- Exact-head CI [#767](https://github.com/kenznguyen/binance-futures-collector/actions/runs/44049288867): SUCCESS, all 6/6 jobs. Both x86_64 and native ARM64: Collector 129/129, additional 5/5, Publisher/HTTP integration 19/19, Sidecar unit 12/12, Sidecar integration 27/27. FC-09 test explicitly PASS on both architectures. Format, Clippy, Build, Dashboard frontend/backend, Security and Docker PASS.
+- Artifacts (7-day retention; CI evidence only): x86_64 ID `14313036815`, ZIP SHA256 `71179ce9cf5310411b0c4830b2f44a6280b1c007c4dcb8f7e8b32898cb1a2242`; ARM64 ID `14313091850`, ZIP SHA256 `9864f3cd2de65fb5552c5210361127f0a6610170d16769d2c3cf05c2973f440c`. ARM64 ELF machine verified as AArch64.
+- FC-09: PASS for the tested publisher `read_fresh` poisoned-lock path. This does not claim every possible internal publisher error or full HTTP V1 acceptance.
+- AU-09: NOT EXERCISED at TCP level for the loopback-only reason above. Full V1 acceptance remains PARTIAL / NOT VERIFIED.
