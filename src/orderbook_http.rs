@@ -210,6 +210,8 @@ async fn handle_connection(
     }
 
     let mut authorization = None;
+    let mut host_seen = false;
+    let mut content_length_seen = false;
     for line in lines {
         if line.is_empty() {
             break;
@@ -223,16 +225,47 @@ async fn handle_connection(
             )
             .await;
         };
-        if name.eq_ignore_ascii_case("content-length")
-            && value.trim().parse::<usize>().unwrap_or(usize::MAX) != 0
-        {
-            return write_response(
-                stream,
-                400,
-                "Bad Request",
-                &json!({"error":"request_body_not_supported"}),
-            )
-            .await;
+        if name.eq_ignore_ascii_case("host") {
+            if host_seen {
+                return write_response(
+                    stream,
+                    400,
+                    "Bad Request",
+                    &json!({"error":"duplicate_host"}),
+                )
+                .await;
+            }
+            host_seen = true;
+            if value.trim().is_empty() {
+                return write_response(
+                    stream,
+                    400,
+                    "Bad Request",
+                    &json!({"error":"invalid_host"}),
+                )
+                .await;
+            }
+        }
+        if name.eq_ignore_ascii_case("content-length") {
+            if content_length_seen {
+                return write_response(
+                    stream,
+                    400,
+                    "Bad Request",
+                    &json!({"error":"duplicate_content_length"}),
+                )
+                .await;
+            }
+            content_length_seen = true;
+            if value.trim().parse::<usize>().unwrap_or(usize::MAX) != 0 {
+                return write_response(
+                    stream,
+                    400,
+                    "Bad Request",
+                    &json!({"error":"request_body_not_supported"}),
+                )
+                .await;
+            }
         }
         if name.eq_ignore_ascii_case("transfer-encoding") {
             return write_response(
@@ -255,6 +288,16 @@ async fn handle_connection(
             }
             authorization = Some(value.trim());
         }
+    }
+
+    if !host_seen {
+        return write_response(
+            stream,
+            400,
+            "Bad Request",
+            &json!({"error":"missing_host"}),
+        )
+        .await;
     }
 
     let expected = format!("Bearer {expected_token}");
