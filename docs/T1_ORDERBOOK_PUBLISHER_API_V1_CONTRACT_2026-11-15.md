@@ -98,6 +98,17 @@ Decimal values must remain strings; consumers must not parse them through binary
 
 The builder requires at least 20 levels on each side, strictly ordered prices, valid positive prices/non-negative quantities, and a non-crossed book. The published depth counts must reflect the actual arrays.
 
+### V1 schema compatibility policy (CT-10)
+
+V1 uses a closed-world JSON object schema. A conforming consumer must:
+- Require every field listed in section 4 with the documented JSON type and invariant.
+- Reject a response with any missing required field, unknown top-level field, or unknown field inside a defined nested object such as `depth`.
+- Reject an unknown `contractVersion`; it must not attempt best-effort parsing or silently downgrade.
+- Treat an additive field, renamed field, changed type, changed invariant, or new contract version as a contract revision, not a backward-compatible V1 response.
+- Keep the exact V1 field set and semantic meaning stable for `T1_T2_ORDERBOOK_V1`. Any extension requires a separately reviewed versioned contract and corresponding producer/consumer tests before rollout.
+
+The producer-side exact-schema integration test proves that the current V1 response emits the required closed field set. It does not substitute for a consumer parser test; consumer-side rejection behavior must be verified in the T2 repository before T1→T2 integration is accepted.
+
 ## 5. Continuity and publication invariants
 
 A snapshot is publishable only when all conditions hold:
