@@ -204,24 +204,8 @@ fn publisher_rejects_inconsistent_depth_metadata() {
     );
 }
 
-#[tokio::test]
-async fn authenticated_response_matches_exact_v1_schema_market_and_depth() {
-    let publisher = publisher();
-    let generation = begin_publish(&publisher);
-    publish_valid(&publisher, generation);
-    let (address, server) = start_server(publisher).await;
-
-    let response = request(&address, Some(TOKEN)).await;
-    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
-    let body = response.split("\r\n\r\n").nth(1).unwrap();
-    let json: serde_json::Value = serde_json::from_str(body).unwrap();
-
-    let actual = json
-        .as_object()
-        .unwrap()
-        .keys()
-        .cloned()
-        .collect::<BTreeSet<_>>();
+fn assert_exact_http_v1_schema_and_identity(json: &serde_json::Value) {
+    let object = json.as_object().expect("HTTP V1 body must be a JSON object");
     let expected = [
         "contractVersion",
         "symbol",
@@ -242,19 +226,86 @@ async fn authenticated_response_matches_exact_v1_schema_market_and_depth() {
         "depth",
     ]
     .into_iter()
-    .map(str::to_string)
     .collect::<BTreeSet<_>>();
+    let actual = object.keys().map(String::as_str).collect::<BTreeSet<_>>();
+    assert_eq!(actual, expected, "HTTP V1 must expose exactly the required top-level fields");
 
-    assert_eq!(actual, expected);
+    for field in [
+        "contractVersion",
+        "symbol",
+        "market",
+        "snapshotId",
+        "continuity",
+        "freshness",
+    ] {
+        assert!(json[field].is_string(), "{field} must be a string");
+    }
+    for field in [
+        "snapshotLastUpdateId",
+        "firstAppliedU",
+        "lastAppliedU",
+        "decisionWatermark",
+        "generation",
+    ] {
+        assert!(json[field].as_u64().is_some(), "{field} must be an unsigned integer");
+    }
+    for field in ["sourceTimestampMs", "observedAtMs"] {
+        assert!(json[field].as_i64().is_some(), "{field} must be an integer timestamp");
+    }
+    assert!(json["complete"].is_boolean(), "complete must be a boolean");
+
+    for side in ["bids", "asks"] {
+        let levels = json[side].as_array().expect("depth side must be an array");
+        assert_eq!(levels.len(), 20, "{side} must contain exactly 20 levels");
+        for (index, level) in levels.iter().enumerate() {
+            let pair = level.as_array().expect("each level must be a two-element array");
+            assert_eq!(pair.len(), 2, "each {side} level must contain price and quantity");
+            assert!(pair[0].is_string(), "{side}[{index}] price must be a decimal string");
+            assert!(pair[1].is_string(), "{side}[{index}] quantity must be a decimal string");
+        }
+    }
+
+    let depth = json["depth"].as_object().expect("depth must be an object");
+    let depth_keys = depth.keys().map(String::as_str).collect::<BTreeSet<_>>();
+    assert_eq!(depth_keys, ["asks", "bids"].into_iter().collect());
+    assert_eq!(json["depth"]["bids"].as_u64(), Some(20));
+    assert_eq!(json["depth"]["asks"].as_u64(), Some(20));
+
+    let identity: std::collections::BTreeMap<&str, &serde_json::Value> = object
+        .iter()
+        .filter(|(key, _)| key.as_str() != "snapshotId")
+        .map(|(key, value)| (key.as_str(), value))
+        .collect();
+    let canonical = serde_json::to_vec(&identity).expect("canonical identity must serialize");
+    let hash = ring::digest::digest(&ring::digest::SHA256, &canonical);
+    let encoded = hash
+        .as_ref()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    assert_eq!(
+        json["snapshotId"].as_str(),
+        Some(format!("sha256:{encoded}").as_str()),
+        "snapshotId must be recomputed from the actual HTTP response body"
+    );
+}
+
+#[tokio::test]
+async fn authenticated_response_matches_exact_v1_schema_market_and_depth() {
+    let publisher = publisher();
+    let generation = begin_publish(&publisher);
+    publish_valid(&publisher, generation);
+    let (address, server) = start_server(publisher).await;
+
+    let response = request(&address, Some(TOKEN)).await;
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    let body = response.split("\r\n\r\n").nth(1).unwrap();
+    let json: serde_json::Value = serde_json::from_str(body).unwrap();
+
+    assert_exact_http_v1_schema_and_identity(&json);
     assert_eq!(json["contractVersion"], "T1_T2_ORDERBOOK_V1");
     assert_eq!(json["symbol"], "BTCUSDT");
     assert_eq!(json["market"], "BINANCE_USDM_PERPETUAL");
-    assert_eq!(json["bids"].as_array().unwrap().len(), 20);
-    assert_eq!(json["asks"].as_array().unwrap().len(), 20);
-    assert_eq!(json["depth"]["bids"], 20);
-    assert_eq!(json["depth"]["asks"], 20);
-    assert!(json["bids"][0][0].is_string());
-    assert!(json["bids"][0][1].is_string());
     assert_eq!(json["bids"][0][1], "1.000");
 
     server.abort();
