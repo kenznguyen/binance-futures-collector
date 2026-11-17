@@ -318,7 +318,10 @@ impl SnapshotPublisher {
     }
 
     pub fn read_fresh(&self, decision_time_ms: i64) -> Result<Arc<OrderbookSnapshotV1>> {
-        let inner = self.inner.read().expect("snapshot publisher lock poisoned");
+        let inner = self
+            .inner
+            .read()
+            .map_err(|_| anyhow::anyhow!("snapshot publisher lock poisoned"))?;
         if inner.state != OrderbookV1State::Ready {
             bail!("BTCUSDT V1 publisher is not READY");
         }
