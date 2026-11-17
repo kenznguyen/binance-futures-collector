@@ -289,3 +289,16 @@ These are review findings, not approved source changes:
 - Verdict: NR-02 and NR-03 PASS for the tested offline Publisher state/generation/snapshot-identity invariants. This does not prove filesystem-wide Collector CSV/gap-tree immutability (NR-01), runtime listener behavior, T1 deployment, or T1-to-T2 integration.
 - PR #1 remains OPEN / DRAFT / NOT MERGED. No listener activation, token injection, VPS deployment, T0/T2 changes, T1-to-T2 integration or real orders.
 
+
+
+## 6M. NR-01 isolated filesystem non-regression — test design (2026-11-17)
+
+- Handoff documentation commit `d24098b73a7cc2b3ee5107edf196963e20bd9d5c` was verified by exact-SHA CI run [44124447353](https://github.com/kenznguyen/binance-futures-collector/actions/runs/44124447353): SUCCESS, all 6/6 jobs.
+- NR-01 remains NOT VERIFIED. No source or workflow implementation has been changed for NR-01 in this checkpoint.
+- Proposed acceptance method: add a dedicated CI-only isolated test step. Build the Publisher/API test targets, then execute only the Publisher HTTP unit-test group and `orderbook_v1_p3_contract` integration-test binary from a fresh temporary working directory. Run the compiled test executables directly so their process working directory is the sandbox rather than the repository root.
+- After each targeted test executable, assert that neither `data/futures` nor `data/gaps` exists in the sandbox. Preserve the temporary directory path and assertion output in CI logs. The sandbox must be newly created and empty before execution; cleanup must run even on failure.
+- This approach tests filesystem side effects in the default relative Collector CSV/gap output locations without invoking Collector ingestion, starting a listener, contacting Binance, injecting runtime secrets, or changing production code. It does not establish that arbitrary absolute paths or external mounted volumes are untouched.
+- Before implementation, confirm the exact Cargo test-binary discovery command and test filter against the repository's current Cargo targets; fail closed if zero or multiple matching binaries are found. Do not weaken the assertion or silently skip a missing test binary.
+- Use TDD/evidence discipline: first demonstrate that the sandbox assertion is effective with a controlled temporary fixture (create a sentinel under each prohibited path and confirm the check fails), then run the real Publisher/API test binaries in a clean sandbox. This fixture must be isolated from the repository and removed by a trap.
+- Acceptance is limited to the test process working directory and the two specified relative output trees. NR-01 must not be marked PASS from source inspection or `git status` alone.
+- Boundaries unchanged: remain on `feature/t1-connection-sidecar-integration-20261107`; PR #1 stays OPEN / DRAFT / NOT MERGED. No collector ingestion/persistence changes, listener activation, token injection, VPS deployment, T0/T2 changes, T1→T2 integration, or real orders.
