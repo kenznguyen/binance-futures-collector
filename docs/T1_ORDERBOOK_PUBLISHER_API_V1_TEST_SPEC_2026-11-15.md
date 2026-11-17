@@ -251,3 +251,15 @@ Current acceptance: HTTP V1 full P0/P1 matrix **PARTIAL / NOT VERIFIED**. CI #79
 ### NR-05 scope finding — 2026-11-17
 
 The PR-wide changed-file list and inspected patches confirm modifications to collector/ingestion and historical-data-adjacent components, including `src/collectors/orderbook_manager.rs`, `src/collectors/rest_collector.rs`, `src/utils/csv_writer.rs`, `src/utils/gap_registry.rs`, and `src/websocket/message_handler.rs`. Therefore NR-05, as currently worded ("No changes" to these paths), is **FAIL for PR #1 as a whole**. This does not establish data corruption; it establishes that the strict no-change acceptance criterion is not met. Do not re-label these changes as HTTP-only or silently waive the criterion. A separately approved scope interpretation is required before acceptance.
+
+
+## 9. Exact-SHA coverage update — FR-08 PASS (2026-11-17)
+
+- Test-only source commit: `b005a7c1fe2ba555f5bebebee4c453d07d6f20ac`, message `test(t1): cover non-positive V1 source timestamps`.
+- Added `non_positive_exchange_event_timestamps_are_rejected_before_publication` in `src/orderbook_v1.rs`. It checks `event_time = 0` and `event_time = -1`; each candidate is rejected by `build_snapshot`, no snapshot is readable, `read_fresh` returns an error, and publisher state remains `FetchingSnapshot`.
+- Exact-head CI #796: [run 44113367744](https://github.com/kenznguyen/binance-futures-collector/actions/runs/44113367744), SUCCESS, all 6/6 jobs on exact SHA `b005a7c1fe2ba555f5bebebee4c453d07d6f20ac`.
+- x86_64 and native ARM64 Collector fmt/Clippy/build/tests PASS; Dashboard backend/frontend, Security and Docker PASS.
+- FR-08: PASS for the tested non-positive timestamp publication-boundary cases. This is offline unit-test evidence; it does not imply runtime/listener acceptance or malformed wire parsing beyond the tested integer values.
+- FC-10 remains NOT VERIFIED: no consumer-side transport-failure/cache invalidation test is present in this repository's V1 acceptance evidence. Do not claim stale-cache prevention from publisher-side fail-closed tests.
+- Overall HTTP V1 full acceptance remains PARTIAL / NOT VERIFIED. AU-09 remains NOT EXERCISED; NR-05 remains FAIL for PR #1 as written; NR-01..03 NOT VERIFIED and NR-04 PARTIAL.
+- No listener activation, runtime token injection, VPS deployment, T0/T2 changes, T1→T2 integration or real orders.
