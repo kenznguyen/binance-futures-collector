@@ -5,7 +5,7 @@ Repository: `kenznguyen/binance-futures-collector`
 Active branch: `feature/t1-connection-sidecar-integration-20261107`
 Pull request: [#1 — Add durable pre-handshake connection failure evidence](https://github.com/kenznguyen/binance-futures-collector/pull/1)
 Reviewed source SHA: `2c44f3a38ead3dccaf6c37e61a354681a48b243b`
-Latest branch documentation SHA: `aa205aa86221860f6d687b9c9b281860c02df721`
+Latest branch source/test SHA: `13ab62841a4c28b410c22caa8c9dbe8bf67be4af`
 
 ## 1. Current disposition
 
@@ -109,6 +109,13 @@ These are review findings, not approved source changes:
 - Keep PR #1 open and draft; no merge without explicit approval.
 - Do not activate the HTTP listener, inject runtime token secrets, run collector/Binance smoke tests, deploy to VPS, or connect T2 without separate approval.
 - No T0 data, T0 source, T2 integration, collector live ingestion, CSV historical output, or execution behavior may be changed as part of this handoff.
+
+## 6A. Publisher poisoned read-lock regression — pending exact-head CI
+
+- Test-only commit: `13ab62841a4c28b410c22caa8c9dbe8bf67be4af`, message `test(publisher): cover poisoned read lock failure`.
+- Added `publisher_read_fresh_returns_error_when_lock_is_poisoned`, which poisons the `std::sync::RwLock` on a dedicated thread and asserts `read_fresh` returns an error rather than panicking.
+- Exact-head CI [#766](https://github.com/kenznguyen/binance-futures-collector/actions/runs/44048337134) is running on this test-only SHA. RED/GREEN result is pending; do not claim FC-09 coverage or implementation correctness until the exact run completes.
+- Intended production fix, if RED is confirmed: make `read_fresh` convert lock poison into an ordinary error; existing HTTP handler maps any `read_fresh` error to bounded 503 `snapshot_unavailable`. Preserve fail-closed behavior and do not recover/unwrap poisoned state.
 
 ## 7. Next actions
 
