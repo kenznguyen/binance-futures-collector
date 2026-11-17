@@ -123,6 +123,18 @@ These are review findings, not approved source changes:
   - ARM64 artifact ID `14313091850`, name `t1-collector-linux-aarch64-cb1ccc0df79584d1b84f257b033a7872b6d409dc`, size 4,037,415 bytes, ZIP SHA-256 `9864f3cd2de65fb5552c5210361127f0a6610170d16769d2c3cf05c2973f440c`. ELF header verified `AArch64`.
 - FC-09 is PASS for the tested `read_fresh` failure path. This does not by itself establish full HTTP V1 contract acceptance or runtime readiness.
 
+
+## 6D. HTTP V1 regression sequence — authentication PASS
+
+- Authentication regression test was added at source commit `bb2931bb4db89a51b6f0016d75de9de43721ec96`, but its first CI run #778 (`44068318739`) failed because the test request literal contained escaped backslashes instead of actual CRLF framing. The handler correctly returned `400 incomplete_request`; this was invalid test input, not evidence of an authentication defect.
+- Corrected only the test request literal in commit `4c0dfe7c538de7e97016a670d5731bf8003a24d9`, message `test(http): correct missing authorization request framing`. The request now uses valid HTTP CRLF framing and intentionally omits Authorization. No production code changed.
+- Exact-head CI #780: [run 44071625375](https://github.com/kenznguyen/binance-futures-collector/actions/runs/44071625375), SUCCESS, all 6/6 jobs on exact SHA `4c0dfe7c538de7e97016a670d5731bf8003a24d9`.
+- x86_64 and native ARM64: Collector 131/131; additional test suites 5/5 and HTTP/P3 integration 19/19; Sidecar unit 12/12 and Sidecar integration 27/27. The `missing_authorization_header_is_rejected_without_snapshot_disclosure` test explicitly passed on both architectures. Format, Clippy, Build, Dashboard frontend/backend, Security and Docker all PASS.
+- CI artifacts (7-day retention; CI evidence only, not deployed binaries): x86_64 artifact ID `14321764052`, name `t1-collector-linux-x86_64-4c0dfe7c538de7e97016a670d5731bf8003a24d9`, size 4,335,457 bytes; ARM64 artifact ID `14322602274`, name `t1-collector-linux-aarch64-4c0dfe7c538de7e97016a670d5731bf8003a24d9`, size 4,037,419 bytes; ARM64 ELF header verified AArch64.
+- Status: authentication regression PASS. Token/request-size PASS. Freshness, wire-schema and strict-parser regression groups remain pending in that order. HTTP V1 full contract acceptance remains PARTIAL / NOT VERIFIED; T1 runtime NOT VERIFIED; T1-to-T2 integration BLOCKED.
+- Boundaries unchanged: remain on this branch; PR #1 OPEN / DRAFT / NOT MERGED. No listener activation, secret injection, Binance smoke test, VPS deployment, T0/T2 changes or real orders.
+
+
 ## 7. Next actions
 
 1. CI #761 terminal conclusion: SUCCESS, all 6/6 jobs PASS on exact source SHA `2c44f3a38ead3dccaf6c37e61a354681a48b243b`; workflow run: [44042222048](https://github.com/kenznguyen/binance-futures-collector/actions/runs/44042222048).
