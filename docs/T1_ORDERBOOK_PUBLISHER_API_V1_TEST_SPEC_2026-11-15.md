@@ -234,7 +234,7 @@ Scope: source/test-to-requirement mapping only; no production code changed.
 | FC-10 | No HTTP consumer/client integration test proves transport failure prevents stale cached response reuse | NOT VERIFIED |
 | NR-01 through NR-03 | No dedicated filesystem/collector-state immutability assertions identified for build, repeated GET and HTTP error paths | NOT VERIFIED |
 | NR-04 | Existing `cargo test --all` suite passes on both architectures in #790; no baseline-vs-feature result comparison recorded here | PARTIAL |
-| NR-05 | Requires explicit changed-file/diff audit against ingestion, CSV writer, persistence and gap-registry paths; not established by test counts alone | NOT VERIFIED |
+| NR-05 | PR #1 changed-file list and patches include `src/collectors/orderbook_manager.rs`, `src/collectors/rest_collector.rs`, `src/utils/csv_writer.rs`, `src/utils/gap_registry.rs`, and `src/websocket/message_handler.rs`; this violates the matrix row's literal no-change requirement | FAIL (scope conflict) |
 | NR-06 | Exact source SHA and repository branch were checked for CI #790; exact handoff SHA separately verified by CI #791 | PASS |
 
 ### Remaining matrix work and gates
@@ -243,6 +243,11 @@ Scope: source/test-to-requirement mapping only; no production code changed.
 2. Resolve CT-10 by explicitly documenting the wire compatibility policy. The current HTTP response exact-key assertion proves the emitted schema, but does not alone define consumer behavior for unknown additive fields or future contract versions.
 3. Keep AU-09 NOT EXERCISED unless a genuinely valid isolated TCP topology can test a non-loopback peer without weakening the production loopback bind. Do not substitute a fabricated peer address.
 4. Keep FC-10 NOT VERIFIED until a consumer-side test demonstrates transport failure invalidates/ages out cached data and cannot be treated as current.
-5. Complete NR-01..05 with explicit read-only/diff-based evidence. Do not infer data isolation from successful compilation or unit-test counts.
+5. NR-05 is FAIL against the current PR-wide scope: ingestion/order-book manager, REST collector, CSV writer, gap registry and WebSocket message handler are changed in PR #1. This is a pre-existing PR scope conflict, not introduced by this documentation-only checkpoint. Do not claim historical-data isolation or narrow the criterion silently; require an explicit scope decision before treating NR-05 as satisfied. NR-01..03 remain NOT VERIFIED and NR-04 PARTIAL.
 
 Current acceptance: HTTP V1 full P0/P1 matrix **PARTIAL / NOT VERIFIED**. CI #790 is exact-source PASS; CI #791 is handoff/docs SHA PASS, not runtime acceptance. No listener activation, runtime token injection, VPS deployment, T0/T2 changes, T1→T2 connection, or real orders.
+
+
+### NR-05 scope finding — 2026-11-17
+
+The PR-wide changed-file list and inspected patches confirm modifications to collector/ingestion and historical-data-adjacent components, including `src/collectors/orderbook_manager.rs`, `src/collectors/rest_collector.rs`, `src/utils/csv_writer.rs`, `src/utils/gap_registry.rs`, and `src/websocket/message_handler.rs`. Therefore NR-05, as currently worded ("No changes" to these paths), is **FAIL for PR #1 as a whole**. This does not establish data corruption; it establishes that the strict no-change acceptance criterion is not met. Do not re-label these changes as HTTP-only or silently waive the criterion. A separately approved scope interpretation is required before acceptance.
