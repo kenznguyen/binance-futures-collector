@@ -51,11 +51,13 @@ This document records the existing interface and its required acceptance tests. 
 | Content type | `application/json` |
 | Maximum request | 4 KiB |
 | Maximum response | 64 KiB |
-| Concurrent connections | At most 8 |
+| Active request handlers | At most 8 concurrently |
 | I/O deadline | 750 ms |
 | Network exposure | Loopback only; no wildcard or non-loopback bind |
 
 The token must be injected out-of-band. It must not be placed in a URL, query string, response, logs, repository file, or test artifact.
+
+The listener admits at most 8 active request handlers. When all 8 are occupied, it may admit up to 8 additional short-lived rejection handlers solely to write a bounded 503 capacity_unavailable response, each under the same 750 ms I/O deadline. These rejection handlers do not process requests or access publisher state. Once those 8 rejection slots are also occupied, further accepted sockets are dropped without a response. Thus the bound is 8 active handlers + 8 bounded rejection writers; it is not a promise to process 16 concurrent requests.
 
 ### Resource
 
@@ -132,11 +134,16 @@ All error bodies are JSON objects with a single machine-readable `error` string.
 | 400 | `transfer_encoding_not_supported` | Transfer-Encoding supplied |
 | 400 | `invalid_request_line` | Invalid HTTP/1.1 request line |
 | 400 | `invalid_header` | Malformed header |
+| 400 | `missing_host` | HTTP/1.1 Host header is absent |
+| 400 | `invalid_host` | Host header is present but empty |
+| 400 | `duplicate_host` | More than one Host header is supplied |
+| 400 | `duplicate_content_length` | More than one Content-Length header is supplied, including repeated zero values |
+| 400 | `duplicate_authorization` | More than one Authorization header is supplied |
 | 401 | `unauthorized` | Missing or invalid bearer token |
 | 404 | `not_found` | Unknown route or unsupported symbol |
 | 405 | `method_not_allowed` | Method other than GET |
 | 413 | `request_too_large` | Request exceeds 4 KiB |
-| 503 | `capacity_unavailable` | All 8 connection permits are occupied |
+| 503 | `capacity_unavailable` | All 8 active request permits are occupied and a bounded rejection-response slot is available; otherwise excess sockets are dropped |
 | 503 | `snapshot_unavailable` | Publisher is absent, broken, stopped, or not fresh/ready |
 | 503 | `snapshot_exceeds_response_limit` | Serialized snapshot exceeds 64 KiB |
 
@@ -154,13 +161,22 @@ No error response may include bids, asks, token material, stack traces, internal
 - Capacity or size limit exceeded: bounded error response; never truncate or partially return a snapshot.
 - Transport timeout or malformed request: close/reject; never substitute cached data.
 
-## 9. Known source discrepancies to resolve before implementation changes
+## 9. Verification updates and remaining contract boundaries
 
-1. The canonical `build_snapshot` writes `market=BINANCE_USDM_PERPETUAL`, while the HTTP test fixture manually constructs `market=USDT-M-PERPETUAL`. The contract selects the builder's canonical value. A future test must use a shared fixture/builder and assert the exact value; do not silently accept both.
-2. The builder enforces minimum depth 20/20, but `SnapshotPublisher::publish_if_current` itself checks completeness/status strings and does not independently verify depth counts against arrays. The HTTP test fixture currently publishes a one-level book directly. Add a negative publisher/transport contract test or make construction of publishable snapshots inaccessible in a separately approved implementation increment.
-3. Existing HTTP tests exercise an ephemeral loopback port by passing a test listener to `serve`; production `bind_loopback` must separately be tested to bind only `127.0.0.1:8787`.
-4. Existing transport has no status route. Do not document or assume one.
-5. The transport task logs and exits if the HTTP server stops; it does not restart the listener. Consumer behavior on connection refusal must remain fail-closed.
+Resolved by exact-source tests at SHA `2c44f3a38ead3dccaf6c37e61a354681a48b243b`, workflow [#761](https://github.com/kenznguyen/binance-futures-collector/actions/runs/44042222048):
+1. Canonical market metadata is `BINANCE_USDM_PERPETUAL`; the HTTP integration fixture and exact V1 response test assert this builder value.
+2. Publisher/HTTP contract tests exercise minimum bid/ask depth and depth metadata consistency; insufficient bid or ask depth is rejected.
+3. Production `bind_loopback` has a direct regression test proving the documented loopback socket behavior.
+4. HTTP/1.1 framing requires exactly one non-empty Host header; missing, empty, or duplicate Host is rejected. Duplicate Content-Length is rejected even when both values are zero. Duplicate Authorization is rejected.
+5. Capacity semantics are explicitly bounded as 8 active handlers + up to 8 short-lived rejection writers; further sockets are dropped without response.
+
+Remaining contract/test boundaries:
+- AU-09 non-loopback peer rejection is implemented by dropping a peer whose address is not loopback, but a deterministic test has not yet been evidenced. Because the production listener itself is loopback-only, the test strategy needs careful design rather than weakening the bind guard.
+- FC-09 publisher read-lock poison/internal read failure coverage remains NOT VERIFIED.
+- The absence of a status endpoint and non-restarting listener task remain intentional V1 boundaries; consumer connection failure must remain fail-closed.
+- These results do not establish full V1 acceptance. The test matrix in the companion specification remains the acceptance authority.
+
+HTTP V1 full contract acceptance therefore remains PARTIAL / NOT VERIFIED.
 
 ## 10. Change control
 
