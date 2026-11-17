@@ -1051,7 +1051,12 @@ mod tests {
         let (address, server) = start_server(publisher.clone()).await;
 
         let cases = [
-            ("GET", "/internal/v1/orderbook/btcusdt", Some("wrong-token"), "401"),
+            (
+                "GET",
+                "/internal/v1/orderbook/btcusdt",
+                Some("wrong-token"),
+                "401",
+            ),
             ("POST", "/internal/v1/orderbook/btcusdt", Some(TOKEN), "405"),
             ("GET", "/internal/v1/orderbook/ethusdt", Some(TOKEN), "404"),
         ];
