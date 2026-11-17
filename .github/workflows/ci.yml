@@ -83,17 +83,30 @@ jobs:
           echo "NR01_SANDBOX=$sandbox"
           echo "NR01_SANDBOX_INITIAL_STATE=EMPTY"
 
-          cargo test --no-run --locked \
+          cargo_test_json="$(cargo test --no-run --locked --message-format=json \
             --bin binance-futures-collector \
-            --test orderbook_v1_p3_contract
+            --test orderbook_v1_p3_contract)"
 
+          # Resolve the exact executable paths Cargo reports. Do not assume
+          # Cargo places every test binary under target/debug/deps.
           mapfile -t publisher_bins < <(
-            find target/debug/deps -maxdepth 1 -type f -executable \
-              -name 'binance_futures_collector-*' -print
+            printf '%s\n' "$cargo_test_json" | jq -r '
+              select(
+                .reason == "compiler-artifact" and
+                .target.name == "binance_futures_collector" and
+                (.target.kind | index("bin")) and
+                .profile.test == true
+              ) | .executable // empty
+            '
           )
           mapfile -t contract_bins < <(
-            find target/debug/deps -maxdepth 1 -type f -executable \
-              -name 'orderbook_v1_p3_contract-*' -print
+            printf '%s\n' "$cargo_test_json" | jq -r '
+              select(
+                .reason == "compiler-artifact" and
+                .target.name == "orderbook_v1_p3_contract" and
+                .profile.test == true
+              ) | .executable // empty
+            '
           )
 
           if (( ${#publisher_bins[@]} != 1 )); then
