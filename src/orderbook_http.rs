@@ -1016,3 +1016,59 @@ mod tests {
         server.abort();
     }
 }
+
+    #[tokio::test]
+    async fn repeated_authenticated_gets_do_not_mutate_publisher_state() {
+        let publisher = ready_publisher().await;
+        let state_before = publisher.state();
+        let generation_before = publisher.generation();
+        let snapshot_before = publisher.read().expect("ready publisher has a snapshot");
+        let (address, server) = start_server(publisher.clone()).await;
+
+        for _ in 0..5 {
+            let response = request(
+                &address,
+                "GET",
+                "/internal/v1/orderbook/btcusdt",
+                Some(TOKEN),
+            )
+            .await;
+            assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+            assert_eq!(publisher.state(), state_before);
+            assert_eq!(publisher.generation(), generation_before);
+            let snapshot_after = publisher.read().expect("snapshot remains published");
+            assert!(Arc::ptr_eq(&snapshot_before, &snapshot_after));
+        }
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn http_error_paths_do_not_mutate_publisher_state() {
+        let publisher = ready_publisher().await;
+        let state_before = publisher.state();
+        let generation_before = publisher.generation();
+        let snapshot_before = publisher.read().expect("ready publisher has a snapshot");
+        let (address, server) = start_server(publisher.clone()).await;
+
+        let cases = [
+            ("GET", "/internal/v1/orderbook/btcusdt", Some("wrong-token"), "401"),
+            ("POST", "/internal/v1/orderbook/btcusdt", Some(TOKEN), "405"),
+            ("GET", "/internal/v1/orderbook/ethusdt", Some(TOKEN), "404"),
+        ];
+
+        for (method, path, token, expected_status) in cases {
+            let response = request(&address, method, path, token).await;
+            assert!(
+                response.starts_with(&format!("HTTP/1.1 {expected_status}")),
+                "{response}"
+            );
+            assert_eq!(publisher.state(), state_before);
+            assert_eq!(publisher.generation(), generation_before);
+            let snapshot_after = publisher.read().expect("snapshot remains published");
+            assert!(Arc::ptr_eq(&snapshot_before, &snapshot_after));
+        }
+
+        server.abort();
+    }
+}
