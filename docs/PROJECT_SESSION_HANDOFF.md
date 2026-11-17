@@ -215,3 +215,19 @@ These are review findings, not approved source changes:
 - AU-09 non-loopback peer TCP remains NOT EXERCISED under loopback-only harness. Do not weaken loopback binding or substitute fabricated-address tests as TCP evidence.
 - HTTP V1 full contract acceptance remains PARTIAL / NOT VERIFIED. T1 runtime remains NOT VERIFIED; T1→T2 integration remains BLOCKED.
 - PR #1 remains OPEN / DRAFT / NOT MERGED. No listener activation, runtime token injection, Binance connection, VPS deployment, T0/T2 changes, T1→T2 integration or real orders.
+
+
+## 6G. HTTP V1 regression sequence — strict parser PASS (2026-11-17)
+
+- Test-first source commit: `c1c6424a08ef4eaa36582c0e7975e499230db675`, message `test(http): use actual HTTP whitespace and line endings`. It corrected two regression requests to use actual Rust tab/CRLF escapes: tab-separated request-line and invalid header field-name. The earlier test commit `3fb69c7434c76922fcb0cda8c9bc53a9cbe9cf0e` used literal backslash sequences and is explicitly invalid evidence; do not count CI #787 as a valid RED/GREEN run.
+- Valid RED: CI #788 / run `44094813998` on exact test SHA `c1c6424a08ef4eaa36582c0e7975e499230db675`. Both x86_64 and ARM64 reproduced both malformed requests as HTTP 200 with snapshot disclosure; each architecture had 131 passing collector tests and 2 failing new regressions. This is the accepted RED evidence.
+- Minimal parser fix: source commit `596447d32f1a3ed0b5d778f7959d2ee3e7cf00a0`, message `fix(http): enforce strict request and header token syntax`. Request-line parsing now uses exact ASCII-space separators and rejects empty components / tabs; header names are validated against the HTTP token character set before header processing. Malformed requests are rejected with HTTP 400 before snapshot retrieval. No unrelated production files changed.
+- Formatting checkpoint: CI on SHA `596447d...` identified only a missing trailing newline at `cargo fmt --all --check`; newline restored in commit `29667927d944e3e20db4d7e3c1ca6e2b30eb7975`, message `style(http): restore source trailing newline`. No logic/test semantics changed in this final formatting commit.
+- Exact-head CI #790: [run 44095989717](https://github.com/kenznguyen/binance-futures-collector/actions/runs/44095989717), SUCCESS, all 6/6 jobs on exact SHA `29667927d944e3e20db4d7e3c1ca6e2b30eb7975`.
+- x86_64 and native ARM64 both passed Format, Clippy, Build; Collector 133/133; additional suite 5/5; HTTP/P3 contract 22/22; Sidecar unit 12/12; Sidecar integration 27/27. Both strict parser regression tests explicitly PASS on both architectures. Dashboard backend, Dashboard frontend, Security and Docker jobs PASS.
+- CI artifacts (7-day retention; CI evidence only, not deployed binaries):
+  - x86_64 ID `14332968779`, name `t1-collector-linux-x86_64-29667927d944e3e20db4d7e3c1ca6e2b30eb7975`, size 4,336,116 bytes, ZIP SHA-256 `78647ecb3061bc6e42082b0e25ed8e82b37ba916f18f0822038911e44bbcb8d8`.
+  - ARM64 ID `14334296421`, name `t1-collector-linux-aarch64-29667927d944e3e20db4d7e3c1ca6e2b30eb7975`, size 4,038,067 bytes, ZIP SHA-256 `3a0367851717043793bc6ce7d3b4704f33c4cdea0fc717c45546f230d2acdd0b`; ELF identity verified as 64-bit AArch64.
+- Regression sequence complete: token/request-size PASS; authentication PASS; freshness PASS; wire schema PASS; strict parser PASS.
+- Remaining limitations: AU-09 non-loopback peer TCP remains NOT EXERCISED under the loopback-only listener/harness. HTTP V1 full acceptance remains PARTIAL / NOT VERIFIED until the remaining contract acceptance matrix and AU-09 disposition are closed. T1 runtime NOT VERIFIED; T1→T2 integration BLOCKED.
+- Boundaries unchanged: branch remains `feature/t1-connection-sidecar-integration-20261107`; PR #1 OPEN / DRAFT / NOT MERGED. No listener activation, runtime token injection, Binance smoke test, VPS deployment, T0/T2 changes, T1→T2 integration or real orders.
