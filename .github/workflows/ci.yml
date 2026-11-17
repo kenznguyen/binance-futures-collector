@@ -34,6 +34,115 @@ jobs:
       - name: Test
         run: cargo test --all
 
+      - name: NR-01 isolated Publisher/API filesystem non-regression
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sandbox="$(mktemp -d "${RUNNER_TEMP}/nr01-sandbox.XXXXXX")"
+          sentinel="$(mktemp -d "${RUNNER_TEMP}/nr01-sentinel.XXXXXX")"
+          cleanup() {
+            rm -rf "$sandbox" "$sentinel"
+          }
+          trap cleanup EXIT
+
+          assert_no_output_trees() {
+            local root="$1"
+            local found=0
+            for relative_path in data/futures data/gaps; do
+              if [[ -e "$root/$relative_path" ]]; then
+                echo "NR01_FORBIDDEN_PATH_PRESENT=$root/$relative_path"
+                found=1
+              fi
+            done
+            if (( found != 0 )); then
+              return 1
+            fi
+            echo "NR01_OUTPUT_TREES_ABSENT root=$root paths=data/futures,data/gaps"
+          }
+
+          # Prove the assertion detects each prohibited relative output tree.
+          mkdir -p "$sentinel/data/futures"
+          if assert_no_output_trees "$sentinel"; then
+            echo "NR01_SENTINEL_FAILURE=data/futures was not detected"
+            exit 1
+          else
+            echo "NR01_SENTINEL_DETECTED=data/futures"
+          fi
+          rm -rf "$sentinel/data"
+          mkdir -p "$sentinel/data/gaps"
+          if assert_no_output_trees "$sentinel"; then
+            echo "NR01_SENTINEL_FAILURE=data/gaps was not detected"
+            exit 1
+          else
+            echo "NR01_SENTINEL_DETECTED=data/gaps"
+          fi
+          rm -rf "$sentinel/data"
+
+          test -z "$(find "$sandbox" -mindepth 1 -print -quit)"
+          echo "NR01_SANDBOX=$sandbox"
+          echo "NR01_SANDBOX_INITIAL_STATE=EMPTY"
+
+          cargo test --no-run --locked \
+            --bin binance-futures-collector \
+            --test orderbook_v1_p3_contract
+
+          mapfile -t publisher_bins < <(
+            find target/debug/deps -maxdepth 1 -type f -executable \
+              -name 'binance_futures_collector-*' -print
+          )
+          mapfile -t contract_bins < <(
+            find target/debug/deps -maxdepth 1 -type f -executable \
+              -name 'orderbook_v1_p3_contract-*' -print
+          )
+
+          if (( ${#publisher_bins[@]} != 1 )); then
+            printf 'NR01_PUBLISHER_BINARY_COUNT=%s\n' "${#publisher_bins[@]}"
+            printf '%s\n' "${publisher_bins[@]}"
+            exit 1
+          fi
+          if (( ${#contract_bins[@]} != 1 )); then
+            printf 'NR01_CONTRACT_BINARY_COUNT=%s\n' "${#contract_bins[@]}"
+            printf '%s\n' "${contract_bins[@]}"
+            exit 1
+          fi
+
+          publisher_bin="$(realpath "${publisher_bins[0]}")"
+          contract_bin="$(realpath "${contract_bins[0]}")"
+          publisher_tests="$("$publisher_bin" --list | grep -E '^orderbook_http::tests::' || true)"
+          if [[ -z "$publisher_tests" ]]; then
+            echo "NR01_PUBLISHER_HTTP_TEST_DISCOVERY=ZERO_MATCHES"
+            exit 1
+          fi
+          echo "NR01_PUBLISHER_HTTP_TEST_COUNT=$(printf '%s\n' "$publisher_tests" | wc -l)"
+          echo "NR01_PUBLISHER_HTTP_BINARY=$publisher_bin"
+          echo "NR01_CONTRACT_BINARY=$contract_bin"
+
+          test -z "$(find "$sandbox" -mindepth 1 -print -quit)"
+          set +e
+          (cd "$sandbox" && "$publisher_bin" 'orderbook_http::tests::' --test-threads=1)
+          publisher_status=$?
+          set -e
+          assert_no_output_trees "$sandbox"
+          if (( publisher_status != 0 )); then
+            echo "NR01_PUBLISHER_HTTP_TEST_EXIT=$publisher_status"
+            exit "$publisher_status"
+          fi
+          echo "NR01_PUBLISHER_HTTP_TEST=PASS"
+
+          test -z "$(find "$sandbox" -mindepth 1 -print -quit)"
+          set +e
+          (cd "$sandbox" && "$contract_bin" --test-threads=1)
+          contract_status=$?
+          set -e
+          assert_no_output_trees "$sandbox"
+          if (( contract_status != 0 )); then
+            echo "NR01_CONTRACT_TEST_EXIT=$contract_status"
+            exit "$contract_status"
+          fi
+          echo "NR01_CONTRACT_TEST=PASS"
+          echo "NR01_VERDICT=PASS"
+
       - name: Sidecar writer format
         run: cargo fmt --manifest-path crates/connection-sidecar/Cargo.toml --all -- --check
 
