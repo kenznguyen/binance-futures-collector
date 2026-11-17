@@ -659,6 +659,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn tab_separated_request_line_is_rejected_without_snapshot_disclosure() {
+        let (address, server) = start_server(ready_publisher().await).await;
+        let request = format!(
+            "GET\\t/internal/v1/orderbook/btcusdt\\tHTTP/1.1\\r\\nHost: localhost\\r\\nAuthorization: Bearer {TOKEN}\\r\\nConnection: close\\r\\n\\r\\n"
+        );
+        let response = raw_request(&address, request.as_bytes()).await;
+
+        assert!(response.starts_with("HTTP/1.1 400"), "{response}");
+        assert!(!response.contains("67234.10"), "{response}");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn invalid_header_field_name_is_rejected_without_snapshot_disclosure() {
+        let (address, server) = start_server(ready_publisher().await).await;
+        let request = format!(
+            "GET /internal/v1/orderbook/btcusdt HTTP/1.1\\r\\nHost: localhost\\r\\nBad Header: value\\r\\nAuthorization: Bearer {TOKEN}\\r\\nConnection: close\\r\\n\\r\\n"
+        );
+        let response = raw_request(&address, request.as_bytes()).await;
+
+        assert!(response.starts_with("HTTP/1.1 400"), "{response}");
+        assert!(!response.contains("67234.10"), "{response}");
+        server.abort();
+    }
+
+    #[tokio::test]
     async fn maximum_configured_bearer_token_fits_a_minimal_valid_request() {
         let token = "x".repeat(super::MAX_BEARER_TOKEN_BYTES);
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
