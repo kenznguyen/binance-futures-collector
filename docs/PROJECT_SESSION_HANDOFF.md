@@ -302,3 +302,21 @@ These are review findings, not approved source changes:
 - Use TDD/evidence discipline: first demonstrate that the sandbox assertion is effective with a controlled temporary fixture (create a sentinel under each prohibited path and confirm the check fails), then run the real Publisher/API test binaries in a clean sandbox. This fixture must be isolated from the repository and removed by a trap.
 - Acceptance is limited to the test process working directory and the two specified relative output trees. NR-01 must not be marked PASS from source inspection or `git status` alone.
 - Boundaries unchanged: remain on `feature/t1-connection-sidecar-integration-20261107`; PR #1 stays OPEN / DRAFT / NOT MERGED. No collector ingestion/persistence changes, listener activation, token injection, VPS deployment, T0/T2 changes, T1→T2 integration, or real orders.
+
+
+## 6N. NR-01 isolated filesystem harness implementation (2026-11-17)
+
+- NR-01 design-gate workflow [#44128119227](https://github.com/kenznguyen/binance-futures-collector/actions/runs/44128119227) completed SUCCESS, all 6/6 jobs, on exact docs commit `bab29be73aaed5122fac238f3a6fc78acd28603b`. x86_64 and native ARM64 Collector, Dashboard backend/frontend, Security and Docker all PASS.
+- CI-only harness commit: `ef2a3387519b5850bba163ca04a2cbaae0ac5c16`, message `test(ci): add isolated NR-01 filesystem guard`.
+- Only `.github/workflows/ci.yml` changed. Production source SHA remains `162557e4c53ad7ac6f5a11264f05cab5138e442f`; no Collector ingestion, persistence, Publisher, API or runtime source was modified.
+- Added a dedicated Collector CI step that:
+  - creates a fresh temporary sandbox and a separate sentinel fixture;
+  - proves the assertion detects `data/futures` and `data/gaps` independently;
+  - builds only the named Publisher binary and `orderbook_v1_p3_contract` test target;
+  - fails closed unless exactly one executable for each target is discovered and at least one HTTP unit test matches `orderbook_http::tests::`;
+  - executes the selected Publisher HTTP unit tests and complete P3 contract integration binary with the sandbox as process working directory;
+  - checks both prohibited relative paths after each test executable and cleans both temporary directories on exit.
+- Exact-head CI for `ef2a3387519b5850bba163ca04a2cbaae0ac5c16`: NOT YET VERIFIED at this handoff update; run ID and terminal result must be added after discovery.
+- NR-01 verdict remains NOT VERIFIED until exact-head CI proves sentinel detection, unique target discovery, both test executions and post-run filesystem assertions.
+- Scope limitation remains: evidence covers only `data/futures` and `data/gaps` relative to the isolated test working directory; it does not prove arbitrary absolute paths or external volumes are untouched.
+- Boundaries unchanged: remain on `feature/t1-connection-sidecar-integration-20261107`; PR #1 OPEN / DRAFT / NOT MERGED. No listener activation, token injection, Collector ingestion/persistence change, VPS deployment, T0/T2 change, T1→T2 integration or real orders.
