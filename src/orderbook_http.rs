@@ -216,6 +216,15 @@ async fn handle_connection(
             .await;
         }
         if name.eq_ignore_ascii_case("authorization") {
+            if authorization.is_some() {
+                return write_response(
+                    stream,
+                    400,
+                    "Bad Request",
+                    &json!({"error":"duplicate_authorization"}),
+                )
+                .await;
+            }
             authorization = Some(value.trim());
         }
     }
