@@ -646,6 +646,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn maximum_configured_bearer_token_fits_a_minimal_valid_request() {
+        let token = "x".repeat(super::MAX_BEARER_TOKEN_BYTES);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap().to_string();
+        let server = tokio::spawn(serve(
+            listener,
+            ready_publisher().await,
+            token.clone(),
+        ));
+
+        let request = format!(
+            "GET /internal/v1/orderbook/btcusdt HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {token}\r\n\r\n"
+        );
+        let response = raw_request(&address, request.as_bytes()).await;
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        assert!(response.contains("67234.10"));
+        server.abort();
+    }
+
+    #[tokio::test]
     async fn serve_rejects_empty_and_overlong_bearer_tokens_before_accepting() {
         for token in [String::new(), "x".repeat(4090)] {
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
