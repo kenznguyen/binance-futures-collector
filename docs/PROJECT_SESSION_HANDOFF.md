@@ -161,3 +161,16 @@ These are review findings, not approved source changes:
 - Under the test specification's loopback-only offline requirement, an actual non-loopback peer cannot complete a TCP connection to a loopback-bound listener. A fabricated `SocketAddr` unit test would only exercise the standard-library address predicate, not the network accept/drop behavior. Therefore AU-09 is documented as NOT EXERCISED at TCP level rather than manufacturing misleading evidence or weakening the bind guard.
 - Test spec update commit `3f7f632e47ff497c5aadef6d565b4554889619c9`; contract update commit `ee6ad175784bbaf832ff7ec3b0f05de5d789d460`.
 - This is a documentation/testability disposition, not full contract acceptance. AU-09 remains a known unexercised defense-in-depth path; HTTP V1 remains PARTIAL / NOT VERIFIED.
+
+
+## 6C. HTTP V1 regression sequence — token/request-size PASS
+
+- Regression test added first at commit `214cd300fade9e7228e1bb1a5ae781b7343cd7a6`: `maximum_configured_bearer_token_fits_a_minimal_valid_request`. The first CI attempt stopped at `cargo fmt --check`; formatting-only correction was committed at `c30ed314435c9d3b67403cdbaf804819a0dbcdd2`. Neither run was treated as regression RED evidence.
+- Exact RED evidence: CI run `44065945507` on SHA `c30ed314435c9d3b67403cdbaf804819a0dbcdd2`; x86_64 and ARM64 each executed 129 passing collector tests and the new test failed with HTTP 413. This demonstrated that the configured maximum bearer token did not fit the minimum valid HTTP request framing within the 4 KiB request cap.
+- Minimal fix commit: `60fc9b3a228222b78fe72d34f4456c1c17d57944`, message `fix(http): reserve request framing in bearer token limit`. `MAX_BEARER_TOKEN_BYTES` now reserves the complete minimum request framing overhead rather than only the `Bearer ` prefix. Request cap remains 4 KiB; no listener/runtime behavior was activated.
+- Exact-head CI #776: [run 44066756115](https://github.com/kenznguyen/binance-futures-collector/actions/runs/44066756115), SUCCESS, 6/6 jobs on exact SHA `60fc9b3a228222b78fe72d34f4456c1c17d57944`.
+- x86_64 and native ARM64 both passed format, Clippy, build and collector tests; collector test result 130 passed / 0 failed on each architecture. The maximum-token regression explicitly passed on both.
+- Dashboard backend, dashboard frontend, Docker image build and security jobs all PASS.
+- CI artifacts (CI evidence only; not deployed binaries): x86_64 artifact ID `14320707388`, name `t1-collector-linux-x86_64-60fc9b3a228222b78fe72d34f4456c1c17d57944`, size 4,335,457 bytes; ARM64 artifact ID `14320439477`, name `t1-collector-linux-aarch64-60fc9b3a228222b78fe72d34f4456c1c17d57944`, size 4,037,419 bytes.
+- Status: token/request-size regression PASS. Authentication, freshness, wire-schema and strict-parser regression groups remain pending in that order. HTTP V1 full contract acceptance remains PARTIAL / NOT VERIFIED; T1 runtime NOT VERIFIED; T1-to-T2 integration BLOCKED.
+- Boundaries unchanged: remain on this branch; PR #1 OPEN / DRAFT / NOT MERGED. No listener activation, secret injection, Binance smoke test, VPS deployment, T0/T2 changes or real orders.
