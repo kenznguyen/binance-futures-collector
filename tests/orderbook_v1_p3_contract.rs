@@ -447,3 +447,81 @@ fn publisher_rejects_locked_best_bid_and_ask() {
         "a locked order book must not be published as a valid decision snapshot"
     );
 }
+
+#[tokio::test]
+async fn stale_source_timestamp_returns_503_without_snapshot_disclosure() {
+    let publisher = publisher();
+    let generation = begin_publish(&publisher);
+    let now = chrono::Utc::now().timestamp_millis();
+    let mut stale_source = candidate(
+        generation,
+        "BINANCE_USDM_PERPETUAL",
+        20,
+        20,
+        20,
+        20,
+        now - 2_001,
+    );
+    stale_source.observed_at_ms = now;
+    refresh_identity(&mut stale_source);
+    publisher.publish_if_current(stale_source).unwrap();
+    let (address, server) = start_server(publisher).await;
+
+    let response = request(&address, Some(TOKEN)).await;
+    assert!(response.starts_with("HTTP/1.1 503"), "{response}");
+    assert!(!response.contains("10000"), "{response}");
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn stale_observation_timestamp_returns_503_without_snapshot_disclosure() {
+    let publisher = publisher();
+    let generation = begin_publish(&publisher);
+    let now = chrono::Utc::now().timestamp_millis();
+    let mut stale_observation = candidate(
+        generation,
+        "BINANCE_USDM_PERPETUAL",
+        20,
+        20,
+        20,
+        20,
+        now,
+    );
+    stale_observation.observed_at_ms = now - 2_001;
+    refresh_identity(&mut stale_observation);
+    publisher.publish_if_current(stale_observation).unwrap();
+    let (address, server) = start_server(publisher).await;
+
+    let response = request(&address, Some(TOKEN)).await;
+    assert!(response.starts_with("HTTP/1.1 503"), "{response}");
+    assert!(!response.contains("10000"), "{response}");
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn snapshot_that_ages_after_publication_returns_503_without_snapshot_disclosure() {
+    let publisher = publisher();
+    let generation = begin_publish(&publisher);
+    let now = chrono::Utc::now().timestamp_millis();
+    let aging_snapshot = candidate(
+        generation,
+        "BINANCE_USDM_PERPETUAL",
+        20,
+        20,
+        20,
+        20,
+        now - 1_500,
+    );
+    publisher.publish_if_current(aging_snapshot).unwrap();
+    let (address, server) = start_server(publisher).await;
+
+    tokio::time::sleep(Duration::from_millis(650)).await;
+    let response = request(&address, Some(TOKEN)).await;
+    assert!(response.starts_with("HTTP/1.1 503"), "{response}");
+    assert!(!response.contains("10000"), "{response}");
+
+    server.abort();
+}
+
