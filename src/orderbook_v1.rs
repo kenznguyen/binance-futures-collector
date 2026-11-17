@@ -1189,6 +1189,23 @@ mod tests {
     }
 
     #[test]
+    fn publisher_read_fresh_returns_error_when_lock_is_poisoned() {
+        let publisher = std::sync::Arc::new(SnapshotPublisher::new());
+        let poison_target = publisher.clone();
+        let poison_result = std::thread::spawn(move || {
+            let _guard = poison_target.inner.write().unwrap();
+            panic!("poison publisher lock for fail-closed regression test");
+        })
+        .join();
+        assert!(poison_result.is_err(), "poisoning thread must panic");
+
+        assert!(
+            publisher.read_fresh(NOW).is_err(),
+            "a poisoned publisher lock must return an error, not panic"
+        );
+    }
+
+    #[test]
     fn publisher_never_returns_a_snapshot_outside_ready_state() {
         let publisher = SnapshotPublisher::new();
         let generation = publisher.begin_connection_generation();
