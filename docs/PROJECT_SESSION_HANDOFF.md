@@ -4,8 +4,9 @@ Updated: 2026-11-17
 Repository: `kenznguyen/binance-futures-collector`
 Active branch: `feature/t1-connection-sidecar-integration-20261107`
 Pull request: [#1 — Add durable pre-handshake connection failure evidence](https://github.com/kenznguyen/binance-futures-collector/pull/1)
-Reviewed source SHA: `2c44f3a38ead3dccaf6c37e61a354681a48b243b`
-Latest branch source/test SHA: `cb1ccc0df79584d1b84f257b033a7872b6d409dc` (source; latest handoff commit recorded below)
+Reviewed source SHA: `cb1ccc0df79584d1b84f257b033a7872b6d409dc`
+Latest source SHA: `cb1ccc0df79584d1b84f257b033a7872b6d409dc`
+Latest evidence/docs commits: test spec `3f7f632e47ff497c5aadef6d565b4554889619c9`; contract `ee6ad175784bbaf832ff7ec3b0f05de5d789d460`
 
 ## 1. Current disposition
 
@@ -128,7 +129,7 @@ These are review findings, not approved source changes:
 2. Update the PR checkpoint comment with CI #761 test counts, artifacts and checksums, and link this handoff commit.
 3. Resolve remaining HTTP contract discrepancies through tests first, in a separately scoped increment on this branch. In particular, document the 8 active + up to 8 rejection-handler capacity semantics and update the contract error table for `duplicate_authorization`, `missing_host`, `invalid_host`, `duplicate_host`, and `duplicate_content_length`.
 4. Add evidence for non-loopback peer rejection and publisher lock-poison failure paths if applicable to the intended V1 contract.
-5. Continue remaining HTTP V1 acceptance work, beginning with a design-safe AU-09 non-loopback peer rejection test or document why the production loopback-only bind makes an external peer unrepresentable in this harness. Do not weaken the loopback bind to manufacture a test.
+5. Continue remaining HTTP V1 acceptance matrix. AU-09 is documented as NOT EXERCISED at TCP level under the required loopback-only harness: a non-loopback peer cannot establish a TCP connection to a listener bound to 127.0.0.1. The source retains the defensive peer-address drop; do not weaken loopback binding or use a fabricated SocketAddr test as network evidence.
 6. Re-run exact-head CI for every subsequent source or contract change and record exact SHA, run ID, test counts and artifacts.
 6. Only after the remaining V1 acceptance matrix is evidenced should T1 API acceptance or T1-to-T2 integration be reconsidered.
 
@@ -141,6 +142,7 @@ These are review findings, not approved source changes:
 | Contract error table / capacity semantics synchronized | PASS — docs commits `cdc199e` / `aa205aa` |
 | Production loopback bind helper regression | PASS — CI #761, x86_64 + ARM64 |
 | Publisher poisoned read-lock regression | PASS — CI #767, x86_64 + ARM64 |
+| AU-09 non-loopback peer TCP test | NOT EXERCISED — impossible under loopback-only listener/harness; defensive source check retained |
 | x86_64 Collector / Sidecar tests | PASS |
 | Native ARM64 Collector / Sidecar tests | PASS |
 | Dashboard frontend/backend | PASS |
@@ -150,3 +152,12 @@ These are review findings, not approved source changes:
 | HTTP V1 full contract acceptance | PARTIAL / NOT VERIFIED |
 | T1 runtime readiness | NOT VERIFIED |
 | T1 to T2 integration | BLOCKED |
+
+
+## 6B. AU-09 testability boundary and documentation sync
+
+- Source SHA remains `cb1ccc0df79584d1b84f257b033a7872b6d409dc`; no source/runtime behavior changed in this documentation checkpoint.
+- Review of `serve` confirms the production listener is required to bind to a loopback address before `accept`; `bind_loopback` binds `127.0.0.1:8787`. The accept loop also defensively drops any peer for which `peer.ip().is_loopback()` is false.
+- Under the test specification's loopback-only offline requirement, an actual non-loopback peer cannot complete a TCP connection to a loopback-bound listener. A fabricated `SocketAddr` unit test would only exercise the standard-library address predicate, not the network accept/drop behavior. Therefore AU-09 is documented as NOT EXERCISED at TCP level rather than manufacturing misleading evidence or weakening the bind guard.
+- Test spec update commit `3f7f632e47ff497c5aadef6d565b4554889619c9`; contract update commit `ee6ad175784bbaf832ff7ec3b0f05de5d789d460`.
+- This is a documentation/testability disposition, not full contract acceptance. AU-09 remains a known unexercised defense-in-depth path; HTTP V1 remains PARTIAL / NOT VERIFIED.
