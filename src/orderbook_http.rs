@@ -24,6 +24,27 @@ const MAX_CONNECTIONS: usize = 8;
 const MAX_REJECTED_CONNECTIONS: usize = 8;
 const IO_TIMEOUT: Duration = Duration::from_millis(750);
 
+/// Bounded response buffer used to serialize snapshots without an unbounded
+/// intermediate allocation.
+struct BoundedResponseWriter {
+    bytes: Vec<u8>,
+    limit: usize,
+    exceeded: bool,
+}
+
+impl std::io::Write for BoundedResponseWriter {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        // RED scaffold: the regression test below must reject this unbounded
+        // append before the writer is wired into the HTTP response path.
+        self.bytes.extend_from_slice(buffer);
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
 /// Bind the only supported production listener address.
 pub async fn bind_loopback() -> io::Result<TcpListener> {
     TcpListener::bind(LOOPBACK_ADDR).await
@@ -351,7 +372,7 @@ mod tests {
         task::JoinHandle,
     };
 
-    use super::{constant_time_eq, serve};
+    use super::{constant_time_eq, serve, BoundedResponseWriter};
     use crate::orderbook_v1::{
         canonical_snapshot_id, OrderbookDepthV1, OrderbookSnapshotV1, SnapshotPublisher,
         CONTRACT_VERSION,
@@ -633,6 +654,20 @@ mod tests {
         assert!(response.contains("capacity_unavailable"), "{response}");
         drop(held);
         server.abort();
+    }
+
+    #[test]
+    fn bounded_response_writer_never_retains_more_than_its_limit() {
+        let mut writer = BoundedResponseWriter {
+            bytes: Vec::new(),
+            limit: 4,
+            exceeded: false,
+        };
+
+        let result = std::io::Write::write_all(&mut writer, b"12345");
+        assert!(result.is_err(), "writer must reject bytes beyond its limit");
+        assert!(writer.bytes.len() <= writer.limit);
+        assert!(writer.exceeded);
     }
 
     #[tokio::test]
