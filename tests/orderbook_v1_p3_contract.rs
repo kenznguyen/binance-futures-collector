@@ -205,7 +205,9 @@ fn publisher_rejects_inconsistent_depth_metadata() {
 }
 
 fn assert_exact_http_v1_schema_and_identity(json: &serde_json::Value) {
-    let object = json.as_object().expect("HTTP V1 body must be a JSON object");
+    let object = json
+        .as_object()
+        .expect("HTTP V1 body must be a JSON object");
     let expected = [
         "contractVersion",
         "symbol",
@@ -228,7 +230,10 @@ fn assert_exact_http_v1_schema_and_identity(json: &serde_json::Value) {
     .into_iter()
     .collect::<BTreeSet<_>>();
     let actual = object.keys().map(String::as_str).collect::<BTreeSet<_>>();
-    assert_eq!(actual, expected, "HTTP V1 must expose exactly the required top-level fields");
+    assert_eq!(
+        actual, expected,
+        "HTTP V1 must expose exactly the required top-level fields"
+    );
 
     for field in [
         "contractVersion",
@@ -247,10 +252,16 @@ fn assert_exact_http_v1_schema_and_identity(json: &serde_json::Value) {
         "decisionWatermark",
         "generation",
     ] {
-        assert!(json[field].as_u64().is_some(), "{field} must be an unsigned integer");
+        assert!(
+            json[field].as_u64().is_some(),
+            "{field} must be an unsigned integer"
+        );
     }
     for field in ["sourceTimestampMs", "observedAtMs"] {
-        assert!(json[field].as_i64().is_some(), "{field} must be an integer timestamp");
+        assert!(
+            json[field].as_i64().is_some(),
+            "{field} must be an integer timestamp"
+        );
     }
     assert!(json["complete"].is_boolean(), "complete must be a boolean");
 
@@ -258,10 +269,22 @@ fn assert_exact_http_v1_schema_and_identity(json: &serde_json::Value) {
         let levels = json[side].as_array().expect("depth side must be an array");
         assert_eq!(levels.len(), 20, "{side} must contain exactly 20 levels");
         for (index, level) in levels.iter().enumerate() {
-            let pair = level.as_array().expect("each level must be a two-element array");
-            assert_eq!(pair.len(), 2, "each {side} level must contain price and quantity");
-            assert!(pair[0].is_string(), "{side}[{index}] price must be a decimal string");
-            assert!(pair[1].is_string(), "{side}[{index}] quantity must be a decimal string");
+            let pair = level
+                .as_array()
+                .expect("each level must be a two-element array");
+            assert_eq!(
+                pair.len(),
+                2,
+                "each {side} level must contain price and quantity"
+            );
+            assert!(
+                pair[0].is_string(),
+                "{side}[{index}] price must be a decimal string"
+            );
+            assert!(
+                pair[1].is_string(),
+                "{side}[{index}] quantity must be a decimal string"
+            );
         }
     }
 
