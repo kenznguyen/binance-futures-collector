@@ -266,7 +266,6 @@ fn is_canonical_decimal(value: &str) -> bool {
     }
 }
 
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OrderbookV1ContinuityError {
     InvalidRange,
@@ -317,20 +316,17 @@ impl OrderbookV1Continuity {
                 let bridge_id = match self.snapshot_last_update_id.checked_add(1) {
                     Some(value) => value,
                     None => {
-                        return self
-                            .invalidate(OrderbookV1ContinuityError::SnapshotAnchorOverflow);
+                        return self.invalidate(OrderbookV1ContinuityError::SnapshotAnchorOverflow);
                     }
                 };
 
                 if first_u > bridge_id || final_u < bridge_id {
-                    return self
-                        .invalidate(OrderbookV1ContinuityError::InitialBridgeMissing);
+                    return self.invalidate(OrderbookV1ContinuityError::InitialBridgeMissing);
                 }
             }
             Some(last_id) => {
                 if previous_u != last_id {
-                    return self
-                        .invalidate(OrderbookV1ContinuityError::PreviousUpdateMismatch);
+                    return self.invalidate(OrderbookV1ContinuityError::PreviousUpdateMismatch);
                 }
 
                 let next_id = match last_id.checked_add(1) {
