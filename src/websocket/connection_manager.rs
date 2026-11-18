@@ -861,8 +861,8 @@ mod tests {
 
     #[test]
     fn buffered_depth_update_keeps_local_receipt_time_paired_with_wire_event() {
-        use crate::models::DepthUpdateWs;
         use super::BufferedDepthUpdate;
+        use crate::models::DepthUpdateWs;
 
         let update = DepthUpdateWs {
             event_type: "depthUpdate".to_string(),
