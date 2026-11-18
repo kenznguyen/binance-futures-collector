@@ -226,3 +226,39 @@ fn v1_continuity_requires_pu_to_equal_previous_u_after_bridge() {
     assert!(continuity.apply(900_011, 900_015, 900_009).is_err());
     assert_eq!(continuity.last_update_id(), None);
 }
+
+
+#[test]
+fn v1_continuity_remains_invalid_until_reanchored_after_a_gap() {
+    let mut continuity =
+        binance_futures_collector::http::orderbook_v1::OrderbookV1Continuity::new(900_000);
+    assert!(continuity.apply(900_002, 900_005, 900_001).is_err());
+    assert_eq!(continuity.last_update_id(), None);
+
+    assert!(continuity.apply(900_001, 900_005, 900_000).is_err());
+    assert_eq!(continuity.last_update_id(), None);
+}
+
+#[test]
+fn v1_continuity_fails_closed_on_snapshot_anchor_overflow() {
+    let mut continuity =
+        binance_futures_collector::http::orderbook_v1::OrderbookV1Continuity::new(u64::MAX);
+    assert!(continuity.apply(u64::MAX, u64::MAX, u64::MAX - 1).is_err());
+    assert_eq!(continuity.last_update_id(), None);
+}
+
+#[test]
+fn v1_continuity_rejects_invalid_ranges_and_sequence_gaps() {
+    let mut invalid_range =
+        binance_futures_collector::http::orderbook_v1::OrderbookV1Continuity::new(900_000);
+    assert!(invalid_range.apply(900_005, 900_004, 900_000).is_err());
+    assert_eq!(invalid_range.last_update_id(), None);
+
+    let mut sequence_gap =
+        binance_futures_collector::http::orderbook_v1::OrderbookV1Continuity::new(900_000);
+    sequence_gap
+        .apply(900_001, 900_005, 900_000)
+        .expect("first diff bridges snapshot");
+    assert!(sequence_gap.apply(900_007, 900_010, 900_005).is_err());
+    assert_eq!(sequence_gap.last_update_id(), None);
+}
