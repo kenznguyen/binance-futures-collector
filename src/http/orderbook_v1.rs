@@ -160,17 +160,10 @@ fn validate_snapshot(
     validate_levels(&snapshot.bids, true)?;
     validate_levels(&snapshot.asks, false)?;
 
-    let best_bid = snapshot
-        .bids
-        .first()
-        .and_then(|level| level[0].parse::<f64>().ok());
-    let best_ask = snapshot
-        .asks
-        .first()
-        .and_then(|level| level[0].parse::<f64>().ok());
-    match (best_bid, best_ask) {
-        (Some(bid), Some(ask)) if bid.is_finite() && ask.is_finite() && bid < ask => {}
-        _ => return Err(SnapshotUnavailable::InvalidSnapshot),
+    let best_bid = &snapshot.bids[0][0];
+    let best_ask = &snapshot.asks[0][0];
+    if compare_canonical_decimal(best_bid, best_ask) != Some(std::cmp::Ordering::Less) {
+        return Err(SnapshotUnavailable::InvalidSnapshot);
     }
 
     for timestamp in [snapshot.source_timestamp_ms, snapshot.observed_at_ms] {
@@ -190,28 +183,55 @@ fn validate_snapshot(
 }
 
 fn validate_levels(levels: &[[String; 2]], descending: bool) -> Result<(), SnapshotUnavailable> {
-    let mut previous: Option<f64> = None;
+    let mut previous: Option<&str> = None;
     for [price_text, quantity_text] in levels {
-        if !is_canonical_decimal(price_text) || !is_canonical_decimal(quantity_text) {
-            return Err(SnapshotUnavailable::InvalidSnapshot);
-        }
-        let price = price_text
-            .parse::<f64>()
-            .map_err(|_| SnapshotUnavailable::InvalidSnapshot)?;
-        let quantity = quantity_text
-            .parse::<f64>()
-            .map_err(|_| SnapshotUnavailable::InvalidSnapshot)?;
-        if !price.is_finite() || !quantity.is_finite() || price <= 0.0 || quantity <= 0.0 {
+        if !is_canonical_decimal(price_text)
+            || !is_canonical_decimal(quantity_text)
+            || compare_canonical_decimal(quantity_text, "0") != Some(std::cmp::Ordering::Greater)
+        {
             return Err(SnapshotUnavailable::InvalidSnapshot);
         }
         if let Some(prior) = previous {
-            if (descending && prior <= price) || (!descending && prior >= price) {
+            let ordering = compare_canonical_decimal(prior, price_text)
+                .ok_or(SnapshotUnavailable::InvalidSnapshot)?;
+            if (descending && ordering != std::cmp::Ordering::Greater)
+                || (!descending && ordering != std::cmp::Ordering::Less)
+            {
                 return Err(SnapshotUnavailable::InvalidSnapshot);
             }
         }
-        previous = Some(price);
+        previous = Some(price_text);
     }
     Ok(())
+}
+
+fn compare_canonical_decimal(left: &str, right: &str) -> Option<std::cmp::Ordering> {
+    if !is_canonical_decimal(left) || !is_canonical_decimal(right) {
+        return None;
+    }
+
+    let (left_whole, left_fraction) = left.split_once('.').unwrap_or((left, ""));
+    let (right_whole, right_fraction) = right.split_once('.').unwrap_or((right, ""));
+
+    let whole_order = left_whole
+        .len()
+        .cmp(&right_whole.len())
+        .then_with(|| left_whole.cmp(right_whole));
+    if whole_order != std::cmp::Ordering::Equal {
+        return Some(whole_order);
+    }
+
+    let fraction_len = left_fraction.len().max(right_fraction.len());
+    for index in 0..fraction_len {
+        let left_digit = left_fraction.as_bytes().get(index).copied().unwrap_or(b'0');
+        let right_digit = right_fraction.as_bytes().get(index).copied().unwrap_or(b'0');
+        match left_digit.cmp(&right_digit) {
+            std::cmp::Ordering::Equal => {}
+            ordering => return Some(ordering),
+        }
+    }
+
+    Some(std::cmp::Ordering::Equal)
 }
 
 fn is_canonical_decimal(value: &str) -> bool {
