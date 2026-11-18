@@ -227,7 +227,6 @@ fn v1_continuity_requires_pu_to_equal_previous_u_after_bridge() {
     assert_eq!(continuity.last_update_id(), None);
 }
 
-
 #[test]
 fn v1_continuity_remains_invalid_until_reanchored_after_a_gap() {
     let mut continuity =
