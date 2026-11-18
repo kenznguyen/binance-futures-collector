@@ -20,6 +20,31 @@ use crate::models::*;
 
 type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
+/// A depth diff paired with the local UTC receive time captured for that message.
+#[derive(Debug, Clone)]
+pub(crate) struct BufferedDepthUpdate {
+    pub(crate) update: DepthUpdateWs,
+    pub(crate) received_at_ms: u64,
+}
+
+impl BufferedDepthUpdate {
+    fn new(update: DepthUpdateWs, received_at_ms: u64) -> Self {
+        Self {
+            update,
+            received_at_ms,
+        }
+    }
+}
+
+fn unix_timestamp_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .try_into()
+        .unwrap_or(u64::MAX)
+}
+
 /// Manages multiple WebSocket connections for different symbol batches
 pub struct WebSocketManager {
     config: Arc<Config>,
@@ -32,7 +57,7 @@ pub struct WebSocketManager {
     batch_shutdown_flags: Arc<DashMap<usize, Arc<AtomicBool>>>,
 
     // Ring buffers with maxlen to prevent unbounded memory growth
-    symbol_buffers: Arc<DashMap<String, Arc<Mutex<VecDeque<DepthUpdateWs>>>>>,
+    symbol_buffers: Arc<DashMap<String, Arc<Mutex<VecDeque<BufferedDepthUpdate>>>>>,
 
     // Track message counts for stability checks
     symbol_message_counts: Arc<DashMap<String, usize>>,
@@ -190,10 +215,19 @@ impl WebSocketManager {
     /// Atomically drains and returns the buffer for a given symbol.
     /// This is the designated, thread-safe interface for the OrderbookManager.
     pub async fn drain_buffer(&self, symbol: &str) -> Vec<DepthUpdateWs> {
+        self.drain_buffer_with_receipt(symbol)
+            .await
+            .into_iter()
+            .map(|buffered| buffered.update)
+            .collect()
+    }
+
+    /// Atomically drains depth diffs together with their local receive timestamps.
+    /// This is the authoritative timestamped interface for T1 V1 consumers.
+    pub async fn drain_buffer_with_receipt(&self, symbol: &str) -> Vec<BufferedDepthUpdate> {
         if let Some(buffer_arc) = self.symbol_buffers.get(symbol) {
             let mut buffer = buffer_arc.lock().await;
-            let drained: Vec<_> = buffer.drain(..).collect();
-            drained
+            buffer.drain(..).collect()
         } else {
             Vec::new()
         }
@@ -596,6 +630,7 @@ impl WebSocketManager {
     async fn process_text_message(&self, batch_id: usize, text: &str) -> Result<()> {
         // Capture timestamp when message is received for latency tracking
         let received_at = std::time::Instant::now();
+        let received_at_ms = unix_timestamp_ms();
 
         // Parse as wrapped message (Binance futures uses {"stream": "...", "data": {...}})
         #[derive(serde::Deserialize)]
@@ -608,8 +643,14 @@ impl WebSocketManager {
         let wrapper: Wrapper =
             serde_json::from_str(text).context("Failed to parse wrapped JSON")?;
 
-        self.process_stream_data(batch_id, &wrapper.stream, wrapper.data, received_at)
-            .await
+        self.process_stream_data(
+            batch_id,
+            &wrapper.stream,
+            wrapper.data,
+            received_at,
+            received_at_ms,
+        )
+        .await
     }
 
     async fn process_stream_data(
@@ -618,6 +659,7 @@ impl WebSocketManager {
         _stream_name: &str,
         mut data: Value,
         received_at: std::time::Instant,
+        received_at_ms: u64,
     ) -> Result<()> {
         // Handle liquidation array from !forceOrder@arr stream
         if let Value::Array(orders) = data {
@@ -673,7 +715,7 @@ impl WebSocketManager {
                 let update: DepthUpdateWs = serde_json::from_value(data)?;
 
                 // Buffer the update (don't process yet - that's the orderbook manager's job)
-                self.buffer_depth_update(update.clone()).await;
+                self.buffer_depth_update(update.clone(), received_at_ms).await;
 
                 // Send to message handler for CSV writing
                 let _ = self
@@ -714,7 +756,7 @@ impl WebSocketManager {
     }
 
     /// Buffer depth update in ring buffer
-    async fn buffer_depth_update(&self, update: DepthUpdateWs) {
+    async fn buffer_depth_update(&self, update: DepthUpdateWs, received_at_ms: u64) {
         // Convert to lowercase to match buffer keys (Binance sends uppercase)
         let symbol = update.symbol.to_lowercase();
 
@@ -733,7 +775,7 @@ impl WebSocketManager {
         if let Some(buffer_arc) = self.symbol_buffers.get(&symbol) {
             let mut buffer = buffer_arc.lock().await;
 
-            buffer.push_back(update.clone());
+            buffer.push_back(BufferedDepthUpdate::new(update.clone(), received_at_ms));
 
             // Maintain ring buffer constraints
             let capacity = self.config.websocket.ring_buffer_capacity;
@@ -747,14 +789,13 @@ impl WebSocketManager {
             // Enforce time limit (evict messages older than max_seconds)
             // Uses real time instead of message timestamps (robust against timestamp skew)
             if buffer.len() > 1 {
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_millis() as i64;
+                let now_ms = u128::from(unix_timestamp_ms());
+                let max_age_ms = u128::from(max_seconds).saturating_mul(1_000);
 
                 while buffer.len() > 1 {
-                    let first_ts = buffer.front().unwrap().event_time;
-                    if (now - first_ts) > (max_seconds * 1000) as i64 {
+                    let first_received_at_ms =
+                        u128::from(buffer.front().unwrap().received_at_ms);
+                    if now_ms.saturating_sub(first_received_at_ms) > max_age_ms {
                         buffer.pop_front();
                     } else {
                         break;
