@@ -200,7 +200,7 @@ fn validate_levels(levels: &[[String; 2]], descending: bool) -> Result<(), Snaps
 }
 
 fn is_canonical_decimal(value: &str) -> bool {
-    if value.is_empty() || value.starts_with('+') || value.starts_with('-') || value.contains(['e', 'E']) {
+    if value.is_empty() || value.starts_with('+') || value.starts_with('-') || (value.contains('e') || value.contains('E')) {
         return false;
     }
     let mut parts = value.split('.');
