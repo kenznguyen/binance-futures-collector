@@ -265,3 +265,97 @@ fn is_canonical_decimal(value: &str) -> bool {
         None => true,
     }
 }
+
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OrderbookV1ContinuityError {
+    InvalidRange,
+    SnapshotAnchorOverflow,
+    UpdateIdOverflow,
+    InitialBridgeMissing,
+    PreviousUpdateMismatch,
+    SequenceGap,
+    Invalidated,
+}
+
+#[derive(Debug, Clone)]
+pub struct OrderbookV1Continuity {
+    snapshot_last_update_id: u64,
+    last_update_id: Option<u64>,
+    invalidated: bool,
+}
+
+impl OrderbookV1Continuity {
+    pub fn new(snapshot_last_update_id: u64) -> Self {
+        Self {
+            snapshot_last_update_id,
+            last_update_id: None,
+            invalidated: false,
+        }
+    }
+
+    pub fn last_update_id(&self) -> Option<u64> {
+        self.last_update_id
+    }
+
+    pub fn apply(
+        &mut self,
+        first_u: u64,
+        final_u: u64,
+        previous_u: u64,
+    ) -> Result<(), OrderbookV1ContinuityError> {
+        if self.invalidated {
+            return Err(OrderbookV1ContinuityError::Invalidated);
+        }
+
+        if first_u == 0 || final_u == 0 || first_u > final_u {
+            return self.invalidate(OrderbookV1ContinuityError::InvalidRange);
+        }
+
+        match self.last_update_id {
+            None => {
+                let bridge_id = match self.snapshot_last_update_id.checked_add(1) {
+                    Some(value) => value,
+                    None => {
+                        return self
+                            .invalidate(OrderbookV1ContinuityError::SnapshotAnchorOverflow);
+                    }
+                };
+
+                if first_u > bridge_id || final_u < bridge_id {
+                    return self
+                        .invalidate(OrderbookV1ContinuityError::InitialBridgeMissing);
+                }
+            }
+            Some(last_id) => {
+                if previous_u != last_id {
+                    return self
+                        .invalidate(OrderbookV1ContinuityError::PreviousUpdateMismatch);
+                }
+
+                let next_id = match last_id.checked_add(1) {
+                    Some(value) => value,
+                    None => {
+                        return self.invalidate(OrderbookV1ContinuityError::UpdateIdOverflow);
+                    }
+                };
+
+                if first_u > next_id || final_u < next_id {
+                    return self.invalidate(OrderbookV1ContinuityError::SequenceGap);
+                }
+            }
+        }
+
+        self.last_update_id = Some(final_u);
+        Ok(())
+    }
+
+    fn invalidate<T>(
+        &mut self,
+        error: OrderbookV1ContinuityError,
+    ) -> Result<T, OrderbookV1ContinuityError> {
+        self.last_update_id = None;
+        self.invalidated = true;
+        Err(error)
+    }
+}
