@@ -191,3 +191,36 @@ fn publisher_rejects_stale_and_future_timestamps() {
     let future = candidate(generation, now_ms + 251);
     assert!(publisher.publish(future).is_err());
 }
+
+
+#[test]
+fn v1_continuity_accepts_first_diff_that_bridges_rest_snapshot() {
+    let mut continuity = binance_futures_collector::http::orderbook_v1::OrderbookV1Continuity::new(900_000);
+    continuity
+        .apply(899_999, 900_005, 899_998)
+        .expect("first diff must cover snapshot_last_update_id + 1");
+    assert_eq!(continuity.last_update_id(), Some(900_005));
+}
+
+#[test]
+fn v1_continuity_rejects_first_diff_that_does_not_bridge_rest_snapshot() {
+    let mut continuity = binance_futures_collector::http::orderbook_v1::OrderbookV1Continuity::new(900_000);
+    assert!(continuity.apply(900_002, 900_005, 900_001).is_err());
+    assert_eq!(continuity.last_update_id(), None);
+}
+
+#[test]
+fn v1_continuity_requires_pu_to_equal_previous_u_after_bridge() {
+    let mut continuity = binance_futures_collector::http::orderbook_v1::OrderbookV1Continuity::new(900_000);
+    continuity
+        .apply(900_001, 900_005, 899_999)
+        .expect("first diff bridges snapshot");
+
+    continuity
+        .apply(900_006, 900_010, 900_005)
+        .expect("next diff must chain from previous u");
+    assert_eq!(continuity.last_update_id(), Some(900_010));
+
+    assert!(continuity.apply(900_011, 900_015, 900_009).is_err());
+    assert_eq!(continuity.last_update_id(), None);
+}
