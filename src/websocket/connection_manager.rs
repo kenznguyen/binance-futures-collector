@@ -860,6 +860,31 @@ mod tests {
     use std::time::Duration;
 
     #[test]
+    fn buffered_depth_update_keeps_local_receipt_time_paired_with_wire_event() {
+        use crate::models::DepthUpdateWs;
+        use super::BufferedDepthUpdate;
+
+        let update = DepthUpdateWs {
+            event_type: "depthUpdate".to_string(),
+            event_time: 1_700_000_000_000,
+            transaction_time: 1_700_000_000_001,
+            symbol: "BTCUSDT".to_string(),
+            first_update_id: 10,
+            final_update_id: 11,
+            prev_update_id: 9,
+            bids: vec![["60000.10".to_string(), "0.5".to_string()]],
+            asks: vec![["60001.10".to_string(), "0.7".to_string()]],
+            b_floats: None,
+            a_floats: None,
+        };
+        let buffered = BufferedDepthUpdate::new(update, 1_800_000_000_123);
+
+        assert_eq!(buffered.received_at_ms, 1_800_000_000_123);
+        assert_eq!(buffered.update.event_time, 1_700_000_000_000);
+        assert_eq!(buffered.update.final_update_id, 11);
+    }
+
+    #[test]
     fn backoff_doubles_from_initial() {
         let init = Duration::from_millis(2000);
         let max = Duration::from_secs(600);
