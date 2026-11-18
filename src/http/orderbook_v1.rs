@@ -224,7 +224,11 @@ fn compare_canonical_decimal(left: &str, right: &str) -> Option<std::cmp::Orderi
     let fraction_len = left_fraction.len().max(right_fraction.len());
     for index in 0..fraction_len {
         let left_digit = left_fraction.as_bytes().get(index).copied().unwrap_or(b'0');
-        let right_digit = right_fraction.as_bytes().get(index).copied().unwrap_or(b'0');
+        let right_digit = right_fraction
+            .as_bytes()
+            .get(index)
+            .copied()
+            .unwrap_or(b'0');
         match left_digit.cmp(&right_digit) {
             std::cmp::Ordering::Equal => {}
             ordering => return Some(ordering),
