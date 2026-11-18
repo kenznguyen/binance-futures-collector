@@ -1,4 +1,5 @@
 pub mod collectors;
+pub mod http;
 pub mod config;
 pub mod constants;
 pub mod models;
