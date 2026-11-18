@@ -195,7 +195,8 @@ fn publisher_rejects_stale_and_future_timestamps() {
 
 #[test]
 fn v1_continuity_accepts_first_diff_that_bridges_rest_snapshot() {
-    let mut continuity = binance_futures_collector::http::orderbook_v1::OrderbookV1Continuity::new(900_000);
+    let mut continuity =
+        binance_futures_collector::http::orderbook_v1::OrderbookV1Continuity::new(900_000);
     continuity
         .apply(899_999, 900_005, 899_998)
         .expect("first diff must cover snapshot_last_update_id + 1");
