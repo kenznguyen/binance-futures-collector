@@ -224,7 +224,7 @@ impl WebSocketManager {
 
     /// Atomically drains depth diffs together with their local receive timestamps.
     /// This is the authoritative timestamped interface for T1 V1 consumers.
-    pub async fn drain_buffer_with_receipt(&self, symbol: &str) -> Vec<BufferedDepthUpdate> {
+    pub(crate) async fn drain_buffer_with_receipt(&self, symbol: &str) -> Vec<BufferedDepthUpdate> {
         if let Some(buffer_arc) = self.symbol_buffers.get(symbol) {
             let mut buffer = buffer_arc.lock().await;
             buffer.drain(..).collect()
