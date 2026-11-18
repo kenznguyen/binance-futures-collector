@@ -150,6 +150,36 @@ fn invalidation_fences_old_generation_and_removes_readable_snapshot() {
 }
 
 #[test]
+fn publisher_compares_decimal_prices_without_f64_precision_loss() {
+    let publisher = OrderbookV1Publisher::new();
+    let generation = publisher.begin_generation();
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let mut valid = candidate(generation, now_ms);
+
+    valid.bids = (0..20)
+        .map(|index| {
+            [
+                format!("100000000000000000{:03}", 20 - index),
+                "0.01".to_string(),
+            ]
+        })
+        .collect();
+    valid.asks = (0..20)
+        .map(|index| {
+            [
+                format!("100000000000000000{:03}", 21 + index),
+                "0.01".to_string(),
+            ]
+        })
+        .collect();
+    valid.snapshot_id = canonical_snapshot_id(&valid).unwrap();
+
+    publisher
+        .publish(valid)
+        .expect("strictly ordered decimal prices must not collapse to the same f64");
+}
+
+#[test]
 fn publisher_rejects_stale_and_future_timestamps() {
     let publisher = OrderbookV1Publisher::new();
     let generation = publisher.begin_generation();
