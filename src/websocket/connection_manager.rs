@@ -715,7 +715,8 @@ impl WebSocketManager {
                 let update: DepthUpdateWs = serde_json::from_value(data)?;
 
                 // Buffer the update (don't process yet - that's the orderbook manager's job)
-                self.buffer_depth_update(update.clone(), received_at_ms).await;
+                self.buffer_depth_update(update.clone(), received_at_ms)
+                    .await;
 
                 // Send to message handler for CSV writing
                 let _ = self
@@ -793,8 +794,7 @@ impl WebSocketManager {
                 let max_age_ms = u128::from(max_seconds).saturating_mul(1_000);
 
                 while buffer.len() > 1 {
-                    let first_received_at_ms =
-                        u128::from(buffer.front().unwrap().received_at_ms);
+                    let first_received_at_ms = u128::from(buffer.front().unwrap().received_at_ms);
                     if now_ms.saturating_sub(first_received_at_ms) > max_age_ms {
                         buffer.pop_front();
                     } else {
