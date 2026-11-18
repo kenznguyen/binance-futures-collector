@@ -1,11 +1,26 @@
 # T1 Order Book HTTP Provider V1 — Contract and RED Test Plan
 
-Status: DESIGN APPROVED / IMPLEMENTATION NOT AUTHORIZED  
+Status: IMPLEMENTED IN PART / PAUSED — no HTTP route or collector runtime integration  
 Repository: `kenznguyen/binance-futures-collector`  
 Target module: `src/http/orderbook_v1.rs`  
 Target runtime: same Rust collector process  
 Design baseline: `main` at `d43a673451f7347e16a214612165c63da1b4339c`  
 Inspected `src/collectors/orderbook_manager.rs` blob: `d18d047c1f7cdddd03cea60b02de54b656ad4edf`
+
+
+## Implementation status (2026-11-18)
+
+The following provider-related source work is present on `main` and is intentionally frozen:
+
+- Source HEAD at review: `efbd57e7f869bc2298010772deeaf17352acc6f4`.
+- Provider/publisher module: `src/http/orderbook_v1.rs`; module registration: `src/http/mod.rs` and `src/lib.rs`.
+- WebSocket depth-diff receipt timestamp buffering and fail-closed continuity work is present in `src/websocket/connection_manager.rs`.
+- Related tests: `tests/orderbook_v1_red.rs`.
+- The implementation includes snapshot publication/validation and continuity logic. It is not wired to a running HTTP server/route in `src/main.rs`; no collector runtime endpoint is currently integrated.
+- T1 HTTP Provider development is paused. Do not add endpoints, connect runtime, dispatch provider workflows, deploy, or alter T0/T2 as part of this paused scope.
+- Keep all existing T1 commits on `main`. Do not revert or isolate them unless a demonstrated technical conflict, security risk, or explicit Git-history requirement is established.
+
+This status update records the current repository state; it does not authorize further implementation or runtime activation. The original contract and RED plan below remain design/acceptance reference material, not an active implementation instruction.
 
 ## 1. Decision and scope
 
