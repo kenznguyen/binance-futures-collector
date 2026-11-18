@@ -6,10 +6,20 @@ use binance_futures_collector::http::orderbook_v1::{
 
 fn candidate(generation: u64, now_ms: i64) -> OrderbookSnapshotV1 {
     let bids = (0..20)
-        .map(|index| [(10_000 - index).to_string(), "0.010000000000000001".to_string()])
+        .map(|index| {
+            [
+                (10_000 - index).to_string(),
+                "0.010000000000000001".to_string(),
+            ]
+        })
         .collect::<Vec<_>>();
     let asks = (0..20)
-        .map(|index| [(10_001 + index).to_string(), "0.020000000000000003".to_string()])
+        .map(|index| {
+            [
+                (10_001 + index).to_string(),
+                "0.020000000000000003".to_string(),
+            ]
+        })
         .collect::<Vec<_>>();
 
     let mut snapshot = OrderbookSnapshotV1 {
@@ -50,9 +60,16 @@ fn publisher_exposes_only_a_complete_immutable_snapshot() {
         .publish(candidate(generation, now_ms))
         .expect("valid candidate should publish");
 
-    let first = publisher.read_fresh("BTCUSDT", now_ms).expect("published snapshot");
-    let second = publisher.read_fresh("BTCUSDT", now_ms).expect("published snapshot");
-    assert!(Arc::ptr_eq(&first, &second), "readers should share the immutable published Arc");
+    let first = publisher
+        .read_fresh("BTCUSDT", now_ms)
+        .expect("published snapshot");
+    let second = publisher
+        .read_fresh("BTCUSDT", now_ms)
+        .expect("published snapshot");
+    assert!(
+        Arc::ptr_eq(&first, &second),
+        "readers should share the immutable published Arc"
+    );
     assert_eq!(first.decision_watermark, first.last_applied_u);
     assert_eq!(first.bids[0][1], "0.010000000000000001");
     assert_eq!(first.asks[0][1], "0.020000000000000003");
@@ -126,7 +143,10 @@ fn invalidation_fences_old_generation_and_removes_readable_snapshot() {
     let next_generation = publisher.invalidate();
     assert!(next_generation > generation);
     assert!(publisher.read_fresh("BTCUSDT", now_ms).is_err());
-    assert!(publisher.publish(old).is_err(), "old generation must never republish");
+    assert!(
+        publisher.publish(old).is_err(),
+        "old generation must never republish"
+    );
 }
 
 #[test]
