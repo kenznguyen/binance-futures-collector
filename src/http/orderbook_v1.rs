@@ -119,14 +119,19 @@ impl OrderbookV1Publisher {
 pub fn canonical_snapshot_id(
     snapshot: &OrderbookSnapshotV1,
 ) -> Result<String, SnapshotUnavailable> {
-    let mut value = serde_json::to_value(snapshot).map_err(|_| SnapshotUnavailable::InvalidSnapshot)?;
+    let mut value =
+        serde_json::to_value(snapshot).map_err(|_| SnapshotUnavailable::InvalidSnapshot)?;
     let object = value
         .as_object_mut()
         .ok_or(SnapshotUnavailable::InvalidSnapshot)?;
     object.remove("snapshotId");
     let canonical = serde_json::to_vec(&value).map_err(|_| SnapshotUnavailable::InvalidSnapshot)?;
     let hash = digest(&SHA256, &canonical);
-    let hex = hash.as_ref().iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+    let hex = hash
+        .as_ref()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
     Ok(format!("sha256:{hex}"))
 }
 
@@ -155,8 +160,14 @@ fn validate_snapshot(
     validate_levels(&snapshot.bids, true)?;
     validate_levels(&snapshot.asks, false)?;
 
-    let best_bid = snapshot.bids.first().and_then(|level| level[0].parse::<f64>().ok());
-    let best_ask = snapshot.asks.first().and_then(|level| level[0].parse::<f64>().ok());
+    let best_bid = snapshot
+        .bids
+        .first()
+        .and_then(|level| level[0].parse::<f64>().ok());
+    let best_ask = snapshot
+        .asks
+        .first()
+        .and_then(|level| level[0].parse::<f64>().ok());
     match (best_bid, best_ask) {
         (Some(bid), Some(ask)) if bid.is_finite() && ask.is_finite() && bid < ask => {}
         _ => return Err(SnapshotUnavailable::InvalidSnapshot),
@@ -184,8 +195,12 @@ fn validate_levels(levels: &[[String; 2]], descending: bool) -> Result<(), Snaps
         if !is_canonical_decimal(price_text) || !is_canonical_decimal(quantity_text) {
             return Err(SnapshotUnavailable::InvalidSnapshot);
         }
-        let price = price_text.parse::<f64>().map_err(|_| SnapshotUnavailable::InvalidSnapshot)?;
-        let quantity = quantity_text.parse::<f64>().map_err(|_| SnapshotUnavailable::InvalidSnapshot)?;
+        let price = price_text
+            .parse::<f64>()
+            .map_err(|_| SnapshotUnavailable::InvalidSnapshot)?;
+        let quantity = quantity_text
+            .parse::<f64>()
+            .map_err(|_| SnapshotUnavailable::InvalidSnapshot)?;
         if !price.is_finite() || !quantity.is_finite() || price <= 0.0 || quantity <= 0.0 {
             return Err(SnapshotUnavailable::InvalidSnapshot);
         }
@@ -200,7 +215,11 @@ fn validate_levels(levels: &[[String; 2]], descending: bool) -> Result<(), Snaps
 }
 
 fn is_canonical_decimal(value: &str) -> bool {
-    if value.is_empty() || value.starts_with('+') || value.starts_with('-') || (value.contains('e') || value.contains('E')) {
+    if value.is_empty()
+        || value.starts_with('+')
+        || value.starts_with('-')
+        || (value.contains('e') || value.contains('E'))
+    {
         return false;
     }
     let mut parts = value.split('.');
