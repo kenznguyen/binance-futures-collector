@@ -82,6 +82,7 @@ dependencies = [
  "parking_lot",
  "rand 0.8.7",
  "reqwest",
+ "ring",
  "rustc-hash 1.1.0",
  "serde",
  "serde_json",
